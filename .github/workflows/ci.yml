@@ -65,9 +65,11 @@ jobs:
           tag=$(tr -d '[:space:]' < packaging/ffmpeg/release.txt)
           if gh release download "$tag" --pattern "${{ matrix.ffmpeg }}" --dir ffmpeg-bundle; then
             (cd ffmpeg-bundle && unzip -o "${{ matrix.ffmpeg }}")
-            exe=ffmpeg; [ "$RUNNER_OS" = Windows ] && exe=ffmpeg.exe
+            exe=ffmpeg; dir=$PWD
+            # Git Bash's $PWD is /d/a/...; the Windows program needs D:/a/...
+            if [ "$RUNNER_OS" = Windows ]; then exe=ffmpeg.exe; dir=$(pwd -W); fi
             chmod +x "ffmpeg-bundle/$exe" || true
-            echo "REWINDR_FFMPEG=$PWD/ffmpeg-bundle/$exe" >> "$GITHUB_ENV"
+            echo "REWINDR_FFMPEG=$dir/ffmpeg-bundle/$exe" >> "$GITHUB_ENV"
           else
             echo "::warning::No bundled ffmpeg release $tag yet; skipping the self-test."
           fi
