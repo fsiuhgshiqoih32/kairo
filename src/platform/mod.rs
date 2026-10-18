@@ -17,6 +17,8 @@ pub use self::windows::*;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+pub mod macos_audio;
+#[cfg(target_os = "macos")]
 pub use self::macos::*;
 
 #[cfg(target_os = "linux")]

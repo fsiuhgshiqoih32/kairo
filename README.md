@@ -67,7 +67,8 @@ sound beside it, and ffmpeg joins them into an MP4.
 ## Platform notes
 
 - **Windows:** everything works. ARM64 builds aren't published yet.
-- **macOS:** desktop audio isn't captured yet (it needs ScreenCaptureKit); the microphone works.
+- **macOS:** desktop audio is captured through ScreenCaptureKit on macOS 13 and later (it uses
+  the Screen Recording permission); on macOS 11 and 12, only the microphone.
 - **Linux:** X11 sessions work. On Wayland, apps can't capture other windows or register global
   shortcuts: run Rewindr under XWayland, and bind `rewindr save` to a key in your desktop's
   settings. The bundled ffmpeg encodes with NVENC or x264; for VA-API, point `REWINDR_FFMPEG` at

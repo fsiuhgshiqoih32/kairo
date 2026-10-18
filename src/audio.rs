@@ -199,6 +199,8 @@ struct Open {
     streams: Vec<cpal::Stream>,
     #[cfg(target_os = "linux")]
     children: Vec<std::process::Child>,
+    #[cfg(target_os = "macos")]
+    system_audio: Option<crate::platform::macos_audio::SystemAudio>,
     output_id: Option<String>,
     input_id: Option<String>,
 }
@@ -217,8 +219,6 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let host = cpal::default_host();
     let mut open_now = Open::default();
     let mut errors: Vec<String> = Vec::new();
-    // Never set on macOS, which has no desktop audio yet.
-    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     let mut desktop_name = None;
     let mut mic_name = None;
     *shared.desktop.lock().unwrap() = None;
@@ -247,7 +247,13 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
             Err(e) => errors.push(e),
         }
         #[cfg(target_os = "macos")]
-        errors.push("Desktop audio isn't available on macOS yet; the microphone works.".into());
+        match crate::platform::macos_audio::start(shared.clone()) {
+            Ok(s) => {
+                desktop_name = Some("System audio".into());
+                open_now.system_audio = Some(s);
+            }
+            Err(e) => errors.push(e),
+        }
     }
     if settings.microphone {
         let wanted = settings.microphone_device.trim();

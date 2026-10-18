@@ -975,16 +975,12 @@ impl Window {
     fn sound_settings(&mut self, ui: &mut egui::Ui) {
         ui.label("Desktop audio");
         ui.horizontal(|ui| {
-            let mac = cfg!(target_os = "macos");
-            ui.add_enabled(
-                !mac,
-                egui::Checkbox::new(
-                    &mut self.settings.desktop_audio,
-                    "Record what the computer plays",
-                ),
+            ui.checkbox(
+                &mut self.settings.desktop_audio,
+                "Record what the computer plays",
             );
-            if mac {
-                ui::hint(ui, "not available on macOS yet");
+            if cfg!(target_os = "macos") {
+                ui::hint(ui, "macOS 13 or later");
             }
         });
         ui.end_row();
