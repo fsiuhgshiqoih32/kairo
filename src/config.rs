@@ -101,6 +101,11 @@ pub struct Settings {
     /// Show a notification when a clip is saved.
     pub notify: bool,
     pub check_updates: bool,
+    /// Delete the oldest clips (never favourites) when the folder grows past this many GB;
+    /// 0 keeps everything.
+    pub max_storage_gb: u32,
+    /// Size limit for "Share for Discord", in MB (10 for free accounts).
+    pub discord_mb: u32,
 }
 
 impl Default for Settings {
@@ -120,6 +125,8 @@ impl Default for Settings {
             sound: true,
             notify: true,
             check_updates: true,
+            max_storage_gb: 0,
+            discord_mb: 10,
         }
     }
 }
@@ -132,6 +139,8 @@ impl Settings {
     pub fn sanitize(&mut self) {
         self.clip_seconds = self.clip_seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
         self.fps = self.fps.clamp(10, 240);
+        self.max_storage_gb = self.max_storage_gb.min(10_000);
+        self.discord_mb = self.discord_mb.clamp(5, 500);
         if self.hotkey.trim().is_empty() {
             self.hotkey = "F8".into();
         }

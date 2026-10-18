@@ -427,9 +427,10 @@ pub fn probe_args(encoder: Encoder, vaapi_device: Option<&str>) -> Vec<String> {
     a
 }
 
-/// Joins the saved video with the sound tracks (each a WAV starting where the video starts) into
-/// an MP4. Several tracks are mixed into one, which is what players and Discord play.
-pub fn save_args(video: &Path, audio: &[&Path], out: &Path) -> Vec<String> {
+/// Joins the saved video with the sound tracks (each a WAV starting where the video starts, with a
+/// title) into an MP4. With several, the first track is their mix, which is what players and
+/// Discord play; each source follows as its own track for editing.
+pub fn save_args(video: &Path, audio: &[(&Path, &str)], out: &Path) -> Vec<String> {
     let mut a = vec![
         s("-y"),
         s("-hide_banner"),
@@ -438,28 +439,42 @@ pub fn save_args(video: &Path, audio: &[&Path], out: &Path) -> Vec<String> {
         s("error"),
     ];
     a.extend([s("-i"), video.display().to_string()]);
-    for p in audio {
+    for (p, _) in audio {
         a.extend([s("-i"), p.display().to_string()]);
     }
     a.extend([s("-map"), s("0:v:0")]);
-    match audio.len() {
-        0 => {}
-        1 => a.extend([s("-map"), s("1:a:0")]),
-        n => {
-            let inputs: String = (1..=n).map(|i| format!("[{i}:a]")).collect();
-            a.extend([
-                s("-filter_complex"),
-                format!("{inputs}amix=inputs={n}:duration=longest:normalize=0[mix]"),
-                s("-map"),
-                s("[mix]"),
-            ]);
-        }
+    let mut titles: Vec<&str> = Vec::new();
+    if audio.len() > 1 {
+        let n = audio.len();
+        let inputs: String = (1..=n).map(|i| format!("[{i}:a]")).collect();
+        a.extend([
+            s("-filter_complex"),
+            format!("{inputs}amix=inputs={n}:duration=longest:normalize=0[mix]"),
+            s("-map"),
+            s("[mix]"),
+        ]);
+        titles.push("Everything");
+    }
+    for (i, (_, title)) in audio.iter().enumerate() {
+        a.extend([s("-map"), format!("{}:a:0", i + 1)]);
+        titles.push(title);
     }
     a.extend([s("-c:v"), s("copy")]);
     if !audio.is_empty() {
         a.extend([s("-c:a"), s("aac"), s("-b:a"), s("160k")]);
     }
-    a.extend([s("-movflags"), s("+faststart"), out.display().to_string()]);
+    for (i, t) in titles.iter().enumerate() {
+        a.extend([format!("-metadata:s:a:{i}"), format!("title={t}")]);
+        let d = if i == 0 { "default" } else { "0" };
+        a.extend([format!("-disposition:a:{i}"), s(d)]);
+    }
+    a.extend([
+        s("-movflags"),
+        s("+faststart"),
+        s("-f"),
+        s("mp4"),
+        out.display().to_string(),
+    ]);
     a
 }
 
@@ -617,15 +632,27 @@ mod tests {
             Path::new("mic.wav"),
             Path::new("out.mp4"),
         );
-        let a = joined(&save_args(v, &[d, m], o));
+        let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], o));
         assert!(a.contains("-i v.ts -i desktop.wav -i mic.wav -map 0:v:0 -filter_complex [1:a][2:a]amix=inputs=2"), "{a}");
-        assert!(a.contains("-map [mix] -c:v copy -c:a aac"), "{a}");
-        assert!(a.ends_with("-movflags +faststart out.mp4"));
-        let a = joined(&save_args(v, &[d], o));
+        assert!(
+            a.contains("-map [mix] -map 1:a:0 -map 2:a:0 -c:v copy -c:a aac"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-metadata:s:a:0 title=Everything -disposition:a:0 default"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-metadata:s:a:2 title=Microphone -disposition:a:2 0"),
+            "{a}"
+        );
+        assert!(a.ends_with("-movflags +faststart -f mp4 out.mp4"));
+        let a = joined(&save_args(v, &[(d, "Game")], o));
         assert!(
             a.contains("-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac"),
             "{a}"
         );
+        assert!(!a.contains("amix"));
         let a = joined(&save_args(v, &[], o));
         assert!(!a.contains("-c:a"));
     }

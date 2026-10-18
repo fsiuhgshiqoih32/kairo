@@ -5,17 +5,23 @@ mod app;
 mod audio;
 mod autostart;
 mod daemon;
+mod editor;
+mod export;
 mod ffmpeg;
 mod hotkey;
 mod log;
 mod notify;
 mod platform;
+mod player;
 mod recorder;
 mod save;
 mod selftest;
 mod single_instance;
+#[cfg(test)]
+mod snapshots;
 mod tray;
 mod ui;
+mod updater;
 mod window;
 
 use std::path::PathBuf;
@@ -44,13 +50,21 @@ enum Cmd {
     /// Run in the background: record, show the tray icon, save clips on the shortcut.
     Daemon,
     /// Open the clips and settings window.
-    Window,
+    Window {
+        /// Wait for a closing window (after an update).
+        #[arg(long, hide = true)]
+        wait: bool,
+    },
+    /// Download and install the latest version.
+    Update,
     /// Save a clip now (asks the background process; bind this to a key on Wayland).
     Save,
     /// Pause or resume recording.
     Pause,
     /// Stop the background process.
     Quit,
+    /// Open a clip in the editor: play, trim, share.
+    Edit { clip: PathBuf },
     /// List screens, microphones and the encoders that work.
     Devices,
     /// Show the "clip saved" notification.
@@ -85,15 +99,20 @@ fn main() {
             }
         }
     }
-    let windowed = matches!(cli.command, None | Some(Cmd::Window) | Some(Cmd::Daemon));
+    let windowed = matches!(
+        cli.command,
+        None | Some(Cmd::Window { .. }) | Some(Cmd::Daemon) | Some(Cmd::Edit { .. })
+    );
     let result = match cli.command {
-        None => daemon::ensure_running().and_then(|_| window::run()),
+        None => daemon::ensure_running().and_then(|_| window::run(false)),
         Some(Cmd::Daemon) => daemon::run(),
-        Some(Cmd::Window) => window::run(),
+        Some(Cmd::Window { wait }) => window::run(wait),
+        Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
+        Some(Cmd::Edit { clip }) => editor::run(clip),
         Some(Cmd::Notify {
             clip,
             seconds,
@@ -119,6 +138,28 @@ fn request(r: daemon::Request) -> Result<(), String> {
         return Err("Rewindr isn't running. Start it first (run `rewindr`).".into());
     }
     daemon::request(r)
+}
+
+fn update() -> Result<(), String> {
+    match updater::check()? {
+        None => {
+            println!("Rewindr {} is up to date.", updater::current_version());
+            Ok(())
+        }
+        Some(u) => {
+            println!(
+                "Installing Rewindr {} (this is {})...",
+                u.version,
+                updater::current_version()
+            );
+            updater::install(&u)?;
+            if daemon::is_running() {
+                daemon::request(daemon::Request::Restart)?;
+            }
+            println!("Updated to {}.", u.version);
+            Ok(())
+        }
+    }
 }
 
 fn devices() -> Result<(), String> {

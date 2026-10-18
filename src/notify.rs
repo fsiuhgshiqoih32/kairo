@@ -33,17 +33,11 @@ pub fn run(msg: Message) -> Result<(), String> {
         .with_inner_size(vec2(W, H));
     let mut msg = Some(msg);
     crate::app::run_window("Rewindr", viewport, crate::app::Kind::Accessory, |_cc| {
-        Card {
-            msg: msg.take().expect("built once"),
-            texture: None,
-            frame_no: 0,
-            shown_at: None,
-            status: None,
-        }
+        Card::new(msg.take().expect("built once"))
     })
 }
 
-struct Card {
+pub struct Card {
     msg: Message,
     texture: Option<egui::TextureHandle>,
     frame_no: u64,
@@ -52,6 +46,16 @@ struct Card {
 }
 
 impl Card {
+    pub fn new(msg: Message) -> Card {
+        Card {
+            msg,
+            texture: None,
+            frame_no: 0,
+            shown_at: None,
+            status: None,
+        }
+    }
+
     fn place(&self, frame: &eframe::Frame) {
         let Some(w) = frame.winit_window() else {
             return;
@@ -129,7 +133,7 @@ impl eframe::App for Card {
                 let clip = clip.clone();
                 let body = ui.interact(screen, ui.scope_id().with("card-body"), Sense::click());
                 if body.clicked() {
-                    crate::app::open(&clip);
+                    crate::app::open_clip(&clip);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 let thumb_rect = egui::Rect::from_min_size(
@@ -170,7 +174,7 @@ impl eframe::App for Card {
                             .color(ui::OK),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").on_hover_text("Close").clicked() {
+                        if crate::ui::close_button(ui).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
@@ -220,7 +224,7 @@ impl eframe::App for Card {
                             .color(ui::DANGER),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if crate::ui::close_button(ui).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });

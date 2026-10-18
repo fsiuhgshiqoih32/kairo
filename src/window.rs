@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Layout, Margin, RichText, Sense, Stroke,
@@ -12,19 +13,26 @@ use eframe::egui::{
 
 use rewindr::args::{self, Encoder};
 use rewindr::config::{self, MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, Settings};
+use rewindr::library::{self, Clip, Library};
 use rewindr::mp4;
 
 use crate::daemon::{self, Report, Request};
 use crate::platform::{self, Monitor};
 use crate::single_instance::{self, InstanceLock};
-use crate::{autostart, hotkey, ui};
+use crate::{autostart, hotkey, ui, updater};
 
 /// Narrowest a clip card gets before the gallery drops a column.
 const CARD_MIN_W: f32 = 230.0;
 const GAP: f32 = 14.0;
 
-pub fn run() -> Result<(), String> {
-    let Some(lock) = single_instance::acquire(single_instance::WINDOW)? else {
+/// `wait`: after an update, the old window may still be closing; wait for it.
+pub fn run(wait: bool) -> Result<(), String> {
+    let lock = if wait {
+        single_instance::acquire_patiently(single_instance::WINDOW)?
+    } else {
+        single_instance::acquire(single_instance::WINDOW)?
+    };
+    let Some(lock) = lock else {
         println!("The Rewindr window is already open.");
         return Ok(());
     };
@@ -38,7 +46,7 @@ pub fn run() -> Result<(), String> {
         .with_min_inner_size(vec2(620.0, 460.0));
     let mut lock = Some(lock);
     crate::app::run_window("Rewindr", viewport, crate::app::Kind::Normal, |cc| {
-        Window::new(cc, lock.take().expect("window built once"))
+        Window::new(cc, lock.take())
     })
 }
 
@@ -48,22 +56,32 @@ enum Tab {
     Settings,
 }
 
-struct ClipEntry {
-    path: PathBuf,
-    name: String,
-    size: u64,
-    modified: SystemTime,
-}
-
 enum ClipAction {
     Play,
     Show,
     Copy,
     Delete,
+    Favorite,
+    Rename,
 }
 
-struct Window {
-    _lock: InstanceLock,
+/// Which clips the gallery shows.
+#[derive(Clone, PartialEq, Eq)]
+enum Filter {
+    All,
+    Favorites,
+    Game(String),
+}
+
+struct Rename {
+    clip: PathBuf,
+    name: String,
+    error: Option<String>,
+    focused: bool,
+}
+
+pub struct Window {
+    _lock: Option<InstanceLock>,
     path: PathBuf,
     settings: Settings,
     saved: Settings,
@@ -71,7 +89,11 @@ struct Window {
     tab: Tab,
     report: Option<Report>,
     report_read: Instant,
-    clips: Vec<ClipEntry>,
+    clips: Vec<Clip>,
+    library: Library,
+    filter: Filter,
+    search: String,
+    rename: Option<Rename>,
     clips_read: Option<Instant>,
     thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
     durations: HashMap<PathBuf, Option<f64>>,
@@ -86,10 +108,19 @@ struct Window {
     confirm_delete: Option<PathBuf>,
     note: Option<(String, Color32, Instant)>,
     frame_no: u64,
+    updates: Updates,
+}
+
+#[derive(Default)]
+struct Updates {
+    checking: Option<Receiver<Result<Option<updater::Update>, String>>>,
+    installing: Option<Receiver<Result<(), String>>>,
+    available: Option<updater::Update>,
+    message: Option<(String, Color32)>,
 }
 
 impl Window {
-    fn new(cc: &eframe::CreationContext<'_>, lock: InstanceLock) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, lock: Option<InstanceLock>) -> Self {
         let path = config::default_path();
         let (settings, _) = config::load_or_create(&path);
         let encoders: Arc<Mutex<Option<Vec<Encoder>>>> = Arc::default();
@@ -114,7 +145,7 @@ impl Window {
         let size = 64;
         let icon =
             egui::ColorImage::from_rgba_unmultiplied([size, size], &rewindr::art::app_icon(size));
-        Window {
+        let mut w = Window {
             _lock: lock,
             path,
             saved: settings.clone(),
@@ -124,6 +155,10 @@ impl Window {
             report: daemon::read_report(),
             report_read: Instant::now(),
             clips: Vec::new(),
+            library: Library::load(),
+            filter: Filter::All,
+            search: String::new(),
+            rename: None,
             clips_read: None,
             thumbs: HashMap::new(),
             durations: HashMap::new(),
@@ -141,7 +176,12 @@ impl Window {
             confirm_delete: None,
             note: None,
             frame_no: 0,
+            updates: Updates::default(),
+        };
+        if w.settings.check_updates && std::env::var_os("REWINDR_NO_UPDATE_CHECK").is_none() {
+            w.start_update_check(&cc.egui_ctx);
         }
+        w
     }
 
     fn note(&mut self, text: impl Into<String>, color: Color32) {
@@ -157,7 +197,8 @@ impl Window {
             .clips_read
             .is_none_or(|t| t.elapsed() > Duration::from_secs(2))
         {
-            self.clips = scan_clips(&self.settings.save_dir());
+            self.clips = library::scan(&self.settings.save_dir());
+            self.library = Library::load();
             self.clips_read = Some(Instant::now());
         }
         for clip in self.clips.iter().take(300) {
@@ -246,10 +287,11 @@ impl Window {
                     ui.label(RichText::new(text).size(12.5).color(ui::TEXT));
                 });
             });
-        if self.report.is_none() && ui.button("Start").clicked() {
-            if let Err(e) = daemon::ensure_running() {
-                self.note(e, ui::DANGER);
-            }
+        if self.report.is_none()
+            && ui.button("Start").clicked()
+            && let Err(e) = daemon::ensure_running()
+        {
+            self.note(e, ui::DANGER);
         }
     }
 
@@ -344,23 +386,47 @@ impl Window {
                 ui.label(RichText::new(crate::app::human_size(total)).color(ui::MUTED));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Open folder").clicked() {
+                if ui
+                    .button("Open folder")
+                    .on_hover_text(dir.display().to_string())
+                    .clicked()
+                {
                     let _ = std::fs::create_dir_all(&dir);
                     crate::app::open(&dir);
                 }
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(dir.display().to_string())
-                            .color(ui::MUTED)
-                            .size(12.0),
-                    )
-                    .truncate(),
-                );
+                if !self.clips.is_empty() {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search clips")
+                            .desired_width(200.0),
+                    );
+                }
             });
         });
-        ui.add_space(8.0);
         if self.clips.is_empty() {
+            ui.add_space(8.0);
             self.empty_gallery(ui);
+            return;
+        }
+        ui.add_space(6.0);
+        self.filter_chips(ui);
+        ui.add_space(10.0);
+        let search = self.search.trim().to_lowercase();
+        let visible: Vec<usize> = (0..self.clips.len())
+            .filter(|&i| {
+                let c = &self.clips[i];
+                let by_filter = match &self.filter {
+                    Filter::All => true,
+                    Filter::Favorites => self.library.is_favorite(&c.path),
+                    Filter::Game(g) => &c.game() == g,
+                };
+                by_filter && (search.is_empty() || c.name.to_lowercase().contains(&search))
+            })
+            .take(300)
+            .collect();
+        if visible.is_empty() {
+            ui.add_space(40.0);
+            ui.vertical_centered(|ui| ui::hint(ui, "No clips match."));
             return;
         }
         let mut action: Option<(usize, ClipAction)> = None;
@@ -370,12 +436,11 @@ impl Window {
                 let avail = ui.available_width() - 2.0;
                 let cols = ((avail + GAP) / (CARD_MIN_W + GAP)).floor().max(1.0) as usize;
                 let card_w = (avail - GAP * (cols - 1) as f32) / cols as f32;
-                let shown = self.clips.len().min(300);
-                for (row_no, row) in self.clips[..shown].chunks(cols).enumerate() {
+                for row in visible.chunks(cols) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = GAP;
-                        for (k, clip) in row.iter().enumerate() {
-                            let i = row_no * cols + k;
+                        for &i in row {
+                            let clip = &self.clips[i];
                             ui.allocate_ui_with_layout(
                                 vec2(card_w, 0.0),
                                 Layout::top_down(Align::Min),
@@ -394,7 +459,7 @@ impl Window {
         if let Some((i, what)) = action {
             let path = self.clips[i].path.clone();
             match what {
-                ClipAction::Play => crate::app::open(&path),
+                ClipAction::Play => crate::app::open_clip(&path),
                 ClipAction::Show => crate::app::reveal(&path),
                 ClipAction::Copy => match platform::copy_files(std::slice::from_ref(&path)) {
                     Ok(()) => {
@@ -403,7 +468,130 @@ impl Window {
                     Err(e) => self.note(e, ui::DANGER),
                 },
                 ClipAction::Delete => self.confirm_delete = Some(path),
+                ClipAction::Favorite => {
+                    let on = !self.library.is_favorite(&path);
+                    self.library.set_favorite(&path, on);
+                    if let Err(e) = self.library.save() {
+                        self.note(format!("Couldn't save favourites: {e}"), ui::DANGER);
+                    }
+                }
+                ClipAction::Rename => {
+                    self.rename = Some(Rename {
+                        name: self.clips[i].name.clone(),
+                        clip: path,
+                        error: None,
+                        focused: false,
+                    })
+                }
             }
+        }
+    }
+
+    /// "All", "Favourites", and one chip per game, most clipped first.
+    fn filter_chips(&mut self, ui: &mut egui::Ui) {
+        let mut games: Vec<(String, usize)> = Vec::new();
+        for c in &self.clips {
+            let g = c.game();
+            match games.iter_mut().find(|(n, _)| *n == g) {
+                Some((_, k)) => *k += 1,
+                None => games.push((g, 1)),
+            }
+        }
+        games.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let favs = self
+            .clips
+            .iter()
+            .filter(|c| self.library.is_favorite(&c.path))
+            .count();
+        if let Filter::Game(g) = &self.filter
+            && !games.iter().any(|(n, _)| n == g)
+        {
+            self.filter = Filter::All;
+        }
+        if self.filter == Filter::Favorites && favs == 0 {
+            self.filter = Filter::All;
+        }
+        let mut chips = vec![(Filter::All, format!("All  {}", self.clips.len()))];
+        if favs > 0 {
+            chips.push((Filter::Favorites, format!("Favourites  {favs}")));
+        }
+        if games.len() > 1 || favs > 0 {
+            for (g, n) in games.iter().take(10) {
+                let short: String = if g.chars().count() > 30 {
+                    format!("{}...", g.chars().take(28).collect::<String>().trim_end())
+                } else {
+                    g.clone()
+                };
+                chips.push((Filter::Game(g.clone()), format!("{short}  {n}")));
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (value, text) in chips {
+                let selected = self.filter == value;
+                let b = egui::Button::new(RichText::new(text).size(12.5))
+                    .selected(selected)
+                    .corner_radius(CornerRadius::same(12))
+                    .min_size(vec2(0.0, 24.0));
+                if ui.add(b).clicked() {
+                    self.filter = value;
+                }
+            }
+        });
+    }
+
+    fn rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some(r) = &mut self.rename else { return };
+        let mut done: Option<bool> = None;
+        egui::Window::new("Rename clip")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let edit = ui.add(egui::TextEdit::singleline(&mut r.name).desired_width(360.0));
+                if !r.focused {
+                    edit.request_focus();
+                    r.focused = true;
+                }
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                }
+                if let Some(e) = &r.error {
+                    ui.label(RichText::new(e).color(ui::DANGER).size(12.0));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = Some(false);
+                    }
+                });
+            });
+        match done {
+            Some(false) => self.rename = None,
+            Some(true) => {
+                let r = self.rename.as_mut().expect("open");
+                match library::rename_target(&r.clip, &r.name) {
+                    Ok(to) if to == r.clip => self.rename = None,
+                    Ok(to) => match std::fs::rename(&r.clip, &to) {
+                        Ok(()) => {
+                            let _ = std::fs::rename(
+                                crate::save::thumb_for(&r.clip),
+                                crate::save::thumb_for(&to),
+                            );
+                            self.library.renamed(&r.clip, &to);
+                            let _ = self.library.save();
+                            self.rename = None;
+                            self.clips_read = None;
+                        }
+                        Err(e) => r.error = Some(format!("Couldn't rename: {e}")),
+                    },
+                    Err(e) => r.error = Some(e),
+                }
+            }
+            None => {}
         }
     }
 
@@ -437,7 +625,7 @@ impl Window {
     }
 
     /// One clip in the gallery: thumbnail (click to play), name, details, buttons.
-    fn card(&self, ui: &mut egui::Ui, clip: &ClipEntry, w: f32) -> Option<ClipAction> {
+    fn card(&self, ui: &mut egui::Ui, clip: &Clip, w: f32) -> Option<ClipAction> {
         let mut action = None;
         let h = w * 9.0 / 16.0;
         let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
@@ -474,6 +662,18 @@ impl Window {
                 Stroke::NONE,
             ));
         }
+        if let Some(tag) = copy_tag(&clip.name) {
+            let galley =
+                painter.layout_no_wrap(tag.to_string(), FontId::proportional(11.0), Color32::WHITE);
+            let pad = vec2(6.0, 2.0);
+            let tr = rect.right_top() + vec2(-8.0, 8.0);
+            let bg = egui::Rect::from_min_max(
+                pos2(tr.x - galley.size().x - pad.x * 2.0, tr.y),
+                pos2(tr.x, tr.y + galley.size().y + pad.y * 2.0),
+            );
+            painter.rect_filled(bg, CornerRadius::same(4), ui::ACCENT.gamma_multiply(0.9));
+            painter.galley(bg.min + pad, galley, Color32::WHITE);
+        }
         if let Some(Some(d)) = self.durations.get(&clip.path) {
             let galley = painter.layout_no_wrap(
                 mp4::format_duration(*d),
@@ -486,15 +686,71 @@ impl Window {
             painter.rect_filled(bg, CornerRadius::same(4), Color32::from_black_alpha(190));
             painter.galley(bg.min + pad, galley, Color32::WHITE);
         }
+        let fav = self.library.is_favorite(&clip.path);
+        let star_rect = egui::Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(26.0, 26.0));
+        let star = ui.interact(
+            star_rect,
+            ui.scope_id().with(("star", &clip.path)),
+            Sense::click(),
+        );
+        if fav || resp.hovered() || star.hovered() {
+            painter.circle_filled(star_rect.center(), 13.0, Color32::from_black_alpha(150));
+            let color = if fav {
+                Color32::from_rgb(0xFF, 0xC4, 0x3D)
+            } else {
+                Color32::from_white_alpha(if star.hovered() { 255 } else { 170 })
+            };
+            ui::paint_star(&painter, star_rect.center(), 8.0, fav, color);
+        }
+        star.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Favourite"));
+        if star
+            .on_hover_text(if fav {
+                "Remove from favourites"
+            } else {
+                "Favourite: kept when old clips are cleaned up"
+            })
+            .clicked()
+        {
+            action = Some(ClipAction::Favorite);
+        }
+        resp.context_menu(|ui| {
+            let fav_label = if fav {
+                "Remove from favourites"
+            } else {
+                "Add to favourites"
+            };
+            for (label, what) in [
+                ("Open in editor", ClipAction::Play),
+                (fav_label, ClipAction::Favorite),
+                ("Rename...", ClipAction::Rename),
+                ("Show in folder", ClipAction::Show),
+                ("Copy", ClipAction::Copy),
+                ("Delete...", ClipAction::Delete),
+            ] {
+                if ui.button(label).clicked() {
+                    action = Some(what);
+                    ui.close();
+                }
+            }
+        });
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &clip.name));
         if resp
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Play")
+            .on_hover_text("Open in the editor (right-click for more)")
             .clicked()
         {
             action = Some(ClipAction::Play);
         }
         ui.add_space(4.0);
-        ui.add(egui::Label::new(RichText::new(&clip.name).strong()).truncate());
+        // Rewindr's own names are "<game> <date>"; show the game, and the full name on hover.
+        let title =
+            if library::game_of(&clip.name) == "Desktop" && !clip.name.starts_with("Rewindr") {
+                clip.name.clone()
+            } else {
+                clip.game()
+            };
+        ui.add(egui::Label::new(RichText::new(title).strong()).truncate())
+            .on_hover_text(&clip.name);
         let when: chrono::DateTime<chrono::Local> = clip.modified.into();
         ui.label(
             RichText::new(format!(
@@ -783,6 +1039,154 @@ impl Window {
             ui.checkbox(&mut self.settings.sound, "Play a sound");
         });
         ui.end_row();
+
+        ui.label("Clean up");
+        ui.horizontal(|ui| {
+            let mut on = self.settings.max_storage_gb > 0;
+            let check = ui.checkbox(&mut on, "Keep the clips folder under");
+            if check.changed() {
+                self.settings.max_storage_gb = if on { 50 } else { 0 };
+            }
+            let mut gb = self.settings.max_storage_gb.max(1);
+            let drag = ui.add_enabled(
+                on,
+                egui::DragValue::new(&mut gb)
+                    .range(1..=10_000)
+                    .suffix(" GB"),
+            );
+            if drag.labelled_by(check.id).changed() && on {
+                self.settings.max_storage_gb = gb;
+            }
+        });
+        ui.end_row();
+        ui.label("");
+        let used: u64 = self.clips.iter().map(|c| c.size).sum();
+        ui::hint(
+            ui,
+            &format!(
+                "Clips use {} now. Over the limit, the oldest are deleted after each save; favourites are always kept.",
+                crate::app::human_size(used)
+            ),
+        );
+        ui.end_row();
+
+        ui.label("Discord size");
+        ui.horizontal(|ui| {
+            for (mb, label) in [
+                (10, "10 MB (free)"),
+                (50, "50 MB (Nitro Basic)"),
+                (500, "500 MB (Nitro)"),
+            ] {
+                ui.selectable_value(&mut self.settings.discord_mb, mb, label);
+            }
+        });
+        ui.end_row();
+    }
+
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        if self.updates.checking.is_some() || self.updates.installing.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(updater::check());
+            ctx.request_repaint();
+        });
+        self.updates.checking = Some(rx);
+        self.updates.message = None;
+    }
+
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.updates.checking
+            && let Ok(result) = rx.try_recv()
+        {
+            self.updates.checking = None;
+            match result {
+                Ok(Some(u)) => self.updates.available = Some(u),
+                Ok(None) => {
+                    self.updates.message = Some((
+                        format!(
+                            "Rewindr {} is the latest version.",
+                            updater::current_version()
+                        ),
+                        ui::OK,
+                    ))
+                }
+                Err(e) => {
+                    self.updates.message =
+                        Some((format!("Couldn't check for updates: {e}"), ui::DANGER))
+                }
+            }
+        }
+        if let Some(rx) = &self.updates.installing
+            && let Ok(result) = rx.try_recv()
+        {
+            self.updates.installing = None;
+            match result {
+                Ok(()) => {
+                    crate::log::info!("updated; restarting");
+                    let _ = daemon::request(Request::Restart);
+                    let _ = crate::app::spawn_self(&["window", "--wait"]);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(e) => self.updates.message = Some((format!("Update failed: {e}"), ui::DANGER)),
+            }
+        }
+    }
+
+    fn install_update(&mut self, ctx: &egui::Context) {
+        let Some(u) = self.updates.available.clone() else {
+            return;
+        };
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(updater::install(&u));
+            ctx.request_repaint();
+        });
+        self.updates.installing = Some(rx);
+    }
+
+    /// "Rewindr 0.2.0 is available" above the tabs.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(u) = &self.updates.available else {
+            return;
+        };
+        let version = u.version.clone();
+        let installing = self.updates.installing.is_some();
+        let mut install = false;
+        ui.add_space(6.0);
+        egui::Frame::new()
+            .fill(ui::ACCENT.gamma_multiply(0.16))
+            .stroke(Stroke::new(1.0, ui::ACCENT.gamma_multiply(0.45)))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Rewindr {version} is available")).strong());
+                    ui.label(
+                        RichText::new(format!("(you have {})", updater::current_version()))
+                            .color(ui::MUTED),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if installing {
+                            ui.label("Updating...");
+                            ui.add(egui::Spinner::new());
+                        } else if ui
+                            .button(RichText::new("Update and restart").strong())
+                            .clicked()
+                        {
+                            install = true;
+                        }
+                    });
+                });
+            });
+        if install {
+            let ctx = ui.ctx().clone();
+            self.install_update(&ctx);
+        }
     }
 
     fn general_settings(&mut self, ui: &mut egui::Ui) {
@@ -810,6 +1214,31 @@ impl Window {
             }
         });
         ui.end_row();
+
+        ui.label("Updates");
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut self.settings.check_updates,
+                "Check when the window opens",
+            );
+            let busy = self.updates.checking.is_some();
+            if ui
+                .add_enabled(!busy, egui::Button::new("Check now"))
+                .clicked()
+            {
+                let ctx = ui.ctx().clone();
+                self.start_update_check(&ctx);
+            }
+            if busy {
+                ui.add(egui::Spinner::new().size(12.0));
+            }
+        });
+        ui.end_row();
+        if let Some((text, color)) = self.updates.message.clone() {
+            ui.label("");
+            ui.label(RichText::new(text).color(color).size(12.0));
+            ui.end_row();
+        }
     }
 
     fn monitor_label(&self) -> String {
@@ -907,6 +1336,7 @@ impl eframe::App for Window {
         };
         crate::app::shot_hook(&ctx, self.frame_no, shot);
         self.refresh(&ctx);
+        self.poll_updates(&ctx);
         egui::Panel::top("header")
             .frame(egui::Frame::new().fill(ui::BG).inner_margin(Margin {
                 left: 16,
@@ -918,6 +1348,7 @@ impl eframe::App for Window {
                 self.header(ui);
                 ui.add_space(4.0);
                 self.summary(ui);
+                self.update_banner(ui);
                 ui.add_space(10.0);
                 self.tabs(ui);
             });
@@ -932,6 +1363,7 @@ impl eframe::App for Window {
                 Tab::Settings => self.settings_tab(ui),
             });
         self.delete_dialog(&ctx);
+        self.rename_dialog(&ctx);
         if self.capturing_key {
             ctx.request_repaint();
         } else {
@@ -947,37 +1379,23 @@ impl eframe::App for Window {
     }
 }
 
+/// "TRIMMED" or "DISCORD" for copies the editor made.
+fn copy_tag(name: &str) -> Option<&'static str> {
+    if name.contains("(Discord") {
+        Some("DISCORD")
+    } else if name.contains("(trim") {
+        Some("TRIMMED")
+    } else {
+        None
+    }
+}
+
 fn seconds_label(s: u32) -> String {
     if s >= 60 && s.is_multiple_of(60) {
         format!("{} min", s / 60)
     } else {
         format!("{s} s")
     }
-}
-
-fn scan_clips(dir: &Path) -> Vec<ClipEntry> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut v: Vec<ClipEntry> = rd
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("mp4"))
-        })
-        .filter_map(|e| {
-            let meta = e.metadata().ok()?;
-            Some(ClipEntry {
-                name: e.path().file_stem()?.to_string_lossy().to_string(),
-                path: e.path(),
-                size: meta.len(),
-                modified: meta.modified().ok()?,
-            })
-        })
-        .collect();
-    v.sort_by_key(|c| std::cmp::Reverse(c.modified));
-    v
 }
 
 fn load_thumb(ctx: &egui::Context, clip: &Path) -> Option<egui::TextureHandle> {

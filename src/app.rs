@@ -153,6 +153,14 @@ pub fn open(target: &Path) {
     }
 }
 
+/// Opens a clip in Rewindr's editor, or the system's player if the editor can't start.
+pub fn open_clip(clip: &Path) {
+    let arg = clip.display().to_string();
+    if spawn_self(&["edit", &arg]).is_err() {
+        open(clip);
+    }
+}
+
 /// Shows a file selected in its folder.
 pub fn reveal(path: &Path) {
     if let Err(e) = opener::reveal(path) {

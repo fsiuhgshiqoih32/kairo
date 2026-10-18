@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rewindr::args;
-use rewindr::pcm;
+use rewindr::{library, pcm};
 
 use crate::ffmpeg;
 use crate::log::info;
@@ -93,8 +93,8 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
         .map_err(|e| format!("could not write the video: {e}"))?;
     drop(snap);
 
-    let mut audio: Vec<PathBuf> = Vec::new();
-    for (name, ring) in [("desktop", &shared.desktop), ("mic", &shared.mic)] {
+    let mut audio: Vec<(PathBuf, &str)> = Vec::new();
+    for (name, ring) in [("Game", &shared.desktop), ("Microphone", &shared.mic)] {
         let wav = {
             let r = ring.lock().unwrap();
             r.as_ref()
@@ -103,7 +103,7 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
         if let Some(bytes) = wav {
             let p = work.join(format!("{name}.wav"));
             std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
-            audio.push(p);
+            audio.push((p, name));
         }
     }
 
@@ -112,11 +112,9 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let out = clip_path(&dir, title);
     let partial = out.with_extension("mp4.part");
-    let refs: Vec<&Path> = audio.iter().map(PathBuf::as_path).collect();
+    let refs: Vec<(&Path, &str)> = audio.iter().map(|(p, t)| (p.as_path(), *t)).collect();
     // ffmpeg picks the format from the name; write to .part and rename, so a clip appears whole.
-    let mut save_args = args::save_args(&video, &refs, &partial);
-    let last = save_args.len() - 1;
-    save_args.splice(last..last, ["-f".to_string(), "mp4".to_string()]);
+    let save_args = args::save_args(&video, &refs, &partial);
     ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
         .map_err(|e| format!("could not save the clip: {e}"))?;
     std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;
@@ -132,6 +130,17 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
     .map(|_| thumb);
     let seconds = (end - start) as f64 / 1e6;
     info!("saved {} ({seconds:.1} s)", out.display());
+    if settings.max_storage_gb > 0 {
+        let limit = settings.max_storage_gb as u64 * 1_000_000_000;
+        for p in library::clean_up(&dir, limit, &library::Library::load()) {
+            let _ = std::fs::remove_file(thumb_for(&p));
+            info!(
+                "deleted {} to stay under {} GB",
+                p.display(),
+                settings.max_storage_gb
+            );
+        }
+    }
     drop(cleanup);
     shared.status.lock().unwrap().last_clip = Some(out.display().to_string());
     Ok(Clip {

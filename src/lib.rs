@@ -4,6 +4,8 @@
 pub mod args;
 pub mod art;
 pub mod config;
+pub mod library;
+pub mod media;
 pub mod mp4;
 pub mod pcm;
 pub mod ring;
