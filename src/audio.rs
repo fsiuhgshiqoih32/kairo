@@ -217,6 +217,8 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let host = cpal::default_host();
     let mut open_now = Open::default();
     let mut errors: Vec<String> = Vec::new();
+    // Never set on macOS, which has no desktop audio yet.
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     let mut desktop_name = None;
     let mut mic_name = None;
     *shared.desktop.lock().unwrap() = None;

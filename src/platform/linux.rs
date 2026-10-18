@@ -40,9 +40,10 @@ pub fn monitors() -> Vec<Monitor> {
     };
     let root = conn.setup().roots[screen_num].root;
     let mut out = Vec::new();
-    if let Ok(reply) = conn
+    if let Some(reply) = conn
         .randr_get_monitors(root, true)
-        .and_then(|c| c.reply().map_err(Into::into))
+        .ok()
+        .and_then(|c| c.reply().ok())
     {
         for (i, m) in reply.monitors.iter().enumerate() {
             let name = conn

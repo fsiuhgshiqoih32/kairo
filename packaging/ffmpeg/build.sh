@@ -12,6 +12,7 @@
 # the whole recipe.
 
 set -euo pipefail
+# macOS ships bash 3.2: empty arrays are expanded as ${a[@]+"${a[@]}"} below.
 
 FFMPEG_VERSION=8.1.3
 X264_REF=stable
@@ -56,7 +57,7 @@ if [ ! -f "$prefix/lib/libx264.a" ]; then
   (
     cd "$work/x264"
     ./configure --prefix="$prefix" --enable-static --disable-cli --disable-opencl --enable-pic \
-      --extra-cflags="$cflags" --extra-ldflags="$ldflags" "${x264_flags[@]}"
+      --extra-cflags="$cflags" --extra-ldflags="$ldflags" ${x264_flags[@]+"${x264_flags[@]}"}
     make -j"$jobs"
     make install
   )
@@ -84,7 +85,7 @@ common=(
   --enable-indev=lavfi
   --enable-demuxer=mov,mpegts,wav,matroska,image2
   --enable-muxer=mp4,mov,mpegts,rawvideo,f32le,s16le,wav,image2,null
-  --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,rawvideo,bmp,mjpeg,png
+  --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,rawvideo,bmp,mjpeg,png,wrapped_avframe
   --enable-encoder=libx264,aac,mjpeg,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe
   --enable-parser=h264,hevc,aac,mjpeg
   --enable-bsf=dump_extra,h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata
@@ -129,7 +130,7 @@ esac
 
 (
   cd "$src"
-  ./configure "${common[@]}" "${platform[@]}" "${cross[@]}" || { tail -n 60 ffbuild/config.log; exit 1; }
+  ./configure "${common[@]}" "${platform[@]}" ${cross[@]+"${cross[@]}"} || { tail -n 60 ffbuild/config.log; exit 1; }
   make -j"$jobs"
 )
 
