@@ -55,10 +55,10 @@ define_class!(
             kind: SCStreamOutputType,
         ) {
             // Video frames are delivered too (a stream needs a display); they're dropped here.
-            if kind == SCStreamOutputType::Audio {
-                if let Some((samples, rate, channels)) = unsafe { interleaved_f32(buffer) } {
-                    push(&self.ivars().shared, &samples, rate, channels);
-                }
+            if kind == SCStreamOutputType::Audio
+                && let Some((samples, rate, channels)) = unsafe { interleaved_f32(buffer) }
+            {
+                push(&self.ivars().shared, &samples, rate, channels);
             }
         }
     }
