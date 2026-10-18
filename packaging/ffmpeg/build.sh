@@ -76,6 +76,8 @@ if [ ! -d "$src" ]; then
   tar -xf "$work/ffmpeg.tar.xz" -C "$work"
 fi
 
+# Component names are configure's, which differ from some run-time names: dump_extradata is
+# the dump_extra filter, pcm_f32le the f32le muxer. Unknown names are ignored silently.
 common=(
   --prefix="$prefix"
   --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network
@@ -84,12 +86,12 @@ common=(
   --enable-protocol=file,pipe
   --enable-indev=lavfi
   --enable-demuxer=mov,mpegts,wav,matroska,image2
-  --enable-muxer=mp4,mov,mpegts,rawvideo,f32le,s16le,wav,image2,null
+  --enable-muxer=mp4,mov,mpegts,rawvideo,pcm_f32le,pcm_s16le,wav,image2,null
   --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,rawvideo,bmp,mjpeg,png,wrapped_avframe
   --enable-encoder=libx264,aac,mjpeg,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe
   --enable-parser=h264,hevc,aac,mjpeg
-  --enable-bsf=dump_extra,h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata
-  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,amix,aresample,aformat,testsrc2,showinfo,hwdownload,hwupload,hwmap
+  --enable-bsf=dump_extradata,h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata
+  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,amix,aresample,aformat,testsrc2,sine,showinfo,hwdownload,hwupload,hwmap
   --pkg-config-flags=--static
   --extra-cflags="-I$prefix/include $cflags"
   --extra-ldflags="-L$prefix/lib $ldflags"

@@ -42,13 +42,12 @@ jobs:
       - name: Check
         run: |
           set -e
-          out/ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 30 -c:v libx264 -f mpegts out/check.ts
+          bash packaging/ffmpeg/check.sh out/ffmpeg.exe
           out/ffmpeg.exe -hide_banner -filters | grep -E "gfxcapture|ddagrab"
           out/ffmpeg.exe -hide_banner -encoders | grep -E "h264_nvenc|h264_amf|h264_mf"
           out/ffmpeg.exe -hide_banner -devices | grep gdigrab
           echo "DLLs it needs:"; ldd out/ffmpeg.exe
           if ldd out/ffmpeg.exe | grep -vi "/c/windows" | grep -q "=>"; then echo "depends on non-system DLLs"; exit 1; fi
-          rm out/check.ts
       - name: Package
         run: cd out && zip -9 ../ffmpeg-windows-x64.zip ffmpeg.exe FFMPEG-LICENSE.txt FFMPEG-SOURCE.txt
       - uses: actions/upload-artifact@v4
@@ -79,7 +78,7 @@ jobs:
           lipo -create -output out/ffmpeg out-arm64/ffmpeg out-x86_64/ffmpeg
           cp out-arm64/FFMPEG-LICENSE.txt out-arm64/FFMPEG-SOURCE.txt out/
           lipo -info out/ffmpeg
-          out/ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 30 -c:v libx264 -f mpegts /tmp/check.ts
+          bash packaging/ffmpeg/check.sh out/ffmpeg
           out/ffmpeg -hide_banner -encoders | grep h264_videotoolbox
           out/ffmpeg -hide_banner -devices | grep avfoundation
           echo "Libraries it needs:"; otool -L out/ffmpeg
@@ -106,7 +105,7 @@ jobs:
       - name: Check
         run: |
           set -euo pipefail
-          out/ffmpeg -hide_banner -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 30 -c:v libx264 -f mpegts /tmp/check.ts
+          bash packaging/ffmpeg/check.sh out/ffmpeg
           out/ffmpeg -hide_banner -encoders | grep h264_nvenc
           out/ffmpeg -hide_banner -devices | grep x11grab
           echo "Libraries it needs:"; ldd out/ffmpeg
