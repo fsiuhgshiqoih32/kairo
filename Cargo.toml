@@ -1,6 +1,6 @@
 [package]
 name = "rewindr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 description = "Instant replay for Windows, macOS and Linux: press F8 to save the last 30 seconds of your screen and sound."

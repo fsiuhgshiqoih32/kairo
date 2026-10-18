@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- Pressing F8 while recording is paused now says so, instead of saving a split second of old
+  footage. Pausing clears the replay, so nothing from before a pause ends up in a clip.
+- Saving right after recording (re)starts (for example after changing settings) reports that
+  there's nothing to save yet, instead of writing a clip under 1.5 seconds.
+
 ## 0.1.0
 
 The first release of Rewindr: instant replay for Windows, macOS and Linux.

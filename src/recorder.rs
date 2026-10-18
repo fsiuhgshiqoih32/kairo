@@ -160,6 +160,8 @@ pub fn run(shared: Arc<Shared>) {
     let mut last_plan: Option<VideoPlan> = None;
     while !shared.stop.load(Ordering::Relaxed) {
         if shared.paused.load(Ordering::Relaxed) {
+            // Nothing from before the pause may end up in a clip saved after it.
+            shared.ring.lock().unwrap().clear();
             set_idle(&shared, None);
             if wait_or_stop(&shared, Duration::from_millis(250)) {
                 return;

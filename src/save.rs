@@ -13,6 +13,9 @@ use crate::ffmpeg;
 use crate::log::info;
 use crate::recorder::{Shared, now_us};
 
+/// Shorter than this, saving reports "nothing yet" instead of writing a clip.
+const MIN_CLIP_US: i64 = 1_500_000;
+
 pub struct Clip {
     pub path: PathBuf,
     pub seconds: f64,
@@ -61,6 +64,9 @@ pub fn save(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Resul
 
 fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Result<Clip, String> {
     let settings = shared.settings();
+    if shared.paused.load(Ordering::SeqCst) {
+        return Err("Recording is paused. Resume it from the tray icon to save clips.".into());
+    }
     let ffmpeg = ffmpeg::path()?;
     let secs = seconds.unwrap_or(settings.clip_seconds) as i64;
     let now = now_us();
@@ -76,6 +82,10 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
                 "Nothing to save: Rewindr isn't recording.".to_string()
             }
         })?;
+    // A clip of a split second is a recording that just (re)started, not a moment worth keeping.
+    if snap.end_us() - snap.start_us() < MIN_CLIP_US {
+        return Err("Nothing to save yet: recording only just started.".into());
+    }
     let fps = settings.fps.max(1) as i64;
     let start = snap.start_us();
     let end = snap.end_us() + 1_000_000 / fps;

@@ -303,6 +303,8 @@ pub fn run(shared: Arc<Shared>) {
         let settings = shared.settings();
         let paused = shared.paused.load(Ordering::Relaxed);
         let open_now = if paused {
+            *shared.desktop.lock().unwrap() = None;
+            *shared.mic.lock().unwrap() = None;
             Open::default()
         } else {
             start(&shared, &settings, &failed)
