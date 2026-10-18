@@ -83,7 +83,8 @@ jobs:
           out/ffmpeg -hide_banner -encoders | grep h264_videotoolbox
           out/ffmpeg -hide_banner -devices | grep avfoundation
           echo "Libraries it needs:"; otool -L out/ffmpeg
-          if otool -L out/ffmpeg | tail -n +2 | grep -v -E "^\s+(/System/|/usr/lib/)"; then echo "depends on non-system libraries"; exit 1; fi
+          # Library lines are indented; the per-architecture headers aren't.
+          if otool -L out/ffmpeg | grep -E "^\s" | grep -v -E "^\s+(/System/|/usr/lib/)"; then echo "depends on non-system libraries"; exit 1; fi
       - name: Package
         run: cd out && zip -9 ../ffmpeg-macos.zip ffmpeg FFMPEG-LICENSE.txt FFMPEG-SOURCE.txt
       - uses: actions/upload-artifact@v4
