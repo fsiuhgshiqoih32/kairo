@@ -1,9 +1,9 @@
-//! Writes assets/icon.png (256 px) and assets/icon.ico (16-256 px) from the drawn icon.
+//! Writes assets/icon.png (1024 px) and assets/icon.ico (16-256 px) from the drawn icon.
 //! `cargo run --example make_icons`
 
 fn main() {
     std::fs::create_dir_all("assets").unwrap();
-    let png = image::RgbaImage::from_raw(256, 256, rewindr::art::app_icon(256)).unwrap();
+    let png = image::RgbaImage::from_raw(1024, 1024, rewindr::art::app_icon(1024)).unwrap();
     png.save("assets/icon.png").unwrap();
     // ICO with PNG-compressed entries.
     let sizes = [16u32, 24, 32, 48, 64, 128, 256];
