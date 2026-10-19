@@ -15,6 +15,10 @@ pub fn write(level: &str, args: Arguments<'_>) {
     let _guard = LOCK.lock();
     let line = format!("{level}: {args}");
     eprintln!("rewindr: {line}");
+    // Unit tests print only: their made-up failures don't belong in the user's log.
+    if cfg!(test) {
+        return;
+    }
     let path = path();
     let dir = rewindr::config::config_dir();
     if std::fs::metadata(&path)
