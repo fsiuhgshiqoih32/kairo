@@ -2,7 +2,7 @@
 //! audio-only `SCStream` of the main display whose samples go into the shared desktop ring, the
 //! same as WASAPI loopback on Windows and the PulseAudio monitor on Linux.
 
-use std::ptr::{NonNull, null_mut};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -13,11 +13,7 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
-use objc2_core_foundation::CFRetained;
-use objc2_core_media::{
-    CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
-};
+use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime};
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput,
@@ -114,82 +110,51 @@ fn push(shared: &Shared, samples: &[f32], rate: u32, channels: u16) {
     }
 }
 
-/// An `AudioBufferList` with room for several channel buffers (it's declared with one).
-#[repr(C)]
-struct BufferList {
-    list: AudioBufferList,
-    more: [AudioBuffer; 7],
-}
-
 /// The sample buffer's sound as interleaved 32-bit float, with its rate and channel count.
+/// ScreenCaptureKit sends planar float (one block of frames per channel, back to back), which
+/// `CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer` refuses (-12737); copying the
+/// block buffer's bytes works for any layout.
 unsafe fn interleaved_f32(buffer: &CMSampleBuffer) -> Result<(Vec<f32>, u32, u16), String> {
     let desc = unsafe { buffer.format_description() }.ok_or("no format description")?;
     let asbd = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(&desc).as_ref() }
         .ok_or("not an audio format")?;
     let format = format!(
-        "{} Hz, {} ch, {} bits, flags {:#x}, {} bytes/frame",
-        asbd.mSampleRate,
-        asbd.mChannelsPerFrame,
-        asbd.mBitsPerChannel,
-        asbd.mFormatFlags,
-        asbd.mBytesPerFrame
+        "{} Hz, {} ch, {} bits, flags {:#x}",
+        asbd.mSampleRate, asbd.mChannelsPerFrame, asbd.mBitsPerChannel, asbd.mFormatFlags
     );
     if asbd.mFormatFlags & FLAG_FLOAT == 0 || asbd.mBitsPerChannel != 32 {
         return Err(format!("not 32-bit float ({format})"));
     }
     let channels = asbd.mChannelsPerFrame.max(1) as usize;
     let rate = asbd.mSampleRate.round() as u32;
-    let mut lists: BufferList = unsafe { std::mem::zeroed() };
-    let mut block: *mut CMBlockBuffer = null_mut();
-    let status = unsafe {
-        buffer.audio_buffer_list_with_retained_block_buffer(
-            null_mut(),
-            &mut lists.list,
-            size_of::<BufferList>(),
-            None,
-            None,
-            0,
-            &mut block,
-        )
-    };
-    // The block buffer owns the memory the list points into; release it when done.
-    let _block = NonNull::new(block).map(|b| unsafe { CFRetained::from_raw(b) });
+    let block = unsafe { buffer.data_buffer() }.ok_or_else(|| format!("no data ({format})"))?;
+    let mut raw = vec![0f32; unsafe { block.data_length() } / 4];
+    if raw.is_empty() {
+        return Ok((raw, rate, channels as u16));
+    }
+    let dest = NonNull::new(raw.as_mut_ptr().cast()).ok_or("no memory")?;
+    let status = unsafe { block.copy_data_bytes(0, raw.len() * 4, dest) };
     if status != 0 {
         return Err(format!(
-            "CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer returned {status} ({format})"
+            "CMBlockBufferCopyDataBytes returned {status} ({format})"
         ));
     }
-    let count = (lists.list.mNumberBuffers as usize).min(8);
-    let base = &lists.list.mBuffers as *const AudioBuffer;
-    let buffers: Vec<&[f32]> = (0..count)
-        .map(|i| {
-            let b = unsafe { &*base.add(i) };
-            let len = b.mDataByteSize as usize / 4;
-            if b.mData.is_null() || len == 0 {
-                &[][..]
-            } else {
-                unsafe { std::slice::from_raw_parts(b.mData as *const f32, len) }
-            }
-        })
-        .collect();
-    let out = if asbd.mFormatFlags & FLAG_NON_INTERLEAVED != 0 {
-        // One buffer per channel: interleave them.
-        let frames = buffers.iter().map(|b| b.len()).min().unwrap_or(0);
-        let mut v = Vec::with_capacity(frames * buffers.len());
-        for f in 0..frames {
-            for b in &buffers {
-                v.push(b[f]);
-            }
-        }
-        (v, rate, buffers.len().max(1) as u16)
-    } else {
-        (
-            buffers.first().ok_or("no buffers")?.to_vec(),
-            rate,
-            channels as u16,
-        )
+    if asbd.mFormatFlags & FLAG_NON_INTERLEAVED == 0 || channels == 1 {
+        return Ok((raw, rate, channels as u16));
+    }
+    // Planar: channel c's frames start at c * plane.
+    let plane = raw.len() / channels;
+    let frames = match unsafe { buffer.num_samples() } {
+        n if n > 0 => (n as usize).min(plane),
+        _ => plane,
     };
-    Ok(out)
+    let mut out = Vec::with_capacity(frames * channels);
+    for f in 0..frames {
+        for c in 0..channels {
+            out.push(raw[c * plane + f]);
+        }
+    }
+    Ok((out, rate, channels as u16))
 }
 
 /// A running system-audio capture; dropping it stops the stream.
