@@ -169,7 +169,7 @@
   const toggle = $("#vid-toggle");
   const hud = $("#hud");
   const fill = $("#hud-fill");
-  const PLAY = 8.9; // seconds of play before the loop rewinds to its first frame
+  const PLAY = 6.2; // seconds of play before the loop rewinds to its first frame
   let userPaused = reduced;
   let inView = true;
 
@@ -278,6 +278,36 @@
   $("#toast-close").addEventListener("click", close);
   if (matchMedia("(pointer: coarse)").matches) $("#press-hint").textContent = "Tap it to save the last 30 seconds.";
 
+  // ---------- Replays: each plays while it's on screen (or when clicked, with reduced motion) ----------
+  const replays = $$(".replay video");
+  const load = (v) => {
+    if (!v.src && v.dataset.src) v.src = v.dataset.src;
+  };
+  if (!reduced && "IntersectionObserver" in window) {
+    const seenReplays = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((e) => {
+          const v = e.target;
+          if (e.isIntersecting) {
+            load(v);
+            v.play().catch(() => {});
+          } else {
+            v.pause();
+          }
+        }),
+      { threshold: 0.5 },
+    );
+    replays.forEach((v) => seenReplays.observe(v));
+  }
+  $$(".replay-media").forEach((b) =>
+    b.addEventListener("click", () => {
+      const v = $("video", b);
+      load(v);
+      if (v.paused) v.play().catch(() => {});
+      else v.pause();
+    }),
+  );
+
   // ---------- The app, tab by tab ----------
   const tabs = $$('[role="tab"]');
   function select(tab, focus) {
@@ -309,7 +339,7 @@
   if (!reduced && "IntersectionObserver" in window) {
     const groups = [
       ".facts li", ".press-key", ".press-copy > *", ".film", ".tour-head > *", ".tabs", ".panels",
-      ".duo-item", ".features .h2", ".feat li", ".get-head > *", ".pick", ".others",
+      ".replays-head > *", ".replay", ".duo-item", ".features .h2", ".feat li", ".get-head > *", ".pick", ".others",
       ".faq h2", ".qs details", ".invite", ".cols", ".fine",
     ];
     const seen = new Map();

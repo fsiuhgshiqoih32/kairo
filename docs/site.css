@@ -207,6 +207,28 @@ kbd { font: inherit; }
 .film.kept .film-frames li { opacity: 1; filter: none; transform: translateY(-6px); }
 .film-scale { display: flex; justify-content: space-between; margin-top: 14px; font-size: var(--s-small); font-weight: 600; }
 
+/* ---------- Replays: clip cards, like Kairo's library. ---------- */
+.replays { padding-top: var(--gap); }
+.replays-head { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 64px; align-items: end; }
+.reel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px clamp(16px, 2vw, 28px); margin-top: 56px; }
+.replay-media {
+  position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: 0; cursor: pointer;
+  border-radius: 12px; overflow: hidden; background: var(--raised);
+  transition: transform 220ms var(--ease);
+}
+.replay-media:hover { transform: translateY(-3px); }
+.replay-media video { width: 100%; height: 100%; object-fit: cover; }
+.replay-len {
+  position: absolute; right: 10px; bottom: 10px; padding: 2px 8px; border-radius: 6px;
+  background: rgba(13, 14, 16, 0.78); color: var(--ink); font-size: 14px; font-weight: 600;
+}
+.replay-title { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.replay-title b { font-weight: 600; font-size: 18px; }
+.replay-title span { color: var(--soft); }
+.replay-credit { margin-top: 2px; font-size: 14px; color: var(--muted); }
+.replays-note { margin-top: 36px; font-size: 14px; color: var(--muted); }
+.replays-note a { color: var(--soft); text-underline-offset: 3px; }
+
 /* ---------- The app, tab by tab. ---------- */
 .tour { padding-top: var(--gap); }
 .tour-head { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 64px; align-items: end; }
@@ -368,7 +390,8 @@ details a { color: var(--ink); text-underline-offset: 3px; }
   .hud { display: none; }
 }
 @media (max-width: 860px) {
-  .tour-head, .get-head, .get-grid, .faq-in, .close-in, .press-in { grid-template-columns: 1fr; }
+  .tour-head, .get-head, .get-grid, .faq-in, .close-in, .press-in, .replays-head { grid-template-columns: 1fr; }
+  .reel { grid-template-columns: 1fr 1fr; }
   .duo-in { grid-template-columns: 1fr; gap: 64px; }
   .faq h2 { position: static; }
   .press-key { justify-items: start; }
@@ -398,6 +421,7 @@ details a { color: var(--ink); text-underline-offset: 3px; }
   .tabs { flex-wrap: wrap; width: auto; overflow: visible; }
   .tabs [role="tab"] { padding: 10px 14px; }
   .feat { grid-template-columns: 1fr; gap: 40px; margin-top: 44px; }
+  .reel { grid-template-columns: 1fr; gap: 32px; margin-top: 40px; }
   .os-switch { display: flex; }
   .os-switch button { flex: 1; padding-inline: 8px; }
   summary { padding: 18px 16px; }

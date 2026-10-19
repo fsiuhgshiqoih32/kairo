@@ -30,6 +30,7 @@
     </a>
     <nav aria-label="Main">
       <a href="#how">How it works</a>
+      <a href="#replays">Replays</a>
       <a href="#tour">The app</a>
       <a href="#features">Features</a>
       <a href="#faq">FAQ</a>
@@ -112,6 +113,68 @@
       <li style="--n:10"></li><li style="--n:11"></li><li style="--n:12"></li><li style="--n:13"></li><li style="--n:14"></li>
     </ol>
     <div class="film-scale"><span>30 seconds ago</span><span>Now</span></div>
+  </div>
+</section>
+
+<section class="replays" id="replays" aria-labelledby="replays-title">
+  <div class="wrap">
+    <div class="replays-head">
+      <h2 id="replays-title" class="h2">Replays from any game.</h2>
+      <p class="lead">Kairo records what’s on your screen, so it works with every game you play: shooters, racers, sandboxes. These replays come from free, open-source games.</p>
+    </div>
+    <!-- Each replay is one <li>. To add one: a short MP4 and a poster JPG in media/site/, then copy a
+         block. Only use footage you have the rights to show (see legal.html#credits). -->
+    <ul class="reel">
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the Red Eclipse canyon firefight replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-canyon.jpg" data-src="media/site/replay-canyon.mp4"></video>
+          <span class="replay-len">0:07</span>
+        </button>
+        <p class="replay-title"><b>Red Eclipse</b><span>Canyon firefight</span></p>
+        <p class="replay-credit">Video by Premitre, CC BY 3.0</p>
+      </li>
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the Minetest TNT replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-tnt.jpg" data-src="media/site/replay-tnt.mp4"></video>
+          <span class="replay-len">0:09</span>
+        </button>
+        <p class="replay-title"><b>Minetest</b><span>Lighting the TNT</span></p>
+        <p class="replay-credit">Video by PantheraLeo1359531, CC BY-SA 3.0</p>
+      </li>
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the SuperTuxKart race start replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-grid.jpg" data-src="media/site/replay-grid.mp4"></video>
+          <span class="replay-len">0:07</span>
+        </button>
+        <p class="replay-title"><b>SuperTuxKart</b><span>Off the line</span></p>
+        <p class="replay-credit">Video by kimden, CC BY 3.0</p>
+      </li>
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the VoxeLibre mining replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-mine.jpg" data-src="media/site/replay-mine.mp4"></video>
+          <span class="replay-len">0:06</span>
+        </button>
+        <p class="replay-title"><b>VoxeLibre</b><span>Straight down the mine</span></p>
+        <p class="replay-credit">Video by VoxeLibre, CC BY 3.0</p>
+      </li>
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the SuperTuxKart night race replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-rain.jpg" data-src="media/site/replay-rain.mp4"></video>
+          <span class="replay-len">0:07</span>
+        </button>
+        <p class="replay-title"><b>SuperTuxKart</b><span>Night race in the rain</span></p>
+        <p class="replay-credit">Video by kimden, CC BY 3.0</p>
+      </li>
+      <li class="replay">
+        <button class="replay-media" type="button" aria-label="Play the Red Eclipse flag run replay">
+          <video muted loop playsinline preload="none" poster="media/site/replay-flag.jpg" data-src="media/site/replay-flag.mp4"></video>
+          <span class="replay-len">0:06</span>
+        </button>
+        <p class="replay-title"><b>Red Eclipse</b><span>Running the flag home</span></p>
+        <p class="replay-credit">Video by Premitre, CC BY 3.0</p>
+      </li>
+    </ul>
+    <p class="replays-note">Edited excerpts: cut, cropped and resized. <a href="legal.html#credits">Full credits and licences</a>.</p>
   </div>
 </section>
 
@@ -331,7 +394,7 @@
     </nav>
     <div class="fine">
       <p>© 2026 the Kairo contributors. Kairo is free software under the MIT licence and comes with no warranty.</p>
-      <p>Footage: Red Eclipse gameplay by Premitre and SuperTuxKart gameplay by kimden, both CC BY 3.0, edited. Kairo isn’t affiliated with these games or any company named here. <a href="legal.html#credits">Credits and trademarks</a>.</p>
+      <p>Footage from Red Eclipse (Premitre), SuperTuxKart (kimden), VoxeLibre (VoxeLibre) and Minetest (PantheraLeo1359531) videos under CC BY 3.0 and CC BY-SA 3.0, edited. Kairo isn’t affiliated with these games or any company named here. <a href="legal.html#credits">Credits and trademarks</a>.</p>
     </div>
   </div>
   <p class="giant" aria-hidden="true">Kairo</p>
