@@ -8,6 +8,18 @@ use kairo::args::Source;
 
 use super::Monitor;
 
+/// The desktop's colour scheme (GNOME and others that follow its setting); `None` if unknown.
+pub fn prefers_light() -> Option<bool> {
+    let out = Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(!String::from_utf8_lossy(&out.stdout).contains("dark"))
+}
+
 pub fn init_process() {}
 
 pub fn show_error(message: &str) {

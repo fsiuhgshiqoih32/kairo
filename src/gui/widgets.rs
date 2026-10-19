@@ -4,7 +4,7 @@ use iced::widget::{Button, Space, button, column, container, row, text};
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use super::icons::{Icon, icon};
-use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
 
 /// A button with an icon and a label.
 pub fn icon_button<'a, M: Clone + 'a>(i: Icon, label: &str, color: Color) -> Button<'a, M> {
@@ -65,12 +65,12 @@ pub fn hint_key<'a, M: 'a>(label: &str) -> Element<'a, M> {
         text(label.to_string())
             .size(11)
             .font(SEMIBOLD)
-            .color(TEXT_2),
+            .color(theme::ink_2()),
     )
     .padding(Padding::from([1, 5]))
     .style(|_| container::Style {
         border: iced::Border {
-            color: theme::RAISED,
+            color: theme::raised(),
             width: 1.0,
             radius: 4.0.into(),
         },
@@ -92,7 +92,7 @@ pub fn panel<'a, M: 'a>(title: &str, body: impl Into<Element<'a, M>>) -> Element
 pub fn divider<'a, M: 'a>() -> Element<'a, M> {
     container(Space::new().width(Fill).height(1))
         .style(|_| container::Style {
-            background: Some(theme::BORDER.into()),
+            background: Some(theme::edge().into()),
             ..Default::default()
         })
         .into()
@@ -140,9 +140,15 @@ pub fn dialog<'a, M: Clone + 'a>(
 
 /// Label and a line of explanation, for settings rows.
 pub fn label<'a, M: 'a>(title: &str, note: Option<String>) -> Element<'a, M> {
-    let mut c = column![text(title.to_string()).size(14).font(MEDIUM).color(TEXT)].spacing(3);
+    let mut c = column![
+        text(title.to_string())
+            .size(14)
+            .font(MEDIUM)
+            .color(theme::ink())
+    ]
+    .spacing(3);
     if let Some(n) = note {
-        c = c.push(text(n).size(12).color(MUTED));
+        c = c.push(text(n).size(12).color(theme::muted()));
     }
     c.into()
 }

@@ -226,6 +226,8 @@ pub struct Settings {
     pub share_hotkey: String,
     /// The version whose "What's new" was last shown; empty before Kairo 0.3.0.
     pub seen_version: String,
+    /// "dark", "light", or "system" to follow the computer's setting.
+    pub look: String,
 }
 
 impl Default for Settings {
@@ -266,6 +268,7 @@ impl Default for Settings {
             chat_app: "Discord".into(),
             share_hotkey: String::new(),
             seen_version: String::new(),
+            look: "dark".into(),
             input_overlay: false,
         }
     }

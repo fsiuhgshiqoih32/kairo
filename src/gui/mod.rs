@@ -34,7 +34,7 @@ use crate::share;
 use crate::single_instance::{self, InstanceLock};
 use icons::{Icon, icon};
 pub use library::{ClipItem, ShotItem, load_clips, load_shots};
-use theme::{BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use theme::{BOLD, MEDIUM, SEMIBOLD};
 use widgets::dialog;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +268,7 @@ fn background<T: Send + 'static>(
 impl App {
     pub fn new(settings: Settings) -> (Self, Task<Message>) {
         theme::set_accent(&settings.accent);
+        theme::apply_look(&settings.look);
         let (setup, tasks) = settings::State::new(&settings);
         (
             App {
@@ -1192,6 +1193,10 @@ impl App {
             return self.test_step();
         }
         self.ticks += 1;
+        // Following the computer's light or dark setting: look again now and then.
+        if self.settings.look == "system" && self.ticks.is_multiple_of(8) {
+            theme::apply_look("system");
+        }
         let mut tasks = vec![Task::perform(
             background(|| daemon::read_report().map(Box::new)),
             Message::Report,
@@ -1410,7 +1415,7 @@ impl App {
                         .push((!n.undo.is_empty()).then(|| {
                             button(
                                 row![
-                                    icon(Icon::Undo, 14.0, TEXT),
+                                    icon(Icon::Undo, 14.0, theme::ink()),
                                     text("Undo").size(13).font(SEMIBOLD)
                                 ]
                                 .spacing(6)
@@ -1496,7 +1501,7 @@ impl App {
                         .on_press_maybe((n >= 2).then_some(Message::MakeMontage)),
                     "Joins them into one video, fading between clips",
                 ),
-                widgets::icon_button(Icon::Trash, "Delete", TEXT_2)
+                widgets::icon_button(Icon::Trash, "Delete", theme::ink_2())
                     .style(theme::danger_ghost)
                     .on_press_maybe((n >= 1).then_some(Message::DeleteSelected)),
                 button(text("Done").size(13).font(MEDIUM))
@@ -1513,7 +1518,7 @@ impl App {
                 .padding(Padding::from([10, 14]))
                 .max_width(720)
                 .style(|_| container::Style {
-                    background: Some(theme::SURFACE_HI.into()),
+                    background: Some(theme::surface_hi().into()),
                     border: iced::Border {
                         color: theme::alpha(theme::accent(), 0.45),
                         width: 1.0,
@@ -1549,8 +1554,13 @@ impl App {
             .collect();
         lengths.push(usual);
         let mut items = column![
-            container(text("Save the last").size(12).font(SEMIBOLD).color(MUTED))
-                .padding(Padding::from([6, 12]))
+            container(
+                text("Save the last")
+                    .size(12)
+                    .font(SEMIBOLD)
+                    .color(theme::muted())
+            )
+            .padding(Padding::from([6, 12]))
         ]
         .spacing(2);
         for l in lengths.into_iter().rev() {
@@ -1574,9 +1584,9 @@ impl App {
             .padding(6)
             .width(230)
             .style(|_| container::Style {
-                background: Some(theme::SURFACE.into()),
+                background: Some(theme::surface().into()),
                 border: iced::Border {
-                    color: theme::BORDER,
+                    color: theme::edge(),
                     width: 1.0,
                     radius: 12.0.into(),
                 },
@@ -1610,13 +1620,14 @@ impl App {
                 let mut body = column![
                     text("You're up to date. Here's what this version brings.")
                         .size(14)
-                        .color(TEXT_2)
+                        .color(theme::ink_2())
                 ]
                 .spacing(10);
                 for (title, detail) in crate::updater::points(notes, 6) {
-                    let mut words = column![text(title).size(14).font(SEMIBOLD).color(TEXT)];
+                    let mut words =
+                        column![text(title).size(14).font(SEMIBOLD).color(theme::ink())];
                     if !detail.is_empty() {
-                        words = words.push(text(detail).size(13).color(TEXT_2));
+                        words = words.push(text(detail).size(13).color(theme::ink_2()));
                     }
                     body = body.push(
                         row![
@@ -1692,7 +1703,7 @@ impl App {
                 let mut body = column![
                     text("Copied. Paste it in Discord, a group chat or anywhere: anyone with the link can watch.")
                         .size(14)
-                        .color(TEXT_2),
+                        .color(theme::ink_2()),
                     row![
                         container(text(url.clone()).size(14).font(MEDIUM).wrapping(text::Wrapping::None))
                             .padding(Padding::from([9, 12]))
@@ -1730,9 +1741,9 @@ impl App {
                                 text("On your phone?").font(SEMIBOLD).size(14),
                                 text("Scan this to open the clip there.")
                                     .size(13)
-                                    .color(TEXT_2),
+                                    .color(theme::ink_2()),
                                 Space::new().height(6),
-                                text(lasts).size(12).color(MUTED),
+                                text(lasts).size(12).color(theme::muted()),
                             ]
                             .spacing(4),
                         ]
@@ -1746,7 +1757,7 @@ impl App {
                     row![
                         button(
                             row![
-                                icon(Icon::Globe, 15.0, TEXT_2),
+                                icon(Icon::Globe, 15.0, theme::ink_2()),
                                 text("Open in browser").size(13).font(MEDIUM)
                             ]
                             .spacing(7)
@@ -1777,7 +1788,7 @@ impl App {
                     _ => "They'll be gone from your computer. This can't be undone.".to_string(),
                 })
                 .size(14)
-                .color(TEXT_2),
+                .color(theme::ink_2()),
                 row![
                     button(text("Keep it").size(13).font(MEDIUM))
                         .padding(Padding::from([8, 14]))
@@ -1877,7 +1888,7 @@ impl App {
 
         if !self.games.is_empty() {
             nav = nav.push(Space::new().height(14)).push(
-                container(text("Games").size(12).font(SEMIBOLD).color(MUTED))
+                container(text("Games").size(12).font(SEMIBOLD).color(theme::muted()))
                     .padding(Padding::from([4, 12])),
             );
             for (g, n) in &self.games {
@@ -1890,7 +1901,7 @@ impl App {
         }
         if !self.tags.is_empty() {
             nav = nav.push(Space::new().height(14)).push(
-                container(text("Tags").size(12).font(SEMIBOLD).color(MUTED))
+                container(text("Tags").size(12).font(SEMIBOLD).color(theme::muted()))
                     .padding(Padding::from([4, 12])),
             );
             for (t, n) in &self.tags {
@@ -1912,7 +1923,7 @@ impl App {
                             text(format!("Kairo {} is out", u.version))
                                 .size(13)
                                 .font(SEMIBOLD),
-                            text("Update in Settings").size(11).color(TEXT_2),
+                            text("Update in Settings").size(11).color(theme::ink_2()),
                         ]
                         .spacing(1),
                     ]
@@ -1933,7 +1944,7 @@ impl App {
                         )
                         .into(),
                     ),
-                    text_color: TEXT,
+                    text_color: theme::ink(),
                     border: iced::Border {
                         color: theme::alpha(theme::accent(), 0.4),
                         width: 1.0,
@@ -1975,11 +1986,11 @@ impl App {
         let s = self.report.as_ref().map(|r| &r.status);
         let live = s.is_some_and(|s| s.recording && !s.paused);
         let (dot, label) = match s {
-            None => (MUTED, "Not running"),
+            None => (theme::muted(), "Not running"),
             Some(s) if s.paused => (theme::GOLD, "Paused"),
             Some(s) if s.recording => (theme::GREEN, "Recording"),
             Some(s) if s.error.is_some() => (theme::accent(), "Can't record"),
-            Some(_) => (MUTED, "Starting"),
+            Some(_) => (theme::muted(), "Starting"),
         };
         let detail = match s {
             Some(s) if s.recording => {
@@ -2003,7 +2014,7 @@ impl App {
         let bar = iced::widget::progress_bar(0.0..=1.0, fill)
             .girth(4)
             .style(move |_| iced::widget::progress_bar::Style {
-                background: theme::RAISED.into(),
+                background: theme::raised().into(),
                 bar: if fill >= 1.0 {
                     theme::GREEN
                 } else {
@@ -2019,7 +2030,7 @@ impl App {
             Some(st) => button(icon(
                 if st.paused { Icon::Play } else { Icon::Pause },
                 15.0,
-                TEXT_2,
+                theme::ink_2(),
             ))
             .padding(5)
             .style(theme::ghost)
@@ -2047,16 +2058,16 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            text(detail).size(12).color(MUTED),
+            text(detail).size(12).color(theme::muted()),
         ]
         .spacing(7);
         if let Some(st) = s
             && (st.voice.is_some() || st.voice_error.is_some())
         {
             let (color, line) = match (&st.voice, &st.voice_error) {
-                (Some(p), _) => (TEXT_2, format!("Listening for \"{p}\"")),
+                (Some(p), _) => (theme::ink_2(), format!("Listening for \"{p}\"")),
                 (None, Some(e)) => (theme::accent(), e.clone()),
-                _ => (MUTED, String::new()),
+                _ => (theme::muted(), String::new()),
             };
             c = c.push(
                 row![
@@ -2074,11 +2085,11 @@ impl App {
                     text(format!("Session {}", clock(ses.seconds)))
                         .size(12)
                         .font(SEMIBOLD)
-                        .color(TEXT),
+                        .color(theme::ink()),
                     space::horizontal(),
                     text(human_size((ses.mb * 1024.0 * 1024.0) as u64))
                         .size(11)
-                        .color(MUTED),
+                        .color(theme::muted()),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -2100,9 +2111,9 @@ impl App {
                         n => format!("{n} moments marked"),
                     })
                     .size(12)
-                    .color(TEXT_2),
+                    .color(theme::ink_2()),
                     space::horizontal(),
-                    text(key).size(11).color(MUTED),
+                    text(key).size(11).color(theme::muted()),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -2124,7 +2135,7 @@ impl App {
                     )
                 })
                 .size(12)
-                .color(TEXT_2),
+                .color(theme::ink_2()),
             );
         }
         container(c).padding(12).style(theme::panel).into()
@@ -2193,7 +2204,7 @@ impl App {
             r = r.push(
                 container(
                     row![
-                        icon(Icon::Search, 15.0, MUTED),
+                        icon(Icon::Search, 15.0, theme::muted()),
                         text_input("Search clips", &self.search)
                             .on_input(Message::Search)
                             .padding(0)
@@ -2211,9 +2222,9 @@ impl App {
                 .padding(Padding::from([8, 12]))
                 .width(260)
                 .style(|_| container::Style {
-                    background: Some(theme::SURFACE.into()),
+                    background: Some(theme::surface().into()),
                     border: iced::Border {
-                        color: theme::BORDER,
+                        color: theme::edge(),
                         width: 1.0,
                         radius: 9.0.into(),
                     },
@@ -2249,19 +2260,24 @@ impl App {
             .on_press(Message::ToggleSession)
             .into(),
             None => library::tip(
-                button(container(icon(Icon::Record, 17.0, TEXT)).center(iced::Length::Fixed(20.0)))
-                    .padding(9)
-                    .style(theme::secondary)
-                    .on_press_maybe(live.then_some(Message::ToggleSession)),
+                button(
+                    container(icon(Icon::Record, 17.0, theme::ink()))
+                        .center(iced::Length::Fixed(20.0)),
+                )
+                .padding(9)
+                .style(theme::secondary)
+                .on_press_maybe(live.then_some(Message::ToggleSession)),
                 "Record the whole session (saves and marks become bookmarks)",
             ),
         };
         r = r.push(session_button);
         r = r.push(library::tip(
-            button(container(icon(Icon::Camera, 17.0, TEXT)).center(iced::Length::Fixed(20.0)))
-                .padding(9)
-                .style(theme::secondary)
-                .on_press_maybe(live.then_some(Message::TakeScreenshot)),
+            button(
+                container(icon(Icon::Camera, 17.0, theme::ink())).center(iced::Length::Fixed(20.0)),
+            )
+            .padding(9)
+            .style(theme::secondary)
+            .on_press_maybe(live.then_some(Message::TakeScreenshot)),
             shot_tip,
         ));
         r = r.push(save);
@@ -2282,9 +2298,17 @@ fn nav_item<'a>(
     count: Option<usize>,
     active: bool,
 ) -> iced::widget::Button<'a, Message> {
-    let color = if active { TEXT } else { TEXT_2 };
+    let color = if active { theme::ink() } else { theme::ink_2() };
     let mut r = row![
-        icon(i, 17.0, if active { theme::accent() } else { MUTED }),
+        icon(
+            i,
+            17.0,
+            if active {
+                theme::accent()
+            } else {
+                theme::muted()
+            }
+        ),
         container(
             text(label.to_string())
                 .size(14)
@@ -2298,7 +2322,7 @@ fn nav_item<'a>(
     .spacing(11)
     .align_y(Alignment::Center);
     if let Some(n) = count {
-        r = r.push(text(n.to_string()).size(12).color(MUTED));
+        r = r.push(text(n.to_string()).size(12).color(theme::muted()));
     }
     button(r)
         .padding(Padding::from([8, 12]))

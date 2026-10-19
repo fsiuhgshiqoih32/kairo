@@ -18,7 +18,7 @@ use iced::{
 use kairo::library::{self, Library, Link};
 
 use super::icons::{Icon, icon, icon_filled};
-use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
 use super::widgets::{icon_button, icon_only};
 use super::{App, Filter, Message, Sort, day_label, duration, human_size, seconds_label, when};
 
@@ -280,8 +280,8 @@ impl App {
             })
             .font(MEDIUM)
             .size(14)
-            .color(TEXT_2),
-            text(human_size(total)).size(14).color(MUTED),
+            .color(theme::ink_2()),
+            text(human_size(total)).size(14).color(theme::muted()),
             space::horizontal(),
             pick_list(Sort::ALL, Some(self.sort), Message::Sort)
                 .text_size(13)
@@ -295,14 +295,14 @@ impl App {
                     if self.selecting {
                         theme::accent()
                     } else {
-                        TEXT_2
+                        theme::ink_2()
                     }
                 )
                 .style(theme::secondary)
                 .on_press(Message::Select(!self.selecting)),
                 "Pick clips to join into a montage, or to delete",
             ),
-            icon_button(Icon::Folder, "Folder", TEXT_2)
+            icon_button(Icon::Folder, "Folder", theme::ink_2())
                 .style(theme::secondary)
                 .on_press(Message::OpenFolder),
         ]
@@ -357,7 +357,7 @@ impl App {
             body = body.push(if label.is_empty() {
                 column![g]
             } else {
-                column![text(label).font(SEMIBOLD).size(15).color(TEXT_2), g].spacing(12)
+                column![text(label).font(SEMIBOLD).size(15).color(theme::ink_2()), g].spacing(12)
             });
         }
         page(toolbar.into(), body.into())
@@ -382,7 +382,7 @@ impl App {
                 .content_fit(ContentFit::Cover)
                 .border_radius(10.0)
                 .into(),
-            None => container(icon(Icon::Film, 28.0, MUTED))
+            None => container(icon(Icon::Film, 28.0, theme::muted()))
                 .center(Fill)
                 .style(theme::well)
                 .into(),
@@ -390,9 +390,12 @@ impl App {
         let mut badges = row![].spacing(5);
         let tag = |i: Icon, label: String| {
             container(
-                row![icon(i, 12.0, TEXT), text(label).size(11).font(SEMIBOLD)]
-                    .spacing(5)
-                    .align_y(Alignment::Center),
+                row![
+                    icon(i, 12.0, theme::ink()),
+                    text(label).size(11).font(SEMIBOLD)
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center),
             )
             .padding(Padding::from([3, 7]))
             .style(theme::badge)
@@ -466,7 +469,7 @@ impl App {
                 .style(|_| iced::widget::container::Style {
                     background: Some(theme::accent().into()),
                     border: iced::Border {
-                        color: TEXT,
+                        color: theme::ink(),
                         width: 2.0,
                         radius: 14.0.into(),
                     },
@@ -478,7 +481,7 @@ impl App {
                     .style(|_| iced::widget::container::Style {
                         background: Some(theme::alpha(Color::BLACK, 0.4).into()),
                         border: iced::Border {
-                            color: theme::alpha(TEXT, 0.85),
+                            color: theme::alpha(theme::ink(), 0.85),
                             width: 2.0,
                             radius: 14.0.into(),
                         },
@@ -491,7 +494,7 @@ impl App {
             let star = if c.favorite {
                 icon_filled(Icon::Star, 15.0, theme::GOLD)
             } else {
-                icon(Icon::Star, 15.0, TEXT)
+                icon(Icon::Star, 15.0, theme::ink())
             };
             layers = layers.push(
                 container(tip(
@@ -510,8 +513,8 @@ impl App {
         }
 
         let meta = row![
-            text(when(c.modified, now)).size(12).color(MUTED),
-            text(human_size(c.size)).size(12).color(MUTED)
+            text(when(c.modified, now)).size(12).color(theme::muted()),
+            text(human_size(c.size)).size(12).color(theme::muted())
         ]
         .spacing(10);
         let content = column![
@@ -590,9 +593,9 @@ impl App {
         let shade = container(Space::new().width(Fill).height(Fill)).style(|_| container::Style {
             background: Some(
                 iced::gradient::Linear::new(iced::Degrees(90.0))
-                    .add_stop(0.0, theme::alpha(theme::BG, 0.95))
-                    .add_stop(0.45, theme::alpha(theme::BG, 0.6))
-                    .add_stop(1.0, theme::alpha(theme::BG, 0.0))
+                    .add_stop(0.0, theme::alpha(theme::bg(), 0.95))
+                    .add_stop(0.45, theme::alpha(theme::bg(), 0.6))
+                    .add_stop(1.0, theme::alpha(theme::bg(), 0.0))
                     .into(),
             ),
             border: iced::Border {
@@ -618,11 +621,11 @@ impl App {
         });
         let p = c.path.clone();
         let link = if c.link.is_some() {
-            icon_button(Icon::Link, "Copy the link", TEXT)
+            icon_button(Icon::Link, "Copy the link", theme::ink())
                 .style(theme::secondary)
                 .on_press(Message::ShowLink(p.clone()))
         } else {
-            icon_button(Icon::Share, "Get a share link", TEXT)
+            icon_button(Icon::Share, "Get a share link", theme::ink())
                 .style(theme::secondary)
                 .on_press(Message::Share(p.clone()))
         };
@@ -642,14 +645,14 @@ impl App {
                 human_size(c.size)
             ))
             .size(14)
-            .color(TEXT_2),
+            .color(theme::ink_2()),
             Space::new().height(8),
             row![
                 icon_button(Icon::Play, "Watch", theme::on_accent())
                     .style(theme::primary)
                     .on_press(Message::Open(p.clone())),
                 link,
-                icon_button(Icon::Copy, "Copy file", TEXT)
+                icon_button(Icon::Copy, "Copy file", theme::ink())
                     .style(theme::secondary)
                     .on_press(Message::Copy(p)),
             ]
@@ -691,7 +694,9 @@ impl App {
     fn actions<'a>(&self, path: &Path, has_link: bool, renamable: bool) -> Element<'a, Message> {
         let action = |i: Icon, label: &'static str, m: Message| {
             tip(
-                icon_only(i, TEXT).style(theme::overlay_icon).on_press(m),
+                icon_only(i, theme::ON_IMAGE)
+                    .style(theme::overlay_icon)
+                    .on_press(m),
                 label,
             )
         };
@@ -741,10 +746,10 @@ impl App {
             })
             .font(MEDIUM)
             .size(14)
-            .color(TEXT_2),
-            text(human_size(total)).size(14).color(MUTED),
+            .color(theme::ink_2()),
+            text(human_size(total)).size(14).color(theme::muted()),
             space::horizontal(),
-            icon_button(Icon::Folder, "Folder", TEXT_2)
+            icon_button(Icon::Folder, "Folder", theme::ink_2())
                 .style(theme::secondary)
                 .on_press(Message::OpenShotsFolder),
         ]
@@ -774,7 +779,7 @@ impl App {
                         container(
                             container(
                                 row![
-                                    icon(Icon::Link, 12.0, TEXT),
+                                    icon(Icon::Link, 12.0, theme::ink()),
                                     text("Shared").size(11).font(SEMIBOLD)
                                 ]
                                 .spacing(5),
@@ -808,8 +813,8 @@ impl App {
                             )
                             .clip(true),
                             row![
-                                text(when(s.modified, now)).size(12).color(MUTED),
-                                text(human_size(s.size)).size(12).color(MUTED)
+                                text(when(s.modified, now)).size(12).color(theme::muted()),
+                                text(human_size(s.size)).size(12).color(theme::muted())
                             ]
                             .spacing(10)
                         ]
@@ -853,10 +858,10 @@ impl App {
             })
             .font(MEDIUM)
             .size(14)
-            .color(TEXT_2),
-            text(human_size(total)).size(14).color(MUTED),
+            .color(theme::ink_2()),
+            text(human_size(total)).size(14).color(theme::muted()),
             space::horizontal(),
-            icon_button(Icon::Trash, "Empty", TEXT_2)
+            icon_button(Icon::Trash, "Empty", theme::ink_2())
                 .style(theme::danger_ghost)
                 .on_press_maybe((!self.trash.is_empty()).then(|| {
                     Message::AskPurge(self.trash.iter().map(|t| t.path.clone()).collect())
@@ -870,7 +875,7 @@ impl App {
                 library::TRASH_DAYS
             ))
             .size(13)
-            .color(MUTED)
+            .color(theme::muted())
         ]
         .spacing(10);
         if self.trash.is_empty() {
@@ -897,7 +902,7 @@ impl App {
                 container(icon(
                     if is_clip { Icon::Film } else { Icon::Image },
                     20.0,
-                    MUTED,
+                    theme::muted(),
                 ))
                 .center_x(112)
                 .center_y(63)
@@ -936,13 +941,13 @@ impl App {
                                 human_size(t.size)
                             ))
                             .size(12)
-                            .color(MUTED),
+                            .color(theme::muted()),
                         ]
                         .spacing(4)
                         .width(Fill),
                         button(
                             row![
-                                icon(Icon::Undo, 15.0, TEXT),
+                                icon(Icon::Undo, 15.0, theme::ink()),
                                 text("Put back").size(13).font(MEDIUM)
                             ]
                             .spacing(7)
@@ -952,7 +957,7 @@ impl App {
                         .style(theme::secondary)
                         .on_press(Message::Restore(t.path.clone())),
                         tip(
-                            icon_only(Icon::Trash, TEXT_2)
+                            icon_only(Icon::Trash, theme::ink_2())
                                 .style(theme::danger_ghost)
                                 .on_press(Message::AskPurge(vec![t.path.clone()])),
                             "Delete for good"
@@ -977,7 +982,7 @@ impl App {
                 seconds_label(self.settings.clip_seconds)
             ))
             .size(14)
-            .color(TEXT_2)
+            .color(theme::ink_2())
             .align_x(Horizontal::Center),
         ]
         .spacing(12)
@@ -988,7 +993,7 @@ impl App {
                     icon(Icon::Mic, 15.0, theme::accent()),
                     text(format!("Or just say \"{}\".", self.settings.voice_phrase))
                         .size(14)
-                        .color(TEXT_2),
+                        .color(theme::ink_2()),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -999,9 +1004,9 @@ impl App {
                 container(text(key.clone()).font(BOLD).size(30))
                     .padding(Padding::from([16, 26]))
                     .style(|_| container::Style {
-                        background: Some(theme::SURFACE.into()),
+                        background: Some(theme::surface().into()),
                         border: iced::Border {
-                            color: theme::RAISED,
+                            color: theme::raised(),
                             width: 1.0,
                             radius: 14.0.into()
                         },
@@ -1050,9 +1055,12 @@ pub(super) fn page<'a>(
 
 pub(super) fn nothing<'a>(i: Icon, what: String) -> Element<'a, Message> {
     container(
-        column![icon(i, 26.0, MUTED), text(what).color(TEXT_2)]
-            .spacing(10)
-            .align_x(Alignment::Center),
+        column![
+            icon(i, 26.0, theme::muted()),
+            text(what).color(theme::ink_2())
+        ]
+        .spacing(10)
+        .align_x(Alignment::Center),
     )
     .width(Fill)
     .padding(60)
@@ -1066,7 +1074,7 @@ fn uploading<'a>(label: String, p: f32) -> Element<'a, Message> {
         container(
             column![
                 row![
-                    icon(Icon::Share, 13.0, TEXT),
+                    icon(Icon::Share, 13.0, theme::ink()),
                     text(label).size(12).font(SEMIBOLD)
                 ]
                 .spacing(6)

@@ -24,7 +24,7 @@ use kairo::media::{self, Info, format_time};
 
 use super::icons::{Icon, icon, icon_filled};
 use super::library::{ClipItem, tip};
-use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
 use super::widgets::{divider, hint_key, icon_button, icon_only, panel};
 use super::{background, human_size};
 use crate::export::{self, Job, Kind};
@@ -975,13 +975,13 @@ impl Editor {
         let star = if favorite {
             icon_filled(Icon::Star, 16.0, theme::GOLD)
         } else {
-            icon(Icon::Star, 16.0, TEXT_2)
+            icon(Icon::Star, 16.0, theme::ink_2())
         };
         let head = row![
             tip(
                 button(
                     row![
-                        icon(Icon::Back, 16.0, TEXT_2),
+                        icon(Icon::Back, 16.0, theme::ink_2()),
                         text("Clips").size(14).font(MEDIUM)
                     ]
                     .spacing(7)
@@ -1011,20 +1011,20 @@ impl Editor {
                     "Favourite: never cleaned up"
                 },
             ),
-            icon_button(Icon::Copy, "Copy", TEXT_2)
+            icon_button(Icon::Copy, "Copy", theme::ink_2())
                 .style(theme::ghost)
                 .on_press(Msg::Copy),
-            icon_button(Icon::Folder, "Show", TEXT_2)
+            icon_button(Icon::Folder, "Show", theme::ink_2())
                 .style(theme::ghost)
                 .on_press(Msg::Reveal),
             tip(
-                icon_only(Icon::External, TEXT_2)
+                icon_only(Icon::External, theme::ink_2())
                     .style(theme::ghost)
                     .on_press(Msg::External),
                 "Open in your video player"
             ),
             tip(
-                icon_only(Icon::Trash, TEXT_2)
+                icon_only(Icon::Trash, theme::ink_2())
                     .style(theme::danger_ghost)
                     .on_press(Msg::AskDelete),
                 "Delete"
@@ -1035,7 +1035,7 @@ impl Editor {
 
         let picture: Element<'a, Msg> = match &self.frame {
             Some(p) => p.view(),
-            None => text("Loading...").color(MUTED).into(),
+            None => text("Loading...").color(theme::muted()).into(),
         };
         let mut monitor = stack![container(picture).center(Fill)];
         if let Some(k) = self.keys_now() {
@@ -1099,7 +1099,7 @@ impl Editor {
                 .style(|_| container::Style {
                     background: Some(Color::BLACK.into()),
                     border: iced::Border {
-                        color: theme::BORDER,
+                        color: theme::edge(),
                         width: 1.0,
                         radius: 12.0.into(),
                     },
@@ -1134,21 +1134,21 @@ impl Editor {
             ],
             row![
                 hint_key("Space"),
-                text("play").size(12).color(MUTED),
+                text("play").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key("I"),
                 hint_key("O"),
-                text("start and end").size(12).color(MUTED),
+                text("start and end").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key(","),
                 hint_key("."),
-                text("one frame").size(12).color(MUTED),
+                text("one frame").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key("M"),
-                text("mark").size(12).color(MUTED),
+                text("mark").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key("Shift"),
-                text("+ arrows: 5 s").size(12).color(MUTED),
+                text("+ arrows: 5 s").size(12).color(theme::muted()),
             ]
             .spacing(5)
             .align_y(Alignment::Center),
@@ -1204,11 +1204,11 @@ impl Editor {
             text(format_time(self.player.position))
                 .font(Font::MONOSPACE)
                 .size(17)
-                .color(TEXT),
+                .color(theme::ink()),
             text(format!(" / {}", format_time(self.player.duration())))
                 .font(Font::MONOSPACE)
                 .size(14)
-                .color(MUTED),
+                .color(theme::muted()),
         ]
         .align_y(Alignment::Center);
 
@@ -1220,7 +1220,7 @@ impl Editor {
                     if self.looping {
                         theme::accent()
                     } else {
-                        TEXT_2
+                        theme::ink_2()
                     }
                 ))
                 .padding(8)
@@ -1240,7 +1240,7 @@ impl Editor {
                     Icon::Volume
                 },
                 16.0,
-                TEXT_2
+                theme::ink_2()
             ),
             slider(0.0..=1.5, self.player.volume, Msg::Volume)
                 .step(0.01_f32)
@@ -1281,7 +1281,7 @@ impl Editor {
     fn trim_panel(&self) -> Element<'_, Msg> {
         let readout = |label: &'static str, value: String, color: Color, on: Option<Msg>| {
             let body = column![
-                text(label).size(11).color(MUTED),
+                text(label).size(11).color(theme::muted()),
                 text(value).font(Font::MONOSPACE).size(14).color(color)
             ]
             .spacing(2);
@@ -1292,13 +1292,13 @@ impl Editor {
                     let mut st = theme::segment(false)(t, s);
                     st.background = Some(
                         match s {
-                            button::Status::Hovered => theme::SURFACE_HI,
+                            button::Status::Hovered => theme::surface_hi(),
                             _ => color_well(),
                         }
                         .into(),
                     );
                     st.border = iced::Border {
-                        color: theme::BORDER,
+                        color: theme::edge(),
                         width: 1.0,
                         radius: 8.0.into(),
                     };
@@ -1321,7 +1321,7 @@ impl Editor {
                     theme::GOLD,
                     Some(Msg::Seek(self.trim.1))
                 ),
-                readout("Keeps", format!("{len:.1} s"), TEXT, None),
+                readout("Keeps", format!("{len:.1} s"), theme::ink(), None),
             ]
             .spacing(6),
             row![
@@ -1371,7 +1371,9 @@ impl Editor {
                         .size(13)
                         .font(MEDIUM),
                         space::horizontal(),
-                        text(format!("{:.0}%", p * 100.0)).size(13).color(TEXT_2)
+                        text(format!("{:.0}%", p * 100.0))
+                            .size(13)
+                            .color(theme::ink_2())
                     ],
                     progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
                     button(text("Cancel").size(12).font(MEDIUM))
@@ -1399,7 +1401,7 @@ impl Editor {
             let mut c = column![
                 text("Subtitles of what's said, made on this computer (English).")
                     .size(12)
-                    .color(TEXT_2),
+                    .color(theme::ink_2()),
                 make("Make captions"),
             ]
             .spacing(8);
@@ -1407,7 +1409,7 @@ impl Editor {
                 c = c.push(
                     text("The first time, it downloads the speech files (about 55 MB).")
                         .size(11)
-                        .color(MUTED),
+                        .color(theme::muted()),
                 );
             }
             return panel("Captions", c);
@@ -1420,7 +1422,7 @@ impl Editor {
                         text(format_time(cap.start))
                             .font(Font::MONOSPACE)
                             .size(11)
-                            .color(MUTED)
+                            .color(theme::muted())
                     )
                     .padding(Padding::from([4, 4]))
                     .style(theme::ghost)
@@ -1430,7 +1432,7 @@ impl Editor {
                         .size(12)
                         .padding(Padding::from([5, 7]))
                         .style(theme::input),
-                    button(icon(Icon::Close, 12.0, TEXT_2))
+                    button(icon(Icon::Close, 12.0, theme::ink_2()))
                         .padding(5)
                         .style(theme::ghost)
                         .on_press(Msg::DeleteCaption(i)),
@@ -1444,7 +1446,10 @@ impl Editor {
             column![
                 list,
                 row![
-                    text("Burn into copies").size(12).color(TEXT_2).width(Fill),
+                    text("Burn into copies")
+                        .size(12)
+                        .color(theme::ink_2())
+                        .width(Fill),
                     toggler(self.burn_captions)
                         .on_toggle(Msg::BurnCaptions)
                         .size(18)
@@ -1467,7 +1472,7 @@ impl Editor {
     /// Speed, look, fades, music and the mix: applied to every copy made below.
     fn style_panel(&self) -> Element<'_, Msg> {
         let eff = &self.effects;
-        let small = |t: &'static str| text(t).size(12).color(TEXT_2);
+        let small = |t: &'static str| text(t).size(12).color(theme::ink_2());
         let speeds = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0];
         let speed_row = speeds.iter().fold(row![].spacing(4), |r, v| {
             let on = (eff.speed - v).abs() < 1e-6;
@@ -1500,7 +1505,7 @@ impl Editor {
                     )
                     .width(Fill)
                     .clip(true),
-                    button(icon(Icon::Close, 13.0, TEXT_2))
+                    button(icon(Icon::Close, 13.0, theme::ink_2()))
                         .padding(5)
                         .style(theme::ghost)
                         .on_press(Msg::ClearMusic),
@@ -1515,7 +1520,7 @@ impl Editor {
             .into(),
             None => button(
                 row![
-                    icon(Icon::Music, 14.0, TEXT_2),
+                    icon(Icon::Music, 14.0, theme::ink_2()),
                     text("Add music").size(12).font(MEDIUM)
                 ]
                 .spacing(6)
@@ -1528,7 +1533,7 @@ impl Editor {
         };
         let toggle = |on: bool, label: &'static str, m: fn(bool) -> Msg| {
             row![
-                text(label).size(12).color(TEXT_2).width(Fill),
+                text(label).size(12).color(theme::ink_2()).width(Fill),
                 toggler(on).on_toggle(m).size(18).style(theme::toggle)
             ]
             .align_y(Alignment::Center)
@@ -1583,7 +1588,7 @@ impl Editor {
                 row![
                     text("Show keys and clicks")
                         .size(12)
-                        .color(TEXT_2)
+                        .color(theme::ink_2())
                         .width(Fill),
                     toggler(self.show_keys)
                         .on_toggle(Msg::ShowKeys)
@@ -1601,7 +1606,7 @@ impl Editor {
                     "Every copy below gets this style."
                 })
                 .size(11)
-                .color(MUTED)
+                .color(theme::muted())
                 .width(Fill),
                 button(text("Reset").size(12).font(MEDIUM))
                     .padding(Padding::from([5, 8]))
@@ -1631,7 +1636,7 @@ impl Editor {
                         "Mark the moments worth finding again.{while_playing}"
                     ))
                     .size(12)
-                    .color(MUTED),
+                    .color(theme::muted()),
                     mark_button(),
                 ]
                 .spacing(10),
@@ -1690,7 +1695,7 @@ impl Editor {
                     icon(
                         if add { Icon::Tag } else { Icon::Close },
                         12.0,
-                        if add { MUTED } else { TEXT_2 }
+                        if add { theme::muted() } else { theme::ink_2() }
                     ),
                     text(t.to_string()).size(12).font(MEDIUM),
                 ]
@@ -1740,7 +1745,9 @@ impl Editor {
                 row![
                     text("Sending to the channel").size(13).font(MEDIUM),
                     space::horizontal(),
-                    text(format!("{:.0}%", p * 100.0)).size(12).color(MUTED)
+                    text(format!("{:.0}%", p * 100.0))
+                        .size(12)
+                        .color(theme::muted())
                 ],
                 progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
                 button(text("Cancel").size(12).font(MEDIUM))
@@ -1754,7 +1761,7 @@ impl Editor {
         if self.send_after_export && self.job.is_some() {
             return text("Making the copy for the channel...")
                 .size(13)
-                .color(TEXT_2)
+                .color(theme::ink_2())
                 .into();
         }
         let span = if self.trimmed() {
@@ -1771,7 +1778,7 @@ impl Editor {
         column![
             button(
                 row![
-                    icon(Icon::Send, 16.0, TEXT),
+                    icon(Icon::Send, 16.0, theme::ink()),
                     text("Send to Discord channel").font(SEMIBOLD).size(14)
                 ]
                 .spacing(8)
@@ -1794,7 +1801,7 @@ impl Editor {
                 Err(e) => e.clone(),
             })
             .size(12)
-            .color(MUTED),
+            .color(theme::muted()),
         ]
         .spacing(8)
         .into()
@@ -1817,7 +1824,7 @@ impl Editor {
                         "Sending"
                     })
                     .size(12)
-                    .color(MUTED)
+                    .color(theme::muted())
                 ],
                 progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
                 button(text("Cancel").size(12).font(MEDIUM))
@@ -1830,7 +1837,7 @@ impl Editor {
         } else if preparing {
             text("Making the trimmed part to share...")
                 .size(13)
-                .color(TEXT_2)
+                .color(theme::ink_2())
                 .into()
         } else if let Some(link) = share.link {
             let url = link.url.clone();
@@ -1858,13 +1865,13 @@ impl Editor {
                     .style(theme::primary)
                     .on_press(Msg::CopyLink(url.clone())),
                     tip(
-                        icon_only(Icon::Qr, TEXT_2)
+                        icon_only(Icon::Qr, theme::ink_2())
                             .style(theme::secondary)
                             .on_press(Msg::ShowQr),
                         "QR code"
                     ),
                     tip(
-                        icon_only(Icon::Globe, TEXT_2)
+                        icon_only(Icon::Globe, theme::ink_2())
                             .style(theme::secondary)
                             .on_press(Msg::OpenLink(url)),
                         "Open in browser"
@@ -1879,7 +1886,7 @@ impl Editor {
                     ),
                 })
                 .size(12)
-                .color(MUTED),
+                .color(theme::muted()),
             ]
             .spacing(10)
             .into()
@@ -1913,7 +1920,7 @@ impl Editor {
                     }
                 ))
                 .size(12)
-                .color(MUTED),
+                .color(theme::muted()),
             ]
             .spacing(8)
             .into()
@@ -1934,7 +1941,9 @@ impl Editor {
                 row![
                     text(stage).size(13).font(MEDIUM),
                     space::horizontal(),
-                    text(format!("{:.0}%", p * 100.0)).size(13).color(TEXT_2)
+                    text(format!("{:.0}%", p * 100.0))
+                        .size(13)
+                        .color(theme::ink_2())
                 ],
                 progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
                 button(text("Cancel").size(12).font(MEDIUM))
@@ -1978,11 +1987,11 @@ impl Editor {
                 ))
                 .style(theme::discord)
                 .on_press_maybe(fits.is_ok().then_some(Msg::Export(ExportKind::Share))),
-                text(share_hint).size(12).color(MUTED),
+                text(share_hint).size(12).color(theme::muted()),
                 Space::new().height(4),
                 wide(button(
                     row![
-                        icon(Icon::Scissors, 16.0, TEXT),
+                        icon(Icon::Scissors, 16.0, theme::ink()),
                         text(if !self.styled() {
                             "Save trimmed copy"
                         } else {
@@ -2006,9 +2015,12 @@ impl Editor {
                     "Drag the handles under the video to choose the part to keep."
                 })
                 .size(12)
-                .color(MUTED),
+                .color(theme::muted()),
                 Space::new().height(4),
-                text("More formats").size(12).font(SEMIBOLD).color(TEXT_2),
+                text("More formats")
+                    .size(12)
+                    .font(SEMIBOLD)
+                    .color(theme::ink_2()),
                 row![
                     format_button(
                         Icon::Image,
@@ -2069,12 +2081,12 @@ impl Editor {
                                 })
                                 .size(13)
                                 .font(SEMIBOLD),
-                                text(name).size(11).color(TEXT_2),
+                                text(name).size(11).color(theme::ink_2()),
                             ]
                             .spacing(2)
                             .width(Fill),
                             tip(
-                                icon_only(Icon::Share, TEXT_2)
+                                icon_only(Icon::Share, theme::ink_2())
                                     .style(theme::ghost)
                                     .on_press(Msg::ShareExport),
                                 "Get a share link"
@@ -2119,8 +2131,8 @@ impl Editor {
         };
         let line = |k: &'static str, v: String| {
             row![
-                text(k).size(12).color(MUTED).width(64),
-                text(v).size(12).color(TEXT_2)
+                text(k).size(12).color(theme::muted()).width(64),
+                text(v).size(12).color(theme::ink_2())
             ]
             .spacing(8)
         };
@@ -2144,8 +2156,13 @@ impl Editor {
     }
 }
 
+/// The recessed fields of the editor's panels (trim times and the like).
 fn color_well() -> Color {
-    iced::color!(0x0f1013)
+    if theme::is_light() {
+        theme::surface_hi()
+    } else {
+        iced::color!(0x0f1013)
+    }
 }
 
 fn stem(p: &Path) -> String {
@@ -2222,9 +2239,12 @@ fn human_hours(secs: u64) -> String {
 fn format_button<'a>(i: Icon, label: &'a str, explain: &'a str, m: Msg) -> Element<'a, Msg> {
     tip(
         button(
-            row![icon(i, 14.0, TEXT_2), text(label).size(12).font(SEMIBOLD)]
-                .spacing(5)
-                .align_y(Alignment::Center),
+            row![
+                icon(i, 14.0, theme::ink_2()),
+                text(label).size(12).font(SEMIBOLD)
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
         )
         .padding(Padding::from([6, 8]))
         .style(theme::secondary)
@@ -2502,7 +2522,7 @@ impl canvas::Program<Msg> for Timeline {
             f.fill_text(canvas::Text {
                 content: label,
                 position: Point::new(x + w / 2.0, track.y + 13.0),
-                color: TEXT,
+                color: theme::ink(),
                 size: 11.0.into(),
                 font: Font::MONOSPACE,
                 align_x: iced::widget::text::Alignment::Center,

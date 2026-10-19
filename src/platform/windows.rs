@@ -18,6 +18,33 @@ use kairo::args::Source;
 
 use super::Monitor;
 
+/// Windows' "Choose your app mode": `Some(true)` for light, `None` if it can't be read.
+pub fn prefers_light() -> Option<bool> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the strings are NUL-terminated and `value` holds the 4 bytes asked for.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    (r == 0).then_some(value != 0)
+}
+
 pub fn init_process() {
     unsafe {
         // Physical pixels everywhere, so monitor sizes match what capture delivers.

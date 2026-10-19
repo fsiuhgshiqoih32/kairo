@@ -36,6 +36,20 @@ unsafe extern "C" {
     fn CGDisplayModeRelease(mode: *mut std::ffi::c_void);
 }
 
+/// Light unless the system appearance is Dark; `None` if it can't be read.
+pub fn prefers_light() -> Option<bool> {
+    let out = Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .ok()?;
+    // The key only exists in Dark mode.
+    Some(
+        !String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .eq_ignore_ascii_case("dark"),
+    )
+}
+
 pub fn init_process() {}
 
 pub fn show_error(message: &str) {

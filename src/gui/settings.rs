@@ -17,7 +17,7 @@ use kairo::config::{
 };
 
 use super::icons::{Icon, icon};
-use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
 use super::widgets::{divider, icon_button, keycap, label, segmented};
 use super::{background, human_size, seconds_label};
 use crate::daemon::{self, Report, Request};
@@ -115,6 +115,7 @@ pub enum Msg {
     Quality(Quality),
     Storage(Storage),
     Accent(&'static str),
+    Look(&'static str),
     Encoder(Choice),
     Encoders(Vec<Encoder>),
     DesktopAudio(bool),
@@ -538,6 +539,11 @@ impl State {
                 theme::set_accent(name);
                 return changed;
             }
+            Msg::Look(look) => {
+                s.look = look.into();
+                theme::apply_look(look);
+                return changed;
+            }
             Msg::Storage(v) => {
                 s.replay_storage = v;
                 return changed;
@@ -703,15 +709,15 @@ impl State {
             col = col.push(
                 row![
                     self.key_capture(Target::Quick(i), &q.hotkey, error),
-                    text("saves").size(13).color(MUTED),
+                    text("saves").size(13).color(theme::muted()),
                     text_input("15", self.quick_texts.get(i).map_or("", String::as_str))
                         .on_input(move |t| Msg::QuickText(i, t))
                         .width(60)
                         .padding(Padding::from([7, 9]))
                         .size(13)
                         .style(theme::input),
-                    text("s").size(13).color(MUTED),
-                    button(icon(Icon::Close, 14.0, TEXT_2))
+                    text("s").size(13).color(theme::muted()),
+                    button(icon(Icon::Close, 14.0, theme::ink_2()))
                         .padding(7)
                         .style(theme::ghost)
                         .on_press(Msg::RemoveQuickSave(i)),
@@ -747,7 +753,7 @@ impl State {
                     .color(theme::accent())
             ]
         } else if spec.is_empty() {
-            row![text("Off").font(SEMIBOLD).size(14).color(MUTED)]
+            row![text("Off").font(SEMIBOLD).size(14).color(theme::muted())]
         } else {
             spec.split('+')
                 .fold(row![].spacing(4), |r, k| r.push(keycap(k)))
@@ -773,11 +779,11 @@ impl State {
         };
         let mut col = column![key_button].spacing(6).align_x(Alignment::End);
         if let Some(n) = note {
-            col = col.push(
-                text(n)
-                    .size(12)
-                    .color(if capturing { MUTED } else { theme::accent() }),
-            );
+            col = col.push(text(n).size(12).color(if capturing {
+                theme::muted()
+            } else {
+                theme::accent()
+            }));
         }
         col.into()
     }
@@ -795,7 +801,7 @@ impl State {
                 points = points.push(
                     row![
                         icon(Icon::Check, 14.0, theme::accent()),
-                        text(p).size(13).color(TEXT)
+                        text(p).size(13).color(theme::ink())
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
@@ -807,7 +813,7 @@ impl State {
                     u.version
                 ))
                 .size(13)
-                .color(TEXT_2)
+                .color(theme::ink_2())
                 .into()
             } else {
                 row![
@@ -824,7 +830,7 @@ impl State {
                     .on_press(Msg::Install),
                     button(
                         row![
-                            icon(Icon::External, 14.0, TEXT_2),
+                            icon(Icon::External, 14.0, theme::ink_2()),
                             text("Release notes").size(13).font(MEDIUM)
                         ]
                         .spacing(7)
@@ -848,7 +854,7 @@ impl State {
                             updater::current_version()
                         ))
                         .size(13)
-                        .color(TEXT_2),
+                        .color(theme::ink_2()),
                         points,
                         actions,
                     ]
@@ -1007,14 +1013,14 @@ impl State {
                             Msg::ClipSeconds
                         ),
                         row![
-                            text("Or exactly").size(13).color(MUTED),
+                            text("Or exactly").size(13).color(theme::muted()),
                             text_input("30", &self.clip_text)
                                 .on_input(Msg::ClipText)
                                 .width(64)
                                 .padding(Padding::from([7, 9]))
                                 .size(13)
                                 .style(theme::input),
-                            text("seconds").size(13).color(MUTED),
+                            text("seconds").size(13).color(theme::muted()),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
@@ -1039,7 +1045,7 @@ impl State {
                         human_size(total)
                     ))
                     .size(12)
-                    .color(TEXT_2),
+                    .color(theme::ink_2()),
                     iced::widget::progress_bar(0.0..=1.0, done as f32 / total as f32)
                         .girth(5)
                         .length(220)
@@ -1059,7 +1065,7 @@ impl State {
                 Some((theme::GREEN, format!("Listening for \"{phrase}\" now.")))
             }
             (None, None) if s.voice_clip => {
-                Some((MUTED, "Starts listening when Kairo runs.".into()))
+                Some((theme::muted(), "Starts listening when Kairo runs.".into()))
             }
             _ => None,
         };
@@ -1135,7 +1141,7 @@ impl State {
             .spacing(8)
             .align_y(Alignment::Center);
         if self.encoders.is_none() {
-            encoder_row = encoder_row.push(text("checking...").size(12).color(MUTED));
+            encoder_row = encoder_row.push(text("checking...").size(12).color(theme::muted()));
         }
         let (quality_note, storage_note) = self.memory_estimate(s);
         sections = sections.push(section(
@@ -1298,7 +1304,7 @@ impl State {
 
         // Saving.
         let mut folder = row![
-            icon_button(Icon::Folder, "Change", TEXT_2)
+            icon_button(Icon::Folder, "Change", theme::ink_2())
                 .style(theme::secondary)
                 .on_press(Msg::PickFolder)
         ]
@@ -1316,7 +1322,7 @@ impl State {
         let mut cleanup = row![].spacing(8).align_y(Alignment::Center);
         if cleanup_on {
             cleanup = cleanup
-                .push(text("Keep under").size(13).color(TEXT_2))
+                .push(text("Keep under").size(13).color(theme::ink_2()))
                 .push(
                     text_input("50", &self.gb_text)
                         .on_input(Msg::GbText)
@@ -1325,7 +1331,7 @@ impl State {
                         .size(13)
                         .style(theme::input),
                 )
-                .push(text("GB").size(13).color(MUTED));
+                .push(text("GB").size(13).color(theme::muted()));
         }
         cleanup = cleanup.push(switch(cleanup_on, Msg::Cleanup));
         sections = sections.push(section(
@@ -1403,7 +1409,7 @@ impl State {
                     } else {
                         "Check now"
                     },
-                    TEXT_2,
+                    theme::ink_2(),
                 )
                 .style(theme::secondary)
                 .on_press_maybe((!self.update.checking).then_some(Msg::CheckNow)),
@@ -1479,9 +1485,9 @@ impl State {
                                 background: Some(c.into()),
                                 border: iced::Border {
                                     color: if selected {
-                                        TEXT
+                                        theme::ink()
                                     } else if matches!(st, button::Status::Hovered) {
-                                        theme::alpha(TEXT, 0.45)
+                                        theme::alpha(theme::ink(), 0.45)
                                     } else {
                                         iced::Color::TRANSPARENT
                                     },
@@ -1502,6 +1508,23 @@ impl State {
             "Kairo",
             vec![
                 setting(
+                    "Look",
+                    Some("Dark, light, or the same as your computer.".into()),
+                    segmented(
+                        vec![
+                            ("dark", "Dark".to_string()),
+                            ("light", "Light".to_string()),
+                            ("system", "Match system".to_string()),
+                        ],
+                        match s.look.as_str() {
+                            "light" => "light",
+                            "system" => "system",
+                            _ => "dark",
+                        },
+                        Msg::Look,
+                    ),
+                ),
+                setting(
                     "Accent colour",
                     Some("Buttons, highlights and the glow around clips.".into()),
                     swatches,
@@ -1512,7 +1535,10 @@ impl State {
                     if self.launcher.is_some() {
                         switch(self.autostart, Msg::Autostart)
                     } else {
-                        text("Not available here").size(12).color(MUTED).into()
+                        text("Not available here")
+                            .size(12)
+                            .color(theme::muted())
+                            .into()
                     },
                 ),
                 setting("Updates", Some(update_note), updates),
@@ -1525,10 +1551,10 @@ impl State {
                     "Troubleshooting",
                     None,
                     row![
-                        icon_button(Icon::Log, "Open the log", TEXT_2)
+                        icon_button(Icon::Log, "Open the log", theme::ink_2())
                             .style(theme::ghost)
                             .on_press(Msg::OpenLog),
-                        icon_button(Icon::Power, "Quit Kairo", TEXT_2)
+                        icon_button(Icon::Power, "Quit Kairo", theme::ink_2())
                             .style(theme::danger_ghost)
                             .on_press(Msg::Quit),
                     ]
@@ -1665,7 +1691,10 @@ fn section<'a>(title: &str, rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
         }
     }
     column![
-        text(title.to_string()).font(BOLD).size(16).color(TEXT),
+        text(title.to_string())
+            .font(BOLD)
+            .size(16)
+            .color(theme::ink()),
         container(body).width(Fill).style(theme::panel),
     ]
     .spacing(10)

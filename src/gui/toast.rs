@@ -15,7 +15,7 @@ use iced::{
 };
 
 use super::icons::{Icon, icon, icon_filled};
-use super::theme::{self, BOLD, MEDIUM, MUTED, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM};
 use crate::{platform, share};
 
 const W: f32 = 380.0;
@@ -71,6 +71,7 @@ pub fn run(msg: Message) -> Result<(), String> {
     }
     if let Ok(s) = kairo::config::load(&kairo::config::default_path()) {
         theme::set_accent(&s.accent);
+        theme::apply_look(&s.look);
     }
     let mut settings = window::Settings {
         size: Size::new(W, H),
@@ -272,7 +273,7 @@ impl Toast {
     }
 
     pub(super) fn view(&self) -> Element<'_, Msg> {
-        let close = button(icon(Icon::Close, 14.0, MUTED))
+        let close = button(icon(Icon::Close, 14.0, theme::muted()))
             .padding(4)
             .style(theme::ghost)
             .on_press(Msg::Close);
@@ -319,7 +320,7 @@ impl Toast {
                             None => "A new version is out.".to_string(),
                         })
                         .size(12)
-                        .color(TEXT_2),
+                        .color(theme::ink_2()),
                         Space::new().height(Fill),
                         row![
                             small("Update now", Msg::UpdateNow, true),
@@ -342,7 +343,7 @@ impl Toast {
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
-                text(e.clone()).size(12).color(TEXT_2),
+                text(e.clone()).size(12).color(theme::ink_2()),
             ]
             .spacing(6)
             .into(),
@@ -371,7 +372,7 @@ impl Toast {
                         .height(Fill)
                         .border_radius(8.0)
                         .into(),
-                    None => container(icon(Icon::Film, 22.0, MUTED))
+                    None => container(icon(Icon::Film, 22.0, theme::muted()))
                         .center(Fill)
                         .style(theme::well)
                         .into(),
@@ -396,7 +397,7 @@ impl Toast {
                 .interaction(iced::mouse::Interaction::Pointer);
                 let bottom: Element<'_, Msg> = if let Some(up) = &self.upload {
                     column![
-                        text(up.label()).size(12).color(TEXT_2),
+                        text(up.label()).size(12).color(theme::ink_2()),
                         progress_bar(0.0..=1.0, up.progress())
                             .girth(5)
                             .style(theme::progress),
@@ -407,7 +408,15 @@ impl Toast {
                     let small = |i: Icon, label: &'static str, m: Msg, primary: bool| {
                         button(
                             row![
-                                icon(i, 13.0, if primary { Color::WHITE } else { TEXT_2 }),
+                                icon(
+                                    i,
+                                    13.0,
+                                    if primary {
+                                        Color::WHITE
+                                    } else {
+                                        theme::ink_2()
+                                    }
+                                ),
                                 text(label).size(12).font(MEDIUM)
                             ]
                             .spacing(5)
@@ -444,13 +453,15 @@ impl Toast {
                         container(
                             text(name)
                                 .size(12)
-                                .color(TEXT)
+                                .color(theme::ink())
                                 .wrapping(text::Wrapping::None)
                         )
                         .clip(true),
-                        text(line)
-                            .size(11)
-                            .color(if ok { MUTED } else { theme::accent() }),
+                        text(line).size(11).color(if ok {
+                            theme::muted()
+                        } else {
+                            theme::accent()
+                        }),
                         Space::new().height(Fill),
                         bottom,
                     ]

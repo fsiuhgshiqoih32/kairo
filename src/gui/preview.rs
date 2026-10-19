@@ -206,6 +206,22 @@ fn preview() {
     let first = app.clips[0].path.clone();
     app.hero = super::library::hero_picture(&first, 6.0).map(|h| (first, h));
     shoot(app.view(), "iced-library", size);
+    // The light look.
+    theme::set_light(true);
+    shoot(app.view(), "iced-light-library", size);
+    app.filter = Filter::Stats;
+    shoot(app.view(), "iced-light-stats", size);
+    app.filter = Filter::All;
+    app.page = Page::Settings;
+    shoot(app.view(), "iced-light-settings", size);
+    app.page = Page::Library;
+    let t = toast::Toast::new(toast::Message::Saved {
+        clip: app.clips[0].path.clone(),
+        seconds: 30.3,
+        share: false,
+    });
+    shoot(t.view(), "iced-light-toast", (380.0, 112.0));
+    theme::set_light(false);
     app.save_menu = true;
     shoot(app.view(), "iced-save-menu", size);
     app.save_menu = false;
@@ -316,6 +332,9 @@ fn preview() {
     ed.settle((2.5, 9.0), 5.5);
     ed.show_marks(vec![3.4, 7.1, 11.0]);
     shoot(app.view(), "iced-editor", size);
+    theme::set_light(true);
+    shoot(app.view(), "iced-light-editor", size);
+    theme::set_light(false);
     app.settings.discord_channel = "Kairo".into();
     shoot(app.view(), "iced-editor-channel", (1280.0, 1400.0));
     app.page = Page::Settings;

@@ -10,7 +10,7 @@ use iced::{Alignment, Element, Fill, FillPortion, Padding};
 
 use super::icons::{Icon, icon};
 use super::library::{ClipItem, ClipKind, nothing, page};
-use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
+use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
 use super::{App, Message, human_size};
 
 /// How many days the chart shows, today included.
@@ -100,8 +100,8 @@ pub fn play_time(seconds: f64) -> String {
 fn tile<'a>(value: String, label: &'a str) -> Element<'a, Message> {
     container(
         column![
-            text(value).font(BOLD).size(28).color(TEXT),
-            text(label).size(13).color(MUTED),
+            text(value).font(BOLD).size(28).color(theme::ink()),
+            text(label).size(13).color(theme::muted()),
         ]
         .spacing(2),
     )
@@ -133,7 +133,7 @@ fn portions(n: usize, max: usize) -> (u16, u16) {
 }
 
 fn heading<'a>(s: &'a str) -> Element<'a, Message> {
-    text(s).font(SEMIBOLD).size(15).color(TEXT).into()
+    text(s).font(SEMIBOLD).size(15).color(theme::ink()).into()
 }
 
 impl App {
@@ -144,7 +144,7 @@ impl App {
             text("What you've kept so far")
                 .font(MEDIUM)
                 .size(14)
-                .color(TEXT_2)
+                .color(theme::ink_2())
         ]
         .align_y(Alignment::Center);
         if st.clips == 0 {
@@ -186,7 +186,7 @@ impl App {
                     })
                     .font(BOLD)
                     .size(18),
-                    text(streak_text).size(13).color(TEXT_2),
+                    text(streak_text).size(13).color(theme::ink_2()),
                 ]
                 .spacing(2)
                 .width(Fill),
@@ -196,13 +196,13 @@ impl App {
                         None => String::new(),
                     })
                     .size(13)
-                    .color(TEXT_2),
+                    .color(theme::ink_2()),
                     text(format!(
                         "{} favourites · {} shared · {} moments marked",
                         st.favorites, st.shared, st.marks
                     ))
                     .size(13)
-                    .color(MUTED),
+                    .color(theme::muted()),
                 ]
                 .spacing(2)
                 .align_x(Alignment::End),
@@ -235,7 +235,7 @@ impl App {
                             play_time(*secs)
                         ))
                         .size(12)
-                        .color(MUTED)
+                        .color(theme::muted())
                     )
                     .width(130)
                     .align_x(Alignment::End),
@@ -260,7 +260,7 @@ impl App {
             let column = column![
                 text(if *n > 0 { n.to_string() } else { String::new() })
                     .size(11)
-                    .color(TEXT_2),
+                    .color(theme::ink_2()),
                 if *n == 0 {
                     container(Space::new().width(Fill).height(h))
                         .style(theme::well)
@@ -268,7 +268,9 @@ impl App {
                 } else {
                     bar(h)
                 },
-                text(day.format("%-d").to_string()).size(11).color(MUTED),
+                text(day.format("%-d").to_string())
+                    .size(11)
+                    .color(theme::muted()),
             ]
             .spacing(4)
             .align_x(Alignment::Center)
