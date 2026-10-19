@@ -209,6 +209,9 @@ struct Open {
     children: Vec<std::process::Child>,
     #[cfg(target_os = "macos")]
     system_audio: Option<crate::platform::macos_audio::SystemAudio>,
+    /// Desktop audio split from a voice-chat app's (Windows 11).
+    #[cfg(windows)]
+    split: Option<crate::platform::windows_app_audio::Split>,
     output_id: Option<String>,
     input_id: Option<String>,
 }
@@ -231,7 +234,24 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let mut mic_name = None;
     *shared.desktop.lock().unwrap() = None;
     *shared.mic.lock().unwrap() = None;
-    if settings.desktop_audio {
+    *shared.chat.lock().unwrap() = None;
+    #[allow(unused_mut)]
+    let mut split = false;
+    #[cfg(windows)]
+    if settings.desktop_audio && settings.chat_track {
+        match crate::platform::windows_app_audio::start(shared.clone(), settings.chat_app.clone()) {
+            Ok(s) => {
+                desktop_name = Some(format!("Everything but {}", settings.chat_app));
+                open_now.split = Some(s);
+                split = true;
+            }
+            Err(e) => errors.push(format!(
+                "{} on its own track needs Windows 11 ({e})",
+                settings.chat_app
+            )),
+        }
+    }
+    if settings.desktop_audio && !split {
         #[cfg(windows)]
         match host.default_output_device() {
             Some(d) => {
@@ -296,6 +316,7 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let mut st = shared.status.lock().unwrap();
     st.desktop_audio = desktop_name;
     st.microphone = mic_name;
+    st.chat = None;
     st.audio_error = (!errors.is_empty()).then(|| errors.join("; "));
     open_now
 }
@@ -338,6 +359,16 @@ pub fn run(shared: Arc<Shared>) {
                 warning!("audio stream error: {e}; reopening");
                 std::thread::sleep(Duration::from_millis(500));
                 break;
+            }
+            #[cfg(windows)]
+            if let Some(s) = &open_now.split {
+                let app = &settings.chat_app;
+                let line = if *s.app_running.lock().unwrap() {
+                    format!("{app} is on its own track")
+                } else {
+                    format!("Waiting for {app}")
+                };
+                shared.status.lock().unwrap().chat = Some(line);
             }
             if !paused && last_check.elapsed() > Duration::from_secs(2) {
                 last_check = Instant::now();

@@ -83,6 +83,8 @@ pub enum Msg {
     MarkerOff,
     SessionOff,
     SessionAuto(bool),
+    ChatTrack(bool),
+    ChatApp(String),
     Voice(bool),
     VoiceInstalled(Result<(), String>),
     Phrase(String),
@@ -293,6 +295,14 @@ impl State {
             }
             Msg::SessionAuto(on) => {
                 s.session_auto = on;
+                return changed;
+            }
+            Msg::ChatTrack(on) => {
+                s.chat_track = on;
+                return changed;
+            }
+            Msg::ChatApp(t) => {
+                s.chat_app = t;
                 return changed;
             }
             Msg::Voice(false) => {
@@ -1044,6 +1054,45 @@ impl State {
             .width(260)
             .style(theme::pick)
             .menu_style(theme::menu);
+        let mut sound_rows: Vec<Element<'a, Msg>> = Vec::new();
+        if cfg!(windows) {
+            let mut chat_col = row![switch(s.chat_track, Msg::ChatTrack)]
+                .spacing(12)
+                .align_y(Alignment::Center);
+            if s.chat_track {
+                chat_col = row![
+                    text_input("Discord", &s.chat_app)
+                        .on_input(Msg::ChatApp)
+                        .width(150)
+                        .padding(Padding::from([7, 10]))
+                        .size(13)
+                        .style(theme::input),
+                    switch(s.chat_track, Msg::ChatTrack)
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center);
+            }
+            let chat_line = report
+                .filter(|_| s.chat_track)
+                .and_then(|r| r.status.chat.clone());
+            let chat_col: Element<'a, Msg> = match chat_line {
+                Some(line) => column![chat_col, text(line).size(12).color(theme::GREEN)]
+                    .spacing(6)
+                    .align_x(Alignment::End)
+                    .into(),
+                None => chat_col.into(),
+            };
+            sound_rows.push(setting(
+                "Voice chat on its own track",
+                Some(
+                    "Records an app's sound (Discord by default) on a track of its own and leaves \
+                     it out of the game track, so you can turn chat down or off in copies. \
+                     Windows 11."
+                        .into(),
+                ),
+                chat_col,
+            ));
+        }
         sections = sections.push(section(
             "Sound",
             vec![
@@ -1063,7 +1112,10 @@ impl State {
                         .spacing(12)
                         .align_y(Alignment::Center),
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(sound_rows)
+            .collect(),
         ));
 
         // Saving.

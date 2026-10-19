@@ -57,6 +57,8 @@ pub struct Status {
     pub memory_mb: f64,
     pub desktop_audio: Option<String>,
     pub microphone: Option<String>,
+    /// The voice-chat track's state, when it's on.
+    pub chat: Option<String>,
     pub error: Option<String>,
     pub audio_error: Option<String>,
     pub last_clip: Option<String>,
@@ -83,6 +85,8 @@ pub struct Shared {
     pub ring: Mutex<Ring>,
     pub desktop: Mutex<Option<PcmRing>>,
     pub mic: Mutex<Option<PcmRing>>,
+    /// A voice-chat app's sound, when it has its own track.
+    pub chat: Mutex<Option<PcmRing>>,
     pub status: Mutex<Status>,
     pub stop: AtomicBool,
     pub paused: AtomicBool,
@@ -109,6 +113,7 @@ impl Shared {
             ring: Mutex::new(Ring::new(keep, MAX_BUFFER_BYTES)),
             desktop: Mutex::new(None),
             mic: Mutex::new(None),
+            chat: Mutex::new(None),
             status: Mutex::new(Status::default()),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -151,7 +156,7 @@ impl Shared {
         let old = std::mem::replace(&mut *self.settings.lock().unwrap(), new.clone());
         let keep = new.buffer_seconds() as i64 * 1_000_000;
         self.ring.lock().unwrap().set_keep_us(keep);
-        for ring in [&self.desktop, &self.mic] {
+        for ring in [&self.desktop, &self.mic, &self.chat] {
             if let Some(r) = ring.lock().unwrap().as_mut() {
                 r.set_keep_us(keep);
             }
@@ -181,11 +186,15 @@ impl Shared {
             old.microphone,
             old.voice_clip,
             &old.microphone_device,
+            old.chat_track,
+            &old.chat_app,
         ) != (
             new.desktop_audio,
             new.microphone,
             new.voice_clip,
             &new.microphone_device,
+            new.chat_track,
+            &new.chat_app,
         );
         if audio {
             self.audio_generation.fetch_add(1, Ordering::SeqCst);

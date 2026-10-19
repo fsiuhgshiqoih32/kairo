@@ -53,7 +53,11 @@ pub fn start(shared: &Arc<Shared>, title: Option<String>) -> Result<(), String> 
             return Err(e);
         }
     };
-    for (name, ring) in [("Game", &shared.desktop), ("Microphone", &shared.mic)] {
+    for (name, ring) in [
+        ("Game", &shared.desktop),
+        ("Microphone", &shared.mic),
+        ("Voice chat", &shared.chat),
+    ] {
         if let Some(r) = ring.lock().unwrap().as_mut()
             && let Err(e) = r.start_tape(&work.join(format!("{name}.wav")), start_us)
         {
@@ -86,7 +90,11 @@ pub fn stop(
         )
     };
     let mut sounds = Vec::new();
-    for (name, ring) in [("Game", &shared.desktop), ("Microphone", &shared.mic)] {
+    for (name, ring) in [
+        ("Game", &shared.desktop),
+        ("Microphone", &shared.mic),
+        ("Voice chat", &shared.chat),
+    ] {
         if let Some(t) = ring.lock().unwrap().as_mut().and_then(|r| r.take_tape()) {
             sounds.push((t, name));
         }

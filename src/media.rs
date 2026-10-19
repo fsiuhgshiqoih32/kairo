@@ -345,9 +345,10 @@ pub struct Effects {
     /// Fade picture and sound in at the start and out at the end.
     pub fade: bool,
     pub music: Option<Music>,
-    /// Volumes of the game and microphone tracks (1 is as recorded).
+    /// Volumes of the game, microphone and voice-chat tracks (1 is as recorded).
     pub game_volume: f32,
     pub mic_volume: f32,
+    pub chat_volume: f32,
     /// Take the hiss and hum out of the microphone.
     pub mic_cleanup: bool,
     /// Bring the whole thing to a steady, loud-enough level.
@@ -365,6 +366,7 @@ impl Default for Effects {
             music: None,
             game_volume: 1.0,
             mic_volume: 1.0,
+            chat_volume: 1.0,
             mic_cleanup: false,
             even_loudness: false,
             burns: Vec::new(),
@@ -395,7 +397,10 @@ impl Effects {
     }
 
     fn mixes_tracks(&self) -> bool {
-        self.game_volume != 1.0 || self.mic_volume != 1.0 || self.mic_cleanup
+        self.game_volume != 1.0
+            || self.mic_volume != 1.0
+            || self.chat_volume != 1.0
+            || self.mic_cleanup
     }
 }
 
@@ -466,23 +471,35 @@ fn effects_graph(
         return parts.join(";");
     }
     let track = |name: &str| info.audio_tracks.iter().position(|t| t == name);
-    let base = match (track("Game"), track("Microphone")) {
-        (Some(g), Some(m)) if eff.mixes_tracks() => {
-            let clean = if eff.mic_cleanup {
-                "afftdn=nr=12,highpass=f=90,"
-            } else {
-                ""
-            };
-            format!(
-                "[0:a:{g}]volume={:.2}[ga];[0:a:{m}]{clean}volume={:.2}[ma];\
-                 [ga][ma]amix=inputs=2:duration=longest:normalize=0",
-                eff.game_volume, eff.mic_volume
-            )
+    // The separate tracks the clip has, each with its level (the mic cleaned up if asked).
+    let clean = if eff.mic_cleanup {
+        "afftdn=nr=12,highpass=f=90,"
+    } else {
+        ""
+    };
+    let parts_in: Vec<(usize, String)> = [
+        ("Game", eff.game_volume, ""),
+        ("Microphone", eff.mic_volume, clean),
+        ("Voice chat", eff.chat_volume, ""),
+    ]
+    .into_iter()
+    .filter_map(|(name, v, pre)| track(name).map(|i| (i, format!("{pre}volume={v:.2}"))))
+    .collect();
+    let base = if eff.mixes_tracks() && parts_in.len() >= 2 {
+        let mut g = String::new();
+        let mut labels = String::new();
+        for (k, (i, chain)) in parts_in.iter().enumerate() {
+            g.push_str(&format!("[0:a:{i}]{chain}[t{k}];"));
+            labels.push_str(&format!("[t{k}]"));
         }
-        _ if info.audio_tracks.is_empty() => {
-            format!("anullsrc=r=48000:cl=stereo,atrim=0:{length:.3}")
-        }
-        _ => format!("[0:a:0]volume={:.2}", eff.game_volume),
+        format!(
+            "{g}{labels}amix=inputs={}:duration=longest:normalize=0",
+            parts_in.len()
+        )
+    } else if info.audio_tracks.is_empty() {
+        format!("anullsrc=r=48000:cl=stereo,atrim=0:{length:.3}")
+    } else {
+        format!("[0:a:0]volume={:.2}", eff.game_volume)
     };
     let mut snd = vec![s("aformat=sample_rates=48000:channel_layouts=stereo")];
     snd.extend(tempo_chain(eff.speed));
@@ -1183,6 +1200,7 @@ At least one output file must be specified";
             fade: true,
             game_volume: 0.6,
             mic_volume: 1.4,
+            chat_volume: 1.0,
             mic_cleanup: true,
             even_loudness: true,
             music: Some(Music {
@@ -1207,7 +1225,7 @@ At least one output file must be specified";
         assert!(g.starts_with("[0:v]setpts=PTS/0.2500,fps=60,eq="), "{g}");
         assert!(g.contains("fade=t=out:st=19.500:d=0.5"), "{g}");
         assert!(
-            g.contains("[0:a:1]volume=0.60[ga];[0:a:2]afftdn=nr=12,highpass=f=90,volume=1.40[ma]"),
+            g.contains("[0:a:1]volume=0.60[t0];[0:a:2]afftdn=nr=12,highpass=f=90,volume=1.40[t1];[t0][t1]amix=inputs=2"),
             "{g}"
         );
         assert!(g.contains("atempo=0.5,atempo=0.5"), "{g}");

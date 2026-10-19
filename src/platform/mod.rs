@@ -13,6 +13,8 @@
 mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
+#[cfg(windows)]
+pub mod windows_app_audio;
 
 #[cfg(target_os = "macos")]
 mod macos;

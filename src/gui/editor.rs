@@ -124,6 +124,7 @@ pub enum Msg {
     ClearMusic,
     GameVolume(f32),
     MicVolume(f32),
+    ChatVolume(f32),
     MicCleanup(bool),
     EvenLoudness(bool),
     ResetStyle,
@@ -607,6 +608,7 @@ impl Editor {
             Msg::ClearMusic => self.effects.music = None,
             Msg::GameVolume(v) => self.effects.game_volume = v,
             Msg::MicVolume(v) => self.effects.mic_volume = v,
+            Msg::ChatVolume(v) => self.effects.chat_volume = v,
             Msg::MicCleanup(on) => self.effects.mic_cleanup = on,
             Msg::EvenLoudness(on) => self.effects.even_loudness = on,
             Msg::ResetStyle => self.effects = media::Effects::default(),
@@ -1414,6 +1416,17 @@ impl Editor {
                     .align_y(Alignment::Center),
                 )
                 .push(toggle(eff.mic_cleanup, "Clean up the mic", Msg::MicCleanup));
+        }
+        if tracks.iter().any(|t| t == "Voice chat") {
+            body = body.push(
+                row![
+                    small("Chat").width(70),
+                    slider(0.0..=2.0, eff.chat_volume, Msg::ChatVolume)
+                        .step(0.05_f32)
+                        .style(theme::volume_slider)
+                ]
+                .align_y(Alignment::Center),
+            );
         }
         body = body.push(
             row![

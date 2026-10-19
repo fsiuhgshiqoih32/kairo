@@ -210,6 +210,11 @@ pub struct Settings {
     pub session_hotkey: String,
     /// Record a session from when Rewindr starts.
     pub session_auto: bool,
+    /// Put a voice-chat app's sound on its own track, and leave it out of the game track
+    /// (Windows 11).
+    pub chat_track: bool,
+    /// The app: the start of its program's name ("Discord" also finds DiscordPTB, DiscordCanary).
+    pub chat_app: String,
 }
 
 impl Default for Settings {
@@ -244,6 +249,8 @@ impl Default for Settings {
             fresh_after_save: false,
             session_hotkey: String::new(),
             session_auto: false,
+            chat_track: false,
+            chat_app: "Discord".into(),
         }
     }
 }
@@ -286,6 +293,10 @@ impl Settings {
         }
         self.post_roll = self.post_roll.min(MAX_POST_ROLL);
         self.session_hotkey = self.session_hotkey.trim().to_string();
+        self.chat_app = self.chat_app.trim().trim_end_matches(".exe").to_string();
+        if self.chat_app.is_empty() {
+            self.chat_app = "Discord".into();
+        }
         if !ACCENTS.contains(&self.accent.as_str()) {
             self.accent = "red".into();
         }

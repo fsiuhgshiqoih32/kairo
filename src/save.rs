@@ -193,7 +193,11 @@ pub fn save_inner(
     drop(snap);
 
     let mut audio: Vec<(PathBuf, &str)> = Vec::new();
-    for (name, ring) in [("Game", &shared.desktop), ("Microphone", &shared.mic)] {
+    for (name, ring) in [
+        ("Game", &shared.desktop),
+        ("Microphone", &shared.mic),
+        ("Voice chat", &shared.chat),
+    ] {
         let wav = {
             let r = ring.lock().unwrap();
             r.as_ref()
