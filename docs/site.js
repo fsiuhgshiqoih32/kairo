@@ -10,13 +10,13 @@
   // ---------- Downloads ----------
   const REPO = "fsiuhgshiqoih32/kairo";
   const release = {
-    version: "0.2.0",
+    version: "0.3.0",
     date: null,
     files: {
-      windows: { name: "kairo-v0.2.0-windows-x64-setup.exe", size: 31914499 },
-      portable: { name: "kairo-v0.2.0-windows-x64-portable.zip", size: 15543795 },
-      mac: { name: "kairo-v0.2.0-macos-universal.zip", size: 25339367 },
-      linux: { name: "kairo-v0.2.0-linux-x86_64-portable.tar.gz", size: 15746029 },
+      windows: { name: "kairo-v0.3.0-windows-x64-setup.exe", size: 31979762 },
+      portable: { name: "kairo-v0.3.0-windows-x64-portable.zip", size: 15609058 },
+      mac: { name: "kairo-v0.3.0-macos-universal.zip", size: 25437353 },
+      linux: { name: "kairo-v0.3.0-linux-x86_64-portable.tar.gz", size: 15796739 },
       sums: { name: "SHA256SUMS.txt", size: 0 },
     },
   };
@@ -140,7 +140,7 @@
   }
   paint();
 
-  // The newest release, if GitHub answers; the 0.2.0 links above stand otherwise.
+  // The newest release, if GitHub answers; the links above stand otherwise.
   fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: "application/vnd.github+json" } })
     .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
     .then((rel) => {
