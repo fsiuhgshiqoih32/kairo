@@ -747,6 +747,37 @@ pub fn join_args(
     a
 }
 
+/// `start..end` of the clip copied as it is: no encoding, so it's done in about a second at the
+/// clip's own quality. A copy can only start on a keyframe, so it starts at the one at or before
+/// `start` (Kairo records one a second).
+pub fn copy_args(clip: &Path, start: f64, end: f64, out: &Path) -> Vec<String> {
+    let mut a = vec![s("-y")];
+    a.extend(head());
+    a.extend([s("-progress"), s("pipe:1")]);
+    a.extend([
+        s("-ss"),
+        format!("{start:.3}"),
+        s("-i"),
+        clip.display().to_string(),
+        s("-t"),
+        format!("{:.3}", (end - start).max(0.05)),
+        s("-map"),
+        s("0:v:0"),
+        s("-map"),
+        s("0:a?"),
+        s("-c"),
+        s("copy"),
+        s("-avoid_negative_ts"),
+        s("make_zero"),
+        s("-movflags"),
+        s("+faststart"),
+        s("-f"),
+        s("mp4"),
+        out.display().to_string(),
+    ]);
+    a
+}
+
 /// The start of an export: overwrite, quiet, progress on stdout, `start..end` of the clip.
 fn export_head(clip: &Path, start: f64, end: f64) -> Vec<String> {
     let mut a = vec![s("-y")];

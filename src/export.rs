@@ -18,6 +18,8 @@ use crate::log::{info, warning};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Trim,
+    /// The trimmed part copied without encoding.
+    Copy,
     /// Fit under this many bytes.
     Share(u64),
     Gif,
@@ -78,6 +80,7 @@ pub fn start(
     let status = Arc::new(Mutex::new(Status {
         stage: match kind {
             Kind::Trim => "Saving the trimmed copy".into(),
+            Kind::Copy => "Copying the trimmed part".into(),
             Kind::Share(_) => "Making a copy for Discord".into(),
             Kind::Gif => "Making a GIF".into(),
             Kind::Vertical => "Making a vertical copy".into(),
@@ -206,6 +209,13 @@ fn run(
             let part = out.with_extension("mp4.part");
             let a = media::trim_args(clip, start, end, info, &eff, encoder, &part);
             encode(ff, &a, length, &part, status, cancel, job.progress)?;
+            finish(ff, &part, &out)
+        }
+        Kind::Copy => {
+            let out = library::sibling(job.named, "trim");
+            let part = out.with_extension("mp4.part");
+            let a = media::copy_args(clip, start, end, &part);
+            encode(ff, &a, end - start, &part, status, cancel, job.progress)?;
             finish(ff, &part, &out)
         }
         Kind::Share(limit) => {
@@ -812,6 +822,8 @@ mod tests {
             "6",
             "-c:v",
             "libx264",
+            "-g",
+            "30",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -862,6 +874,12 @@ mod tests {
             );
             assert!(!got.audio_tracks.is_empty(), "the sound is kept");
         }
+        // An instant copy starts on the keyframe before the start (one a second here), uncut.
+        let copy = dir.join("copy.mp4");
+        let a = media::copy_args(&clip, 1.4, 4.0, &copy);
+        ffmpeg::run(&ff, &a, Duration::from_secs(30)).expect("copy");
+        let got = ffmpeg::probe_clip(&ff, &copy).expect("probe copy");
+        assert!(got.duration > 2.5 && got.duration < 3.2, "{}", got.duration);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

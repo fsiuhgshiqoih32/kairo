@@ -207,6 +207,7 @@ fn merge_key(msg: &Msg) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportKind {
     Trim,
+    Copy,
     Share,
     Gif,
     Vertical,
@@ -1244,6 +1245,7 @@ impl Editor {
         }
         let kind = match k {
             ExportKind::Trim => Kind::Trim,
+            ExportKind::Copy => Kind::Copy,
             ExportKind::Share => Kind::Share(self.discord_mb as u64 * 1_000_000),
             ExportKind::Gif => Kind::Gif,
             ExportKind::Vertical => Kind::Vertical,
@@ -2668,54 +2670,82 @@ impl Editor {
                 })
                 .size(12)
                 .color(theme::muted()),
-                Space::new().height(4),
-                text("More formats")
-                    .size(12)
-                    .font(SEMIBOLD)
-                    .color(theme::ink_2()),
-                row![
-                    format_button(
-                        Icon::Image,
-                        "GIF",
-                        "A looping GIF, 480 px wide (15 s at most)",
-                        Msg::Export(ExportKind::Gif)
-                    ),
-                    format_button(
-                        Icon::Phone,
-                        "9:16",
-                        "Vertical for TikTok, Shorts and Reels",
-                        Msg::Export(ExportKind::Vertical)
-                    ),
-                    format_button(
-                        Icon::Square,
-                        "1:1",
-                        "Square for feeds",
-                        Msg::Export(ExportKind::Square)
-                    ),
-                    format_button(
-                        Icon::Portrait,
-                        "4:5",
-                        "Tall for Instagram and X feeds",
-                        Msg::Export(ExportKind::Portrait)
-                    ),
-                    format_button(
-                        Icon::Snail,
-                        "0.5x",
-                        "Slow motion, half speed",
-                        Msg::Export(ExportKind::Slow(2))
-                    ),
-                    format_button(
-                        Icon::Snail,
-                        "0.25x",
-                        "Slow motion, quarter speed",
-                        Msg::Export(ExportKind::Slow(4))
-                    ),
-                ]
-                .spacing(6)
-                .wrap()
-                .vertical_spacing(6),
             ]
             .spacing(8);
+            if self.trimmed() && !self.styled() {
+                c = c.push(
+                    row![
+                        button(
+                            row![
+                                icon(Icon::Sparkles, 14.0, theme::accent()),
+                                text("Instant copy").size(12).font(MEDIUM)
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding(Padding::from([6, 9]))
+                        .style(theme::secondary)
+                        .on_press(Msg::Export(ExportKind::Copy)),
+                        text("No encoding, done in a second. May start up to 1 s early.")
+                            .size(11)
+                            .color(theme::muted())
+                            .width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+            c = c.push(
+                column![
+                    Space::new().height(4),
+                    text("More formats")
+                        .size(12)
+                        .font(SEMIBOLD)
+                        .color(theme::ink_2()),
+                    row![
+                        format_button(
+                            Icon::Image,
+                            "GIF",
+                            "A looping GIF, 480 px wide (15 s at most)",
+                            Msg::Export(ExportKind::Gif)
+                        ),
+                        format_button(
+                            Icon::Phone,
+                            "9:16",
+                            "Vertical for TikTok, Shorts and Reels",
+                            Msg::Export(ExportKind::Vertical)
+                        ),
+                        format_button(
+                            Icon::Square,
+                            "1:1",
+                            "Square for feeds",
+                            Msg::Export(ExportKind::Square)
+                        ),
+                        format_button(
+                            Icon::Portrait,
+                            "4:5",
+                            "Tall for Instagram and X feeds",
+                            Msg::Export(ExportKind::Portrait)
+                        ),
+                        format_button(
+                            Icon::Snail,
+                            "0.5x",
+                            "Slow motion, half speed",
+                            Msg::Export(ExportKind::Slow(2))
+                        ),
+                        format_button(
+                            Icon::Snail,
+                            "0.25x",
+                            "Slow motion, quarter speed",
+                            Msg::Export(ExportKind::Slow(4))
+                        ),
+                    ]
+                    .spacing(6)
+                    .wrap()
+                    .vertical_spacing(6),
+                ]
+                .spacing(8),
+            );
             if let Some((path, copied)) = &self.last_export {
                 let name = path
                     .file_name()
