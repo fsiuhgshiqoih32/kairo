@@ -636,13 +636,7 @@ impl App {
             Message::Editor(m) => {
                 if let Some(e) = &mut self.editor {
                     let effect = e.update(m);
-                    let upload = match e.next_upload() {
-                        Some(h) => image::allocate(h.clone()).map(move |r| {
-                            Message::Editor(editor::Msg::Uploaded(h.clone(), r.ok()))
-                        }),
-                        None => Task::none(),
-                    };
-                    return Task::batch([upload, self.editor_effect(effect)]);
+                    return self.editor_effect(effect);
                 }
             }
             Message::Settings(m) => {

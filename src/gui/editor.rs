@@ -63,8 +63,6 @@ impl std::fmt::Display for Track {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Frame,
-    /// A frame is on the GPU and can be shown without a blank frame first.
-    Uploaded(image::Handle, Option<image::Allocation>),
     Strip(Vec<image::Handle>),
     TogglePlay,
     Seek(f64),
@@ -140,12 +138,8 @@ pub struct Editor {
     pub name: String,
     ff: PathBuf,
     player: Player,
-    /// The frame on screen, and what keeps it on the GPU.
-    frame: Option<image::Handle>,
-    frame_alloc: Option<image::Allocation>,
-    /// The newest decoded frame, waiting for its upload; and whether one is uploading.
-    incoming: Option<image::Handle>,
-    uploading: bool,
+    /// The frame on screen.
+    frame: Option<Picture>,
     /// Frames put on screen so far (for the self-test).
     pub frames_shown: u64,
     strip: Vec<image::Handle>,
@@ -203,9 +197,6 @@ impl Editor {
                 clip,
                 name,
                 frame: None,
-                frame_alloc: None,
-                incoming: None,
-                uploading: false,
                 frames_shown: 0,
                 strip: Vec::new(),
                 strip_loading: true,
@@ -246,22 +237,6 @@ impl Editor {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         self.update(Msg::Frame);
-        // No renderer here to upload it: show it as it is.
-        if let Some(h) = self.incoming.take() {
-            self.frame = Some(h);
-        }
-    }
-
-    /// The next frame to upload to the GPU, if one is waiting and none is on its way.
-    /// iced uploads big pictures (a 720p frame is 3.7 MB) a frame late, which made playback
-    /// flicker; the window shows a frame only once it's uploaded (`Msg::Uploaded`).
-    pub fn next_upload(&mut self) -> Option<image::Handle> {
-        if self.uploading {
-            return None;
-        }
-        let h = self.incoming.take()?;
-        self.uploading = true;
-        Some(h)
     }
 
     /// The first frame and the filmstrip are in.
@@ -345,9 +320,8 @@ impl Editor {
                 let was_playing = self.player.is_playing();
                 self.player.tick(end);
                 if let Some(f) = self.player.frame.take() {
-                    let (w, h) = self.player.size;
-                    // A newer frame replaces one still waiting: never fall behind.
-                    self.incoming = Some(image::Handle::from_rgba(w, h, f.rgba));
+                    self.frame = Some(Picture::new(self.player.size, &f.rgba));
+                    self.frames_shown += 1;
                 }
                 if was_playing && !self.player.is_playing() && self.looping && self.grab.is_none() {
                     self.player.position = self.trim.0;
@@ -357,12 +331,6 @@ impl Editor {
                     return Effect::Note(e, false);
                 }
                 return self.poll_job();
-            }
-            Msg::Uploaded(h, alloc) => {
-                self.uploading = false;
-                self.frame = Some(h);
-                self.frame_alloc = alloc;
-                self.frames_shown += 1;
             }
             Msg::Strip(s) => {
                 self.strip = s;
@@ -666,11 +634,7 @@ impl Editor {
         .align_y(Alignment::Center);
 
         let picture: Element<'a, Msg> = match &self.frame {
-            Some(h) => image(h.clone())
-                .content_fit(ContentFit::Contain)
-                .width(Fill)
-                .height(Fill)
-                .into(),
+            Some(p) => p.view(),
             None => text("Loading...").color(MUTED).into(),
         };
         let mut monitor = stack![container(picture).center(Fill)];
@@ -1263,7 +1227,60 @@ fn stem(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The keyframe pictures (one a second in Rewindr's clips) for the timeline.
+/// A video frame on screen, as horizontal bands of under 2 MB each. iced puts a picture on the
+/// GPU right away only when it's under 2 MB; bigger ones (a 720p frame is 3.7 MB) arrive a frame
+/// late, so every new frame first drew as nothing and playback flickered. Bands go up at once.
+struct Picture {
+    size: (u32, u32),
+    /// Each band and how many rows it has.
+    bands: Vec<(image::Handle, u32)>,
+}
+
+/// Under iced's limit for pictures it uploads at once (2 MiB).
+const BAND_BYTES: usize = 2_000_000;
+
+impl Picture {
+    fn new((w, h): (u32, u32), rgba: &[u8]) -> Picture {
+        let row = (w as usize * 4).max(1);
+        let rows_per = (BAND_BYTES / row).max(1);
+        let n = (h as usize).div_ceil(rows_per).max(1);
+        // Even bands, so none is a sliver.
+        let per = (h as usize).div_ceil(n).max(1);
+        let bands = rgba
+            .chunks(per * row)
+            .map(|c| {
+                let rows = (c.len() / row) as u32;
+                (image::Handle::from_rgba(w, rows, c.to_vec()), rows)
+            })
+            .collect();
+        Picture {
+            size: (w, h),
+            bands,
+        }
+    }
+
+    /// The bands stacked into one picture, as big as fits (like `ContentFit::Contain`).
+    fn view<'a>(&self) -> Element<'a, Msg> {
+        let (w, h) = (self.size.0.max(1) as f32, self.size.1.max(1) as f32);
+        let bands = self.bands.clone();
+        iced::widget::responsive(move |space| {
+            let k = (space.width / w).min(space.height / h);
+            let width = (w * k).floor();
+            let mut col = column![].width(width);
+            for (handle, rows) in &bands {
+                col = col.push(
+                    image(handle.clone())
+                        .content_fit(ContentFit::Fill)
+                        .width(width)
+                        .height(*rows as f32 * k),
+                );
+            }
+            container(col).center(Fill).into()
+        })
+        .into()
+    }
+}
+
 /// "3 days", "5 hours".
 fn human_hours(secs: u64) -> String {
     let h = secs.div_ceil(3600);
@@ -1569,5 +1586,33 @@ impl canvas::Program<Msg> for Timeline {
             Some(_) => mouse::Interaction::Pointer,
             None => mouse::Interaction::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_split_into_bands_iced_uploads_at_once() {
+        for (w, h) in [
+            (1280, 720),
+            (1920, 1080),
+            (2560, 1440),
+            (640, 360),
+            (3, 1),
+            (0, 0),
+        ] {
+            let rgba = vec![7u8; w as usize * h as usize * 4];
+            let p = Picture::new((w, h), &rgba);
+            let rows: u32 = p.bands.iter().map(|b| b.1).sum();
+            assert_eq!(rows, h, "{w}x{h}");
+            for (_, r) in &p.bands {
+                assert!(w as usize * *r as usize * 4 <= BAND_BYTES, "{w}x{h}");
+            }
+        }
+        // A 720p frame (3.7 MB) is two even halves.
+        let p = Picture::new((1280, 720), &vec![0; 1280 * 720 * 4]);
+        assert_eq!(p.bands.iter().map(|b| b.1).collect::<Vec<_>>(), [360, 360]);
     }
 }
