@@ -222,6 +222,10 @@ pub struct Settings {
     pub chat_app: String,
     /// Keep the gaming keys and clicks pressed while recording, for an overlay in copies.
     pub input_overlay: bool,
+    /// Saves a clip and copies a share link to it; empty turns it off.
+    pub share_hotkey: String,
+    /// The version whose "What's new" was last shown; empty before Kairo 0.3.0.
+    pub seen_version: String,
 }
 
 impl Default for Settings {
@@ -260,6 +264,8 @@ impl Default for Settings {
             session_auto: false,
             chat_track: false,
             chat_app: "Discord".into(),
+            share_hotkey: String::new(),
+            seen_version: String::new(),
             input_overlay: false,
         }
     }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+- **Update notices.** Kairo now looks for a new version a few minutes after it starts and every
+  six hours, and the first time one is out it shows a notice with what's in it and an Update now
+  button. The tray menu offers the update too, and Settings shows it at the top with the release
+  notes. You can still turn update checks off in Settings.
+- **What's new.** After an update, the window opens once with the highlights of the version you
+  now have.
+- **Save and share.** An optional shortcut (Settings > Sharing) saves a clip, uploads it straight
+  away and copies the link, so a highlight is one key away from your friends.
+- **Your stats.** A new page in the library counts your clips, the time and space they take, your
+  top games, the last two weeks and your streak of days with a clip.
+
 ## 0.2.0
 
 **Rewindr is now Kairo**, with a new logo and a Windows installer.

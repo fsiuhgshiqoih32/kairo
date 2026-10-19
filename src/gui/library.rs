@@ -236,7 +236,7 @@ impl App {
                 Filter::Shared => c.link.is_some(),
                 Filter::Game(g) => &c.game == g,
                 Filter::Tag(t) => c.tags.contains(t),
-                Filter::Screenshots | Filter::Trash => false,
+                Filter::Screenshots | Filter::Trash | Filter::Stats => false,
             })
             .filter(|c| {
                 q.is_empty()
@@ -264,6 +264,9 @@ impl App {
         }
         if self.filter == Filter::Trash {
             return self.trash_view();
+        }
+        if self.filter == Filter::Stats {
+            return self.stats_view();
         }
         if self.loaded && self.clips.is_empty() {
             return self.empty();
@@ -1022,7 +1025,10 @@ impl App {
 }
 
 /// A toolbar over a scrolling body, with the page's margins.
-fn page<'a>(toolbar: Element<'a, Message>, body: Element<'a, Message>) -> Element<'a, Message> {
+pub(super) fn page<'a>(
+    toolbar: Element<'a, Message>,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
     column![
         container(toolbar).padding(Padding {
             top: 0.0,
@@ -1042,7 +1048,7 @@ fn page<'a>(toolbar: Element<'a, Message>, body: Element<'a, Message>) -> Elemen
     .into()
 }
 
-fn nothing<'a>(i: Icon, what: String) -> Element<'a, Message> {
+pub(super) fn nothing<'a>(i: Icon, what: String) -> Element<'a, Message> {
     container(
         column![icon(i, 26.0, MUTED), text(what).color(TEXT_2)]
             .spacing(10)

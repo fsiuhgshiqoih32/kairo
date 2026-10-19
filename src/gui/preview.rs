@@ -285,7 +285,25 @@ fn preview() {
     shoot(app.view(), "iced-screenshots", size);
     app.filter = Filter::All;
 
+    app.filter = Filter::Stats;
+    shoot(app.view(), "iced-stats", size);
+    app.filter = Filter::All;
+
+    let notes = crate::updater::changelog_section(crate::updater::CHANGELOG, "0.3.0")
+        .expect("a 0.3.0 changelog section");
+    app.dialog = Some(super::Dialog::WhatsNew {
+        version: "0.3.0".into(),
+        notes: notes.clone(),
+    });
+    shoot(app.view(), "iced-whats-new", size);
+    app.dialog = None;
+
     app.page = Page::Settings;
+    app.setup.update.available = Some(std::sync::Arc::new(crate::updater::Update::sample(
+        "0.3.0", &notes,
+    )));
+    shoot(app.view(), "iced-update-banner", size);
+    app.setup.update.available = None;
     shoot(app.view(), "iced-settings", size);
     app.settings.voice_clip = true;
     shoot(app.view(), "iced-settings-tall", (1280.0, 2400.0));
@@ -313,12 +331,18 @@ fn preview() {
     let t = toast::Toast::new(toast::Message::Saved {
         clip: sample(now)[0].path.clone(),
         seconds: 30.3,
+        share: false,
     });
     shoot(t.view(), "iced-toast", (380.0, 112.0));
     let t = toast::Toast::new(toast::Message::Screenshot(crate::save::thumb_for(
         &sample(now)[0].path,
     )));
     shoot(t.view(), "iced-toast-shot", (380.0, 112.0));
+    let t = toast::Toast::new(toast::Message::Update {
+        version: "0.3.0".into(),
+        about: Some("Save and share".into()),
+    });
+    shoot(t.view(), "iced-toast-update", (380.0, 112.0));
     let t = toast::Toast::new(toast::Message::Failed(
         "No screen capture is running.".into(),
     ));

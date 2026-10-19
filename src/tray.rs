@@ -14,6 +14,8 @@ pub enum MenuAction {
     OpenFolder,
     Settings,
     ToggleAutostart,
+    /// Open the window and install a newer version.
+    Update,
     Quit,
 }
 
@@ -26,6 +28,11 @@ pub struct Tray {
     settings: MenuItem,
     autostart: CheckMenuItem,
     quit: MenuItem,
+    /// "Update to Kairo 0.3.0…", at the top of the menu while a newer version is out.
+    update: MenuItem,
+    update_line: PredefinedMenuItem,
+    menu: Menu,
+    update_shown: bool,
     shown: Option<(bool, String)>,
 }
 
@@ -73,7 +80,7 @@ impl Tray {
         ])
         .map_err(|e| e.to_string())?;
         let builder = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .with_tooltip("Kairo");
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon(true)?);
@@ -89,6 +96,10 @@ impl Tray {
             settings,
             autostart: autostart_item,
             quit,
+            update: MenuItem::new("Update Kairo...", true, None),
+            update_line: PredefinedMenuItem::separator(),
+            menu,
+            update_shown: false,
             shown: None,
         })
     }
@@ -102,6 +113,7 @@ impl Tray {
             (self.settings.id(), MenuAction::Settings),
             (self.autostart.id(), MenuAction::ToggleAutostart),
             (self.quit.id(), MenuAction::Quit),
+            (self.update.id(), MenuAction::Update),
         ]
         .into_iter()
         .find(|(i, _)| *i == id)
@@ -114,7 +126,24 @@ impl Tray {
         seconds: u32,
         hotkey: Option<&str>,
         autostart: Option<bool>,
+        update: Option<&str>,
     ) {
+        match update {
+            Some(v) => {
+                self.update.set_text(format!("Update to Kairo {v}..."));
+                if !self.update_shown {
+                    let _ = self.menu.insert(&self.update, 0);
+                    let _ = self.menu.insert(&self.update_line, 1);
+                    self.update_shown = true;
+                }
+            }
+            None if self.update_shown => {
+                let _ = self.menu.remove(&self.update);
+                let _ = self.menu.remove(&self.update_line);
+                self.update_shown = false;
+            }
+            None => {}
+        }
         self.save.set_text(save_label(seconds, hotkey));
         self.save.set_enabled(status.recording);
         self.pause.set_text(if status.paused {

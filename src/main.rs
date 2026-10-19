@@ -56,6 +56,9 @@ enum Cmd {
         /// Wait for a closing window (after an update).
         #[arg(long, hide = true)]
         wait: bool,
+        /// Open on the update and install it.
+        #[arg(long, hide = true)]
+        update: bool,
     },
     /// Download and install the latest version.
     Update,
@@ -91,6 +94,15 @@ enum Cmd {
         error: Option<String>,
         #[arg(long)]
         screenshot: Option<PathBuf>,
+        /// Upload the saved clip and copy its link.
+        #[arg(long)]
+        share: bool,
+        /// A newer version is out.
+        #[arg(long)]
+        update: Option<String>,
+        /// One line about the newer version.
+        #[arg(long)]
+        about: Option<String>,
     },
     /// Check voice clipping on recordings: `voice-test "clip that" +said.wav -other.wav`.
     #[command(hide = true)]
@@ -145,9 +157,9 @@ fn main() {
     );
     let result = match cli.command {
         // The window starts the background process itself.
-        None => gui::run(None, false),
+        None => gui::run(None, false, false),
         Some(Cmd::Daemon) => daemon::run(),
-        Some(Cmd::Window { wait }) => gui::run(None, wait),
+        Some(Cmd::Window { wait, update }) => gui::run(None, wait, update),
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Screenshot) => request(daemon::Request::Screenshot),
@@ -158,15 +170,26 @@ fn main() {
         Some(Cmd::Captions { clip }) => captions(&clip),
         Some(Cmd::Edit { clip }) => {
             let clip = std::path::absolute(&clip).unwrap_or(clip);
-            gui::run(Some(clip), false)
+            gui::run(Some(clip), false, false)
         }
+        Some(Cmd::Notify {
+            update: Some(version),
+            about,
+            ..
+        }) => gui::toast::run(gui::toast::Message::Update { version, about }),
         Some(Cmd::Notify {
             clip,
             seconds,
             error,
             screenshot,
+            share,
+            ..
         }) => match (clip, screenshot, error) {
-            (Some(clip), _, _) => gui::toast::run(gui::toast::Message::Saved { clip, seconds }),
+            (Some(clip), _, _) => gui::toast::run(gui::toast::Message::Saved {
+                clip,
+                seconds,
+                share,
+            }),
             (None, Some(path), _) => gui::toast::run(gui::toast::Message::Screenshot(path)),
             (None, None, Some(e)) => gui::toast::run(gui::toast::Message::Failed(e)),
             (None, None, None) => Err("notify needs --clip, --screenshot or --error".into()),

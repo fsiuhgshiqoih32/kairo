@@ -5,6 +5,7 @@ mod editor;
 pub mod icons;
 mod library;
 mod settings;
+mod stats;
 pub mod theme;
 pub mod toast;
 mod widgets;
@@ -47,6 +48,8 @@ pub enum Filter {
     Tag(String),
     /// Recently deleted.
     Trash,
+    /// Your stats: the library counted.
+    Stats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +83,11 @@ pub enum Page {
 }
 
 enum Dialog {
+    /// After an update: the highlights of the version now running.
+    WhatsNew {
+        version: String,
+        notes: String,
+    },
     Rename {
         path: PathBuf,
         name: String,
@@ -307,18 +315,57 @@ impl App {
         )
     }
 
-    fn boot(lock: Option<InstanceLock>, clip: Option<PathBuf>) -> (Self, Task<Message>) {
+    fn boot(
+        lock: Option<InstanceLock>,
+        clip: Option<PathBuf>,
+        update: bool,
+    ) -> (Self, Task<Message>) {
         let (settings, _) = config::load_or_create(&config::default_path());
         let (mut app, tasks) = App::new(settings);
         app._lock = lock;
         if std::env::var("KAIRO_TAB").is_ok_and(|t| t == "settings") {
             app.page = Page::Settings;
         }
+        if update {
+            app.page = Page::Settings;
+            app.setup.update.auto_install = true;
+        }
+        app.whats_new(update);
         let mut all = vec![tasks, app.reload(), Task::done(Message::Tick)];
         if let Some(c) = clip {
             all.push(app.open_editor(c));
         }
         (app, Task::batch(all))
+    }
+
+    /// The first time a version runs after an update, show what it brings (once).
+    fn whats_new(&mut self, updating: bool) {
+        let current = crate::updater::current_version();
+        if self.settings.seen_version == current {
+            return;
+        }
+        // Before 0.3.0 nothing remembered the version: an older settings file means this
+        // copy was updated rather than freshly installed.
+        let upgraded = !self.settings.seen_version.is_empty()
+            || std::fs::metadata(config::default_path())
+                .and_then(|m| m.created().or_else(|_| m.modified()))
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(600));
+        if upgraded
+            && !updating
+            && let Some(notes) =
+                crate::updater::changelog_section(crate::updater::CHANGELOG, current)
+        {
+            self.dialog = Some(Dialog::WhatsNew {
+                version: current.to_string(),
+                notes,
+            });
+        }
+        self.settings.seen_version = current.to_string();
+        if let Err(e) = config::save(&config::default_path(), &self.settings) {
+            crate::log::warning!("{e}");
+        }
     }
 
     fn reload(&self) -> Task<Message> {
@@ -1069,6 +1116,10 @@ impl App {
                         self.changed_at = Some(Instant::now());
                         task
                     }
+                    settings::Effect::OpenUrl(u) => {
+                        crate::app::open(Path::new(&u));
+                        task
+                    }
                     settings::Effect::Restart => {
                         crate::log::info!("updated; restarting");
                         if daemon::is_running() {
@@ -1122,7 +1173,7 @@ impl App {
                 return self.update(match d {
                     Dialog::Rename { .. } => Message::RenameConfirm,
                     Dialog::Delete(_) => Message::DeleteConfirm,
-                    Dialog::Link { .. } => Message::CloseDialog,
+                    Dialog::Link { .. } | Dialog::WhatsNew { .. } => Message::CloseDialog,
                 });
             }
             return Task::none();
@@ -1181,7 +1232,11 @@ impl App {
                 tasks.push(window::minimize(id, false));
                 tasks.push(window::gain_focus(id));
             }
-            if !text.is_empty() {
+            if text == UPDATE_REQUEST {
+                self.page = Page::Settings;
+                self.setup.update.auto_install = true;
+                tasks.push(Task::done(Message::Settings(settings::Msg::CheckNow)));
+            } else if !text.is_empty() {
                 tasks.push(self.open_editor(PathBuf::from(text)));
             }
         }
@@ -1551,6 +1606,46 @@ impl App {
 
     fn dialog_view<'a>(&'a self, d: &'a Dialog) -> Element<'a, Message> {
         match d {
+            Dialog::WhatsNew { version, notes } => {
+                let mut body = column![
+                    text("You're up to date. Here's what this version brings.")
+                        .size(14)
+                        .color(TEXT_2)
+                ]
+                .spacing(10);
+                for (title, detail) in crate::updater::points(notes, 6) {
+                    let mut words = column![text(title).size(14).font(SEMIBOLD).color(TEXT)];
+                    if !detail.is_empty() {
+                        words = words.push(text(detail).size(13).color(TEXT_2));
+                    }
+                    body = body.push(
+                        row![
+                            container(icon(Icon::Check, 15.0, theme::accent())).padding(Padding {
+                                top: 2.0,
+                                ..Padding::ZERO
+                            }),
+                            words.spacing(2).width(Fill)
+                        ]
+                        .spacing(10),
+                    );
+                }
+                dialog(
+                    &format!("What's new in Kairo {version}"),
+                    body,
+                    row![
+                        button(text("All release notes").size(13).font(MEDIUM))
+                            .padding(Padding::from([8, 14]))
+                            .style(theme::ghost)
+                            .on_press(Message::OpenUrl(crate::updater::release_page(version))),
+                        button(text("Got it").size(13).font(SEMIBOLD))
+                            .padding(Padding::from([8, 14]))
+                            .style(theme::primary)
+                            .on_press(Message::CloseDialog),
+                    ]
+                    .spacing(8),
+                    Message::CloseDialog,
+                )
+            }
             Dialog::Rename { name, error, .. } => {
                 let mut body = column![
                     text_input("Clip name", name)
@@ -1770,6 +1865,13 @@ impl App {
                 in_library && self.filter == Filter::Trash
             )
             .on_press(Message::Filter(Filter::Trash)),
+            nav_item(
+                Icon::Sparkles,
+                "Your stats",
+                None,
+                in_library && self.filter == Filter::Stats
+            )
+            .on_press(Message::Filter(Filter::Stats)),
         ]
         .spacing(2);
 
@@ -2042,6 +2144,7 @@ impl App {
                 Filter::Game(g) => g.clone(),
                 Filter::Tag(t) => t.clone(),
                 Filter::Trash => "Recently deleted".into(),
+                Filter::Stats => "Your stats".into(),
             },
         };
         let live = self
@@ -2291,6 +2394,9 @@ fn open_request_path() -> PathBuf {
     config::config_dir().join("open.request")
 }
 
+/// Asks the open window to install the update (instead of a clip to open).
+const UPDATE_REQUEST: &str = "kairo:update";
+
 fn take_open_request() -> Option<String> {
     let p = open_request_path();
     let text = std::fs::read_to_string(&p).ok()?;
@@ -2446,14 +2552,18 @@ pub fn self_test() -> Result<(), String> {
 
 /// Opens the window (on `clip` in the editor), or asks the open one to come forward.
 /// `wait`: after an update, the old window may still be closing.
-pub fn run(clip: Option<PathBuf>, wait: bool) -> Result<(), String> {
+pub fn run(clip: Option<PathBuf>, wait: bool, update: bool) -> Result<(), String> {
     let lock = if wait {
         single_instance::acquire_patiently(single_instance::WINDOW)?
     } else {
         single_instance::acquire(single_instance::WINDOW)?
     };
     let Some(lock) = lock else {
-        let text = clip.map(|p| p.display().to_string()).unwrap_or_default();
+        let text = if update {
+            UPDATE_REQUEST.to_string()
+        } else {
+            clip.map(|p| p.display().to_string()).unwrap_or_default()
+        };
         std::fs::write(open_request_path(), text).map_err(|e| e.to_string())?;
         println!("The Kairo window is already open.");
         return Ok(());
@@ -2466,7 +2576,7 @@ pub fn run(clip: Option<PathBuf>, wait: bool) -> Result<(), String> {
     let mut app = iced::application(
         move || {
             let (lock, clip) = start.take().expect("window booted once");
-            App::boot(Some(lock), clip)
+            App::boot(Some(lock), clip, update)
         },
         App::update,
         App::view,

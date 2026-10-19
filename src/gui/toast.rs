@@ -24,9 +24,19 @@ const MARGIN: f32 = 16.0;
 const SHOW_FOR: Duration = Duration::from_secs(6);
 
 pub enum Message {
-    Saved { clip: PathBuf, seconds: f64 },
+    /// With `share`, the clip is uploaded straight away and its link copied.
+    Saved {
+        clip: PathBuf,
+        seconds: f64,
+        share: bool,
+    },
     Screenshot(PathBuf),
     Failed(String),
+    /// A newer version is out; `about` is one line on what's in it.
+    Update {
+        version: String,
+        about: Option<String>,
+    },
 }
 
 pub(super) struct Toast {
@@ -50,6 +60,8 @@ pub(super) enum Msg {
     Open,
     Link,
     Copy,
+    /// Open the window on the update and install it.
+    UpdateNow,
     Close,
 }
 
@@ -118,9 +130,10 @@ impl Toast {
         let (thumb, size) = match &msg {
             Message::Saved { clip, .. } => (picture(&crate::save::thumb_for(clip)), size_of(clip)),
             Message::Screenshot(p) => (picture(p), size_of(p)),
-            Message::Failed(_) => (None, String::new()),
+            Message::Failed(_) | Message::Update { .. } => (None, String::new()),
         };
-        Toast {
+        let share = matches!(msg, Message::Saved { share: true, .. });
+        let mut toast = Toast {
             msg,
             thumb,
             size,
@@ -129,6 +142,21 @@ impl Toast {
             status: None,
             upload: None,
             id: None,
+        };
+        if share {
+            toast.start_upload();
+        }
+        toast
+    }
+
+    /// Uploads the file and copies its link when it's done.
+    fn start_upload(&mut self) {
+        if self.upload.is_none()
+            && let Some(f) = self.file()
+        {
+            let (settings, _) = kairo::config::load_or_create(&kairo::config::default_path());
+            self.upload = Some(share::start(f, f, &settings.share_expiry, None));
+            self.status = None;
         }
     }
 
@@ -137,7 +165,7 @@ impl Toast {
         match &self.msg {
             Message::Saved { clip, .. } => Some(clip),
             Message::Screenshot(p) => Some(p),
-            Message::Failed(_) => None,
+            Message::Failed(_) | Message::Update { .. } => None,
         }
     }
 
@@ -194,7 +222,9 @@ impl Toast {
                     }
                     return Task::none();
                 }
-                let limit = if matches!(self.msg, Message::Failed(_)) {
+                let limit = if matches!(self.msg, Message::Update { .. }) {
+                    SHOW_FOR * 4
+                } else if matches!(self.msg, Message::Failed(_)) {
                     SHOW_FOR * 2
                 } else {
                     SHOW_FOR
@@ -211,18 +241,16 @@ impl Toast {
                     Message::Saved { clip, .. } => crate::app::open_clip(clip),
                     Message::Screenshot(p) => crate::app::open(p),
                     Message::Failed(_) => {}
+                    Message::Update { .. } => return self.update(Msg::UpdateNow),
                 }
                 return iced::exit();
             }
-            Msg::Link => {
-                if self.upload.is_none()
-                    && let Some(f) = self.file()
-                {
-                    let (settings, _) =
-                        kairo::config::load_or_create(&kairo::config::default_path());
-                    self.upload = Some(share::start(f, f, &settings.share_expiry, None));
-                    self.status = None;
+            Msg::Link => self.start_upload(),
+            Msg::UpdateNow => {
+                if let Err(e) = crate::app::spawn_self(&["window", "--update"]) {
+                    crate::log::warning!("{e}");
                 }
+                return iced::exit();
             }
             Msg::Copy => {
                 if let Some(f) = self.file() {
@@ -259,6 +287,52 @@ impl Toast {
             })
         };
         let body: Element<'_, Msg> = match &self.msg {
+            Message::Update { version, about } => {
+                let small = |label: &'static str, m: Msg, primary: bool| {
+                    button(text(label).size(12).font(MEDIUM))
+                        .padding(Padding::from([5, 10]))
+                        .style(if primary {
+                            theme::primary
+                        } else {
+                            theme::secondary
+                        })
+                        .on_press(m)
+                };
+                let logo = image(image::Handle::from_rgba(96, 96, kairo::art::app_icon(96)))
+                    .width(48)
+                    .height(48);
+                row![
+                    container(logo).center_y(Fill),
+                    column![
+                        row![
+                            dot(theme::accent()),
+                            text(format!("Kairo {version} is ready"))
+                                .font(BOLD)
+                                .size(14),
+                            Space::new().width(Fill),
+                            close
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                        text(match about {
+                            Some(a) => format!("New: {a}"),
+                            None => "A new version is out.".to_string(),
+                        })
+                        .size(12)
+                        .color(TEXT_2),
+                        Space::new().height(Fill),
+                        row![
+                            small("Update now", Msg::UpdateNow, true),
+                            small("Later", Msg::Close, false),
+                        ]
+                        .spacing(5),
+                    ]
+                    .spacing(3)
+                    .width(Fill),
+                ]
+                .spacing(14)
+                .into()
+            }
             Message::Failed(e) => column![
                 row![
                     dot(theme::accent()),
@@ -274,7 +348,7 @@ impl Toast {
             .into(),
             m => {
                 let (title, name, detail) = match m {
-                    Message::Saved { clip, seconds } => (
+                    Message::Saved { clip, seconds, .. } => (
                         "Clip saved",
                         clip.file_stem()
                             .map(|n| n.to_string_lossy().to_string())
@@ -288,7 +362,7 @@ impl Toast {
                             .unwrap_or_default(),
                         self.size.clone(),
                     ),
-                    Message::Failed(_) => unreachable!(),
+                    Message::Failed(_) | Message::Update { .. } => unreachable!(),
                 };
                 let picture: Element<'_, Msg> = match &self.thumb {
                     Some(h) => image(h.clone())
@@ -408,7 +482,15 @@ fn system_notification(msg: &Message) -> Result<(), String> {
             .unwrap_or_default()
     };
     let (title, body, icon) = match msg {
-        Message::Saved { clip, seconds } => (
+        Message::Update { version, about } => (
+            format!("Kairo {version} is ready"),
+            about
+                .clone()
+                .map(|a| format!("New: {a}. Open Kairo to update."))
+                .unwrap_or_else(|| "Open Kairo to update.".to_string()),
+            None,
+        ),
+        Message::Saved { clip, seconds, .. } => (
             "Clip saved".to_string(),
             format!("{} ({seconds:.0} s)", name(clip)),
             Some(crate::save::thumb_for(clip)),

@@ -3,8 +3,8 @@
 //! config folder.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyEvent;
@@ -90,6 +90,13 @@ pub struct Report {
     pub quick_save_errors: Vec<Option<String>>,
     pub session_hotkey: Option<String>,
     pub session_hotkey_error: Option<String>,
+    #[serde(default)]
+    pub share_hotkey: Option<String>,
+    #[serde(default)]
+    pub share_hotkey_error: Option<String>,
+    /// A newer version the background process found, if any.
+    #[serde(default)]
+    pub update: Option<String>,
     /// Unix milliseconds of the last update; stale means the process is gone.
     pub updated_ms: i64,
 }
@@ -165,7 +172,7 @@ pub fn run() -> Result<(), String> {
             let (s, s2) = (shared.clone(), shared.clone());
             std::thread::Builder::new()
                 .name("voice".into())
-                .spawn(move || crate::voice::run(s, move || start_save(&s2, None)))
+                .spawn(move || crate::voice::run(s, move || start_save(&s2, None, false)))
                 .map_err(|e| e.to_string())?
         },
     ];
@@ -194,6 +201,8 @@ pub fn run() -> Result<(), String> {
     mark_key.set(&settings.marker_hotkey);
     let mut session_key = hotkey.sibling();
     session_key.set(&settings.session_hotkey);
+    let mut share_key = hotkey.sibling();
+    share_key.set(&settings.share_hotkey);
     shared
         .session_wanted
         .store(settings.session_auto, Ordering::SeqCst);
@@ -213,6 +222,9 @@ pub fn run() -> Result<(), String> {
     let mut last_tick = Instant::now() - Duration::from_secs(1);
     // When the clips folder was last tidied (old clips out, Recently deleted emptied).
     let mut last_tidy: Option<Instant> = None;
+    // Updates: a first look a few minutes after starting, then every few hours.
+    let mut next_update_check = Instant::now() + FIRST_UPDATE_CHECK;
+    let update_found: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut threads = Some(threads);
     let _lock = lock;
 
@@ -230,7 +242,9 @@ pub fn run() -> Result<(), String> {
             }
             Event::UserEvent(UserEvent::Hotkey(e)) => {
                 if hotkey.is_press(&e) {
-                    start_save(&shared, None);
+                    start_save(&shared, None, false);
+                } else if share_key.is_press(&e) {
+                    start_save(&shared, None, true);
                 } else if shot_key.is_press(&e) {
                     start_screenshot(&shared);
                 } else if mark_key.is_press(&e) {
@@ -239,12 +253,17 @@ pub fn run() -> Result<(), String> {
                     toggle_session(&shared);
                 } else if let Some(i) = quick.iter().position(|k| k.is_press(&e)) {
                     let secs = shared.settings().quick_saves.get(i).map(|q| q.seconds);
-                    start_save(&shared, secs);
+                    start_save(&shared, secs, false);
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 match tray.as_ref().and_then(|t| t.action_for(e.id())) {
-                    Some(MenuAction::Save) => start_save(&shared, None),
+                    Some(MenuAction::Save) => start_save(&shared, None, false),
+                    Some(MenuAction::Update) => {
+                        if let Err(e) = crate::app::spawn_self(&["window", "--update"]) {
+                            warning!("{e}");
+                        }
+                    }
                     Some(MenuAction::TogglePause) => toggle_pause(&shared),
                     Some(MenuAction::ToggleSession) => toggle_session(&shared),
                     Some(MenuAction::OpenFolder) => {
@@ -284,6 +303,7 @@ pub fn run() -> Result<(), String> {
                         shot_key.set(&s.screenshot_hotkey);
                         mark_key.set(&s.marker_hotkey);
                         session_key.set(&s.session_hotkey);
+                        share_key.set(&s.share_hotkey);
                         set_quick_keys(&mut quick, &s);
                         #[cfg(windows)]
                         if s.input_overlay != input_hooks.is_some() {
@@ -303,7 +323,15 @@ pub fn run() -> Result<(), String> {
                 }
             }
             if let Some(seconds) = take_save_request() {
-                start_save(&shared, seconds);
+                start_save(&shared, seconds, false);
+            }
+            if Instant::now() >= next_update_check {
+                next_update_check = Instant::now() + UPDATE_EVERY;
+                let s = shared.settings();
+                if s.check_updates && std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_none() {
+                    let found = update_found.clone();
+                    std::thread::spawn(move || look_for_update(&found));
+                }
             }
             if take_request(Request::Screenshot) {
                 start_screenshot(&shared);
@@ -339,12 +367,14 @@ pub fn run() -> Result<(), String> {
             }
             let status = shared.status();
             let s = shared.settings();
+            let update = update_found.lock().unwrap().clone();
             if let Some(t) = &mut tray {
                 t.sync(
                     &status,
                     s.clip_seconds,
                     hotkey.label(),
                     launcher.as_ref().map(autostart::is_enabled),
+                    update.as_deref(),
                 );
             }
             let report = Report {
@@ -358,6 +388,9 @@ pub fn run() -> Result<(), String> {
                 quick_save_errors: quick.iter().map(|k| k.error.clone()).collect(),
                 session_hotkey: session_key.label().map(String::from),
                 session_hotkey_error: session_key.error.clone(),
+                share_hotkey: share_key.label().map(String::from),
+                share_hotkey_error: share_key.error.clone(),
+                update,
                 updated_ms: recorder::now_us() / 1000,
             };
             if let Ok(text) = serde_json::to_string(&report) {
@@ -387,6 +420,41 @@ pub fn run() -> Result<(), String> {
             *control_flow = ControlFlow::Exit;
         }
     })
+}
+
+/// When the first look for updates happens, and how often after that.
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(3 * 60);
+const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
+
+/// The version the last update notice was about, so each version is announced once.
+fn announced_path() -> PathBuf {
+    config::config_dir().join("update-announced.txt")
+}
+
+/// Asks GitHub for a newer version; the first time one turns up, shows a notice about it.
+fn look_for_update(found: &Mutex<Option<String>>) {
+    match crate::updater::check() {
+        Ok(Some(u)) => {
+            *found.lock().unwrap() = Some(u.version.clone());
+            let told = std::fs::read_to_string(announced_path()).unwrap_or_default();
+            if told.trim() == u.version {
+                return;
+            }
+            let _ = std::fs::write(announced_path(), &u.version);
+            info!("Kairo {} is available", u.version);
+            let mut args = vec!["notify".to_string(), "--update".into(), u.version.clone()];
+            if let Some(point) = crate::updater::highlights(&u.notes, 1).into_iter().next() {
+                args.push("--about".into());
+                args.push(point);
+            }
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            if let Err(e) = crate::app::spawn_self(&refs) {
+                warning!("{e}");
+            }
+        }
+        Ok(None) => *found.lock().unwrap() = None,
+        Err(e) => info!("update check: {e}"),
+    }
 }
 
 fn toggle_pause(shared: &Shared) {
@@ -494,7 +562,9 @@ fn mark(shared: &Shared) {
 
 /// Saves a clip of the last `seconds` (the settings' length if `None`) on a worker thread, then
 /// plays the sound and shows the notification.
-fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
+/// Saves the last `seconds` (the usual length when `None`). With `share`, the notice that
+/// follows uploads the clip and copies its link.
+fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
     // During a session, a save is a bookmark too.
     if shared.session.lock().unwrap().is_some() {
         shared.mark();
@@ -525,20 +595,26 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
             shared.marks.lock().unwrap().clear();
         }
         shared.saving.store(false, Ordering::SeqCst);
-        if !settings.notify {
+        if !settings.notify && !(share && result.is_ok()) {
             if let Err(e) = result {
                 warning!("{e}");
             }
             return;
         }
         let args: Vec<String> = match &result {
-            Ok(clip) => vec![
-                "notify".into(),
-                "--clip".into(),
-                clip.path.display().to_string(),
-                "--seconds".into(),
-                format!("{:.1}", clip.seconds),
-            ],
+            Ok(clip) => {
+                let mut a = vec![
+                    "notify".into(),
+                    "--clip".into(),
+                    clip.path.display().to_string(),
+                    "--seconds".into(),
+                    format!("{:.1}", clip.seconds),
+                ];
+                if share {
+                    a.push("--share".into());
+                }
+                a
+            }
             Err(e) => {
                 warning!("{e}");
                 vec!["notify".into(), "--error".into(), e.clone()]

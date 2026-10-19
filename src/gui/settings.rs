@@ -68,6 +68,8 @@ pub enum Target {
     Screenshot,
     Marker,
     Session,
+    /// Save a clip and copy a share link.
+    Share,
     /// A quick save, by its place in the list.
     Quick(usize),
 }
@@ -76,6 +78,8 @@ pub enum Target {
 pub struct Updates {
     pub checking: bool,
     pub installing: bool,
+    /// Install as soon as the check finds the update ("Update now" in a notice).
+    pub auto_install: bool,
     pub available: Option<Arc<updater::Update>>,
     pub message: Option<(String, bool)>,
 }
@@ -86,6 +90,9 @@ pub enum Msg {
     ScreenshotOff,
     MarkerOff,
     SessionOff,
+    ShareOff,
+    /// Open a version's release notes.
+    OpenNotes(String),
     SessionAuto(bool),
     ChatTrack(bool),
     ChatApp(String),
@@ -144,6 +151,8 @@ pub enum Effect {
     Changed,
     /// An update was installed: restart.
     Restart,
+    /// Open a link in the browser.
+    OpenUrl(String),
 }
 
 impl State {
@@ -245,6 +254,7 @@ impl State {
             (Target::Screenshot, &s.screenshot_hotkey),
             (Target::Marker, &s.marker_hotkey),
             (Target::Session, &s.session_hotkey),
+            (Target::Share, &s.share_hotkey),
         ]
         .into_iter()
         .chain(
@@ -265,6 +275,7 @@ impl State {
                     Target::Screenshot => s.screenshot_hotkey = spec,
                     Target::Marker => s.marker_hotkey = spec,
                     Target::Session => s.session_hotkey = spec,
+                    Target::Share => s.share_hotkey = spec,
                     Target::Quick(i) => {
                         if let Some(q) = s.quick_saves.get_mut(i) {
                             q.hotkey = spec;
@@ -302,6 +313,12 @@ impl State {
                 self.capturing_key = None;
                 return changed;
             }
+            Msg::ShareOff => {
+                s.share_hotkey.clear();
+                self.capturing_key = None;
+                return changed;
+            }
+            Msg::OpenNotes(url) => return (Task::none(), Effect::OpenUrl(url)),
             Msg::SessionOff => {
                 s.session_hotkey.clear();
                 self.capturing_key = None;
@@ -596,8 +613,14 @@ impl State {
             Msg::Checked(r) => {
                 self.update.checking = false;
                 match r {
-                    Ok(Some(u)) => self.update.available = Some(u),
+                    Ok(Some(u)) => {
+                        self.update.available = Some(u);
+                        if std::mem::take(&mut self.update.auto_install) {
+                            return self.update(s, Msg::Install);
+                        }
+                    }
                     Ok(None) => {
+                        self.update.auto_install = false;
                         self.update.message = Some((
                             format!(
                                 "Kairo {} is the latest version.",
@@ -766,6 +789,76 @@ impl State {
         used: u64,
     ) -> Element<'a, Msg> {
         let mut sections = column![].spacing(26).max_width(780);
+        if let Some(u) = &self.update.available {
+            let mut points = column![].spacing(6);
+            for p in updater::highlights(&u.notes, 5) {
+                points = points.push(
+                    row![
+                        icon(Icon::Check, 14.0, theme::accent()),
+                        text(p).size(13).color(TEXT)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+            let actions: Element<'_, Msg> = if self.update.installing {
+                text(format!(
+                    "Installing Kairo {}. It restarts on its own in a moment.",
+                    u.version
+                ))
+                .size(13)
+                .color(TEXT_2)
+                .into()
+            } else {
+                row![
+                    button(
+                        row![
+                            icon(Icon::Download, 15.0, theme::on_accent()),
+                            text("Update and restart").size(13).font(SEMIBOLD)
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
+                    )
+                    .padding(Padding::from([8, 14]))
+                    .style(theme::primary)
+                    .on_press(Msg::Install),
+                    button(
+                        row![
+                            icon(Icon::External, 14.0, TEXT_2),
+                            text("Release notes").size(13).font(MEDIUM)
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
+                    )
+                    .padding(Padding::from([8, 14]))
+                    .style(theme::secondary)
+                    .on_press(Msg::OpenNotes(updater::release_page(&u.version))),
+                ]
+                .spacing(8)
+                .into()
+            };
+            sections = sections.push(
+                container(
+                    column![
+                        text(format!("Kairo {} is ready", u.version))
+                            .font(BOLD)
+                            .size(18),
+                        text(format!(
+                            "You have {}. Updating takes a few seconds and keeps your clips and settings.",
+                            updater::current_version()
+                        ))
+                        .size(13)
+                        .color(TEXT_2),
+                        points,
+                        actions,
+                    ]
+                    .spacing(12),
+                )
+                .padding(18)
+                .width(Fill)
+                .style(theme::well),
+            );
+        }
         let save_error = report.and_then(|r| r.hotkey_error.clone());
         let shot_error = report.and_then(|r| r.screenshot_hotkey_error.clone());
         let key_col = self.key_capture(Target::Save, &s.hotkey, save_error);
@@ -1330,9 +1423,29 @@ impl State {
             .copied()
             .find(|e| *e == s.share_expiry)
             .unwrap_or("forever");
+        let share_error = report.and_then(|r| r.share_hotkey_error.clone());
+        let mut share_row = row![self.key_capture(Target::Share, &s.share_hotkey, share_error)]
+            .spacing(8)
+            .align_y(Alignment::Start);
+        if !s.share_hotkey.is_empty() {
+            share_row = share_row.push(
+                button(text("Turn off").size(13).font(MEDIUM))
+                    .padding(Padding::from([9, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::ShareOff),
+            );
+        }
         sections = sections.push(section(
             "Sharing",
             vec![setting(
+                "Save and share",
+                Some(
+                    "One key saves a clip, uploads it and copies the link, ready to paste in a chat."
+                        .into(),
+                ),
+                share_row,
+            ),
+            setting(
                 "Links last",
                 Some(
                     "Share links upload the clip to catbox.moe (forever) or litterbox.catbox.moe (for a while). \

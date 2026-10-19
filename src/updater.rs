@@ -23,14 +23,123 @@ struct Asset {
 struct Release {
     tag_name: String,
     assets: Vec<Asset>,
+    /// The release notes: the version's CHANGELOG.md section.
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// A newer release with a package for this platform.
 #[derive(Clone, Debug)]
 pub struct Update {
     pub version: String,
+    /// The release notes, as written in CHANGELOG.md.
+    pub notes: String,
     package: Asset,
     checksums: Option<Asset>,
+}
+
+impl Update {
+    /// A made-up update, for rendering the windows in tests.
+    #[cfg(test)]
+    pub fn sample(version: &str, notes: &str) -> Update {
+        let asset = |name: &str| Asset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+        };
+        Update {
+            version: version.to_string(),
+            notes: notes.to_string(),
+            package: asset("kairo-sample.zip"),
+            checksums: Some(asset(CHECKSUMS)),
+        }
+    }
+}
+
+/// Where a version's release notes are on GitHub.
+pub fn release_page(version: &str) -> String {
+    format!("https://github.com/fsiuhgshiqoih32/kairo/releases/tag/v{version}")
+}
+
+/// The CHANGELOG.md this build was made from.
+pub const CHANGELOG: &str = include_str!("../CHANGELOG.md");
+
+/// A version's section of a changelog: the lines under `## <version>` up to the next `## `.
+pub fn changelog_section(changelog: &str, version: &str) -> Option<String> {
+    let heading = format!("## {version}");
+    let mut lines = changelog.lines().skip_while(|l| l.trim_end() != heading);
+    lines.next()?;
+    let body: Vec<&str> = lines.take_while(|l| !l.starts_with("## ")).collect();
+    let text = body.join("\n").trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// The headline points of release notes, for a notice: each bullet's bold lead-in
+/// ("**Save and share.** One key…" gives "Save and share"), or its first sentence.
+pub fn highlights(notes: &str, max: usize) -> Vec<String> {
+    points(notes, max)
+        .into_iter()
+        .map(|(title, _)| title)
+        .collect()
+}
+
+/// Each bullet of release notes as (title, the first sentence after it). A bullet's lines
+/// that wrap onto indented lines are joined first.
+pub fn points(notes: &str, max: usize) -> Vec<(String, String)> {
+    let mut bullets: Vec<String> = Vec::new();
+    let mut open = false;
+    for line in notes.lines() {
+        if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            bullets.push(item.trim().to_string());
+            open = true;
+        } else if open && line.starts_with("  ") && !line.trim().is_empty() {
+            let last = bullets.last_mut().expect("a bullet is open");
+            last.push(' ');
+            last.push_str(line.trim());
+        } else {
+            open = false;
+        }
+    }
+    let tidy = |s: &str| {
+        plain(s)
+            .trim()
+            .trim_end_matches(['.', ':'])
+            .trim()
+            .to_string()
+    };
+    let first_sentence = |s: &str| s.split(". ").next().unwrap_or(s).to_string();
+    bullets
+        .iter()
+        .filter_map(|b| {
+            let (title, detail) = match b.strip_prefix("**").and_then(|r| r.split_once("**")) {
+                Some((t, rest)) => (tidy(t), tidy(&first_sentence(rest.trim()))),
+                None => (tidy(&first_sentence(b)), String::new()),
+            };
+            (!title.is_empty()).then_some((title, detail))
+        })
+        .take(max)
+        .collect()
+}
+
+/// Markdown links and code marks as plain text: `[text](url)` gives "text".
+fn plain(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match (after.find("]("), after.find(')')) {
+            (Some(close), Some(end)) if close < end => {
+                out.push_str(&after[..close]);
+                rest = &after[end + 1..];
+            }
+            _ => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace(['`', '*'], "")
 }
 
 pub fn current_version() -> &'static str {
@@ -102,6 +211,7 @@ pub fn check() -> Result<Option<Update>, String> {
     let checksums = release.assets.iter().find(|a| a.name == CHECKSUMS).cloned();
     Ok(Some(Update {
         version: release.tag_name.trim_start_matches('v').to_string(),
+        notes: release.body.unwrap_or_default(),
         package,
         checksums,
     }))
@@ -253,6 +363,55 @@ fn from_tar_gz(bytes: &[u8], name: &str) -> Result<Option<Vec<u8>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_changelog_section() {
+        let log = "# Changelog\n\n## 0.3.0\n\n- **Save and share.** One key.\n- Fixes.\n\n\
+                   ## 0.2.0\n\n- Old.\n";
+        assert_eq!(
+            changelog_section(log, "0.3.0").as_deref(),
+            Some("- **Save and share.** One key.\n- Fixes.")
+        );
+        assert_eq!(changelog_section(log, "0.2.0").as_deref(), Some("- Old."));
+        assert_eq!(changelog_section(log, "0.9.0"), None);
+        // The real changelog has a section for this build.
+        assert!(changelog_section(CHANGELOG, current_version()).is_some());
+    }
+
+    #[test]
+    fn picks_the_headlines_of_release_notes() {
+        let notes = "Intro line.\n\n- **Save and share.** One key saves and copies a link.\n\
+                     - Stats for your clips. They count.\n\
+                     - **Updates** tell you, with [notes](https://example.com).\n\
+                     * `kairo save` works on Wayland\n- **Fourth.** No.";
+        assert_eq!(
+            highlights(notes, 4),
+            vec![
+                "Save and share".to_string(),
+                "Stats for your clips".to_string(),
+                "Updates".to_string(),
+                "kairo save works on Wayland".to_string(),
+            ]
+        );
+        assert_eq!(highlights(notes, 1).len(), 1);
+        let wrapped = "- **Save and share.** One key saves a clip and\n  copies the link. More.\n\n\
+                       - Plain bullet. Second sentence.";
+        assert_eq!(
+            points(wrapped, 5),
+            vec![
+                (
+                    "Save and share".to_string(),
+                    "One key saves a clip and copies the link".to_string()
+                ),
+                ("Plain bullet".to_string(), String::new()),
+            ]
+        );
+        assert!(highlights("no bullets here", 3).is_empty());
+        assert_eq!(
+            plain("see [the notes](https://x.y) now"),
+            "see the notes now"
+        );
+    }
 
     #[test]
     fn versions_compare_numerically() {
