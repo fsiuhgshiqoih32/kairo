@@ -114,6 +114,7 @@ pub fn run() -> Result<(), String> {
         }
         None => return Err("no way to capture the screen worked".into()),
     }
+    system_audio_check();
     let _ = std::fs::remove_dir_all(&home);
     println!(
         "self-test passed in {:.1} s",
@@ -121,6 +122,30 @@ pub fn run() -> Result<(), String> {
     );
     Ok(())
 }
+
+/// macOS: starts ScreenCaptureKit system audio briefly and reports what arrived. Without the
+/// Screen Recording permission (as on CI) it can't start, which is reported, not failed.
+#[cfg(target_os = "macos")]
+fn system_audio_check() {
+    let shared = Shared::new(rewindr::config::Settings::default());
+    match crate::platform::macos_audio::start(shared.clone()) {
+        Ok(capture) => {
+            std::thread::sleep(Duration::from_secs(2));
+            drop(capture);
+            let held = shared
+                .desktop
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or(0.0, |r| r.seconds());
+            println!("desktop audio: ScreenCaptureKit delivered {held:.1} s");
+        }
+        Err(e) => println!("desktop audio: not available here ({e})"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_audio_check() {}
 
 /// Records `plan` into `shared` for `d`.
 fn record_for(ff: &std::path::Path, plan: &VideoPlan, shared: &Arc<Shared>, d: Duration) {
