@@ -5,6 +5,8 @@ sound in memory. Press **F8** and the last 30 seconds are saved as an MP4, like 
 ShadowPlay. It's free and open source (MIT), with no account and no ads. Nothing is uploaded
 unless you ask for a share link.
 
+**Website and downloads: https://fsiuhgshiqoih32.github.io/kairo/**
+
 <p align="center">
   <img src="docs/media/kairo-demo.webp" width="100%"
        alt="Kairo in action: F8 saves the last 30 seconds of a Minecraft session, the clip opens in the editor, and a share link comes with a QR code">

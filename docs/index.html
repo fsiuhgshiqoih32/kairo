@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kairo: free instant replay for Windows, macOS and Linux</title>
+<meta name="description" content="Kairo keeps the last 30 seconds of your game and saves them as a clip when you press F8. Free and open source, with no account and no watermark.">
+<meta name="theme-color" content="#141519">
+<meta property="og:title" content="Kairo: free instant replay">
+<meta property="og:description" content="Press F8 and the last 30 seconds of your game are saved. Free for Windows, macOS and Linux.">
+<meta property="og:image" content="https://fsiuhgshiqoih32.github.io/kairo/media/site/icon-512.png">
+<link rel="icon" href="media/site/favicon.png">
+<link rel="preload" href="fonts/Inter-Bold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="site.css">
+<script>document.documentElement.classList.add("js")</script>
+</head>
+<body>
+
+<header class="bar">
+  <a class="mark" href="#top" aria-label="Kairo, back to the top">
+    <img src="media/site/favicon.png" width="28" height="28" alt=""><span>Kairo</span>
+  </a>
+  <nav aria-label="Page">
+    <a href="#how">How it works</a>
+    <a href="#download">Download</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero" aria-labelledby="hero-title">
+  <h1 id="hero-title" class="sentence">
+    <span class="line"><span data-line style="--i:0">Keep</span></span>
+    <span class="strip" aria-hidden="true">
+      <video autoplay muted loop playsinline preload="auto" poster="media/site/strip.jpg" id="strip">
+        <source src="media/site/strip.mp4" type="video/mp4">
+      </video>
+    </span>
+    <span class="sr-only">the moment</span>
+    <span class="line"><span data-line style="--i:1">forever.</span></span>
+  </h1>
+  <div class="act">
+    <a class="btn" id="hero-download" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.2.0/kairo-v0.2.0-windows-x64-setup.exe">Download for Windows</a>
+    <button class="try" id="try" type="button">Try it: press <kbd>F8</kbd></button>
+  </div>
+  <p class="lede">Kairo holds the last 30 seconds of your game and saves them the moment you press F8. Free on Windows, macOS and Linux.</p>
+</section>
+
+<section class="library" aria-labelledby="library-title">
+  <h2 id="library-title" class="sr-only">Find any clip by typing</h2>
+  <label class="sr-only" for="q">Search the sample clips</label>
+  <input class="typed reveal" id="q" type="search" value="clutch" autocomplete="off" spellcheck="false" data-ui>
+  <div class="lib-body">
+  <div class="answer reveal" data-ui>
+    <p class="answer-note" id="answer-note">3 clips. Kairo names each clip after the game and keeps its tags, so search finds them.</p>
+    <ul class="rows" id="rows" aria-live="polite">
+      <li tabindex="0" data-img="clip3"><img src="media/site/clip3.jpg" alt="" width="128" height="72"><div><b>Axe through the roof</b><span>Minecraft · 0:30 · today</span></div><em>clutch</em></li>
+      <li tabindex="0" data-img="clip6"><img src="media/site/clip6.jpg" alt="" width="128" height="72"><div><b>Down the mine in four hits</b><span>Minecraft · 0:15 · yesterday</span></div><em>clutch</em></li>
+      <li tabindex="0" data-img="clip2"><img src="media/site/clip2.jpg" alt="" width="128" height="72"><div><b>Last log before sunrise</b><span>Minecraft · 0:13 · trimmed</span></div><em>clutch</em></li>
+    </ul>
+  </div>
+  <figure class="preview reveal" data-ui>
+    <img id="preview-img" src="media/site/clip3.jpg" alt="A frame from the clip: an axe breaking through a wooden roof at night" width="960" height="540">
+    <figcaption><b id="preview-title">Axe through the roof</b><span id="preview-meta">Minecraft · 0:30 · today · 72 MB</span></figcaption>
+  </figure>
+  </div>
+  <div class="examples reveal" aria-label="Try another search">
+    <button type="button" data-q="build">build</button>
+    <button type="button" data-q="lake">lake</button>
+    <button type="button" data-q="trimmed">trimmed</button>
+  </div>
+</section>
+
+<section class="features" aria-labelledby="features-title">
+  <h2 id="features-title" class="sr-only">Settings you can switch on</h2>
+  <div class="band reveal" style="--fill:#ff7a1a" data-on="true">
+    <p class="say">Say “clip that” and it saves.</p>
+    <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Voice clipping" data-ui><span></span></button>
+    <p class="then">Voice clipping listens on your computer, offline. Nothing you say is sent anywhere.</p>
+  </div>
+  <div class="band reveal" style="--fill:#f5b301" data-on="false">
+    <p class="say">Keep recording after you press.</p>
+    <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Keep recording after the press" data-ui><span></span></button>
+    <p class="then">Catches the 2, 5 or 10 seconds after the save, so the reaction is in the clip too.</p>
+  </div>
+  <div class="band reveal" style="--fill:#2fcf7f" data-on="true">
+    <p class="say">Record the whole session too.</p>
+    <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Session recording" data-ui><span></span></button>
+    <p class="then">Up to 5 hours in one file, with every F10 marker you set as a bookmark on its timeline.</p>
+  </div>
+  <div class="band reveal" style="--fill:#1fc2e0" data-on="false">
+    <p class="say">Give voice chat its own track.</p>
+    <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Voice chat on its own track" data-ui><span></span></button>
+    <p class="then">Turn Discord down in a copy without touching the game sound. Windows 11.</p>
+  </div>
+  <div class="band reveal" style="--fill:#3d8bff" data-on="false">
+    <p class="say">Show the keys you pressed.</p>
+    <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Keys and clicks overlay" data-ui><span></span></button>
+    <p class="then">WASD, Space, Shift and mouse buttons over the clip. Nothing else you type is kept. Windows.</p>
+  </div>
+</section>
+
+<section class="how" id="how" aria-labelledby="how-title">
+  <div class="field words">
+    <h2 id="how-title" class="clause" aria-live="polite">It’s already recording.</h2>
+    <p class="clause-note" id="clause-note">The replay runs on your graphics card’s own encoder and lives in memory, so games keep their frames.</p>
+  </div>
+  <div class="field stage" aria-hidden="true">
+    <div class="frag frag-rec on" data-stage="0" data-ui>
+      <div class="rec-top"><i></i><b>Recording</b><span class="pause"></span></div>
+      <p>1440p 60 fps, NVIDIA (NVENC)</p>
+      <div class="meter"><span></span></div>
+      <p><span id="ready">0:30</span> of 0:30 ready</p>
+    </div>
+    <div class="frag frag-save" data-stage="1" data-ui>
+      <div class="savebtn"><span>Save last 30 s</span><kbd>F8</kbd><span class="chev"></span></div>
+      <div class="menu">
+        <p>Save the last</p>
+        <div class="opt sel"><span>30 s</span><kbd>F8</kbd></div>
+        <div class="opt"><span>2 min</span><kbd>F7</kbd></div>
+        <div class="opt"><span>15 s</span></div>
+      </div>
+    </div>
+    <div class="frag frag-toast" data-stage="2" data-ui>
+      <img src="media/site/clip1.jpg" alt="" width="132" height="74">
+      <div>
+        <p class="t-title"><i></i>Clip saved</p>
+        <p class="t-name">Minecraft 2026-10-18 16-58-48</p>
+        <p class="t-meta">0:30 long, 72 MB</p>
+        <div class="t-acts"><span>Open</span><span class="hot">Get link</span><span>Copy</span></div>
+      </div>
+    </div>
+    <div class="frag frag-share" data-stage="3">
+      <img src="media/site/share-dialog.jpg" alt="Kairo's share link dialog with a link, a Copy button and a QR code" width="917" height="758">
+    </div>
+  </div>
+  <div class="slider">
+    <label class="sr-only" for="stage">Stage</label>
+    <div class="track"><span class="fill"></span><input id="stage" type="range" min="0" max="3" step="1" value="0"></div>
+    <ol class="stops">
+      <li class="on">Recording</li><li>F8</li><li>Saved</li><li>Shared</li>
+    </ol>
+  </div>
+</section>
+
+<section class="about" aria-labelledby="about-title">
+  <h2 id="about-title" class="sr-only">About Kairo</h2>
+  <ul class="facts reveal">
+    <li>MIT licence</li>
+    <li>Version <span data-version>0.2.0</span></li>
+    <li><a href="https://github.com/fsiuhgshiqoih32/kairo">Code on GitHub</a></li>
+  </ul>
+  <div class="prose reveal">
+    <p><img class="cap" src="media/site/icon-512.png" alt="The Kairo logo: a bar and a triangle pointing back" width="512" height="512"><b>Kairo</b> is named after kairos, the Greek word for the decisive moment, the one you only notice once it has passed. That is the whole idea: the last 30 seconds stay in memory, so the moment is still there when you reach for F8. It is free and open source, with no account, no ads and no watermark.</p>
+    <p class="soft">Nothing leaves your computer unless you make a share link or post to your own Discord channel. Every release is built from the public code on <a href="https://github.com/fsiuhgshiqoih32/kairo">GitHub</a> and checked against its published checksums before it updates itself.</p>
+  </div>
+</section>
+
+<section class="get" id="download" aria-labelledby="get-title">
+  <h2 id="get-title" class="get-line">
+    <span>Get Kairo for</span>
+    <span class="pick" data-ui>
+      <label class="sr-only" for="os">System</label>
+      <select id="os">
+        <option value="windows">Windows</option>
+        <option value="mac">macOS</option>
+        <option value="linux">Linux</option>
+      </select>
+    </span>
+    <a class="go" id="go" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.2.0/kairo-v0.2.0-windows-x64-setup.exe">Download</a>
+  </h2>
+  <p class="get-note" id="get-note">The installer, <span class="file">kairo-v0.2.0-windows-x64-setup.exe</span> (32 MB), sets Kairo up for you without administrator rights. It isn’t code-signed yet, so Windows may ask: choose More info, then Run anyway.</p>
+  <p class="get-more">
+    Also: <a id="alt-portable" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.2.0/kairo-v0.2.0-windows-x64-portable.zip">Windows zip, no installer</a>,
+    <a id="alt-mac" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.2.0/kairo-v0.2.0-macos-universal.zip">macOS</a>,
+    <a id="alt-linux" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.2.0/kairo-v0.2.0-linux-x86_64-portable.tar.gz">Linux</a>,
+    <a href="https://github.com/fsiuhgshiqoih32/kairo/releases/latest">checksums and every release</a>.
+  </p>
+</section>
+
+<section class="faq" aria-labelledby="faq-title">
+  <h2 id="faq-title" class="reveal">Before you press F8</h2>
+  <div class="qs">
+    <details class="reveal">
+      <summary>Is it really free?</summary>
+      <p>Yes, all of it. There is no paid tier, no account, no ads and no watermark on your clips. Kairo is open source under the MIT licence.</p>
+    </details>
+    <details class="reveal">
+      <summary>Will it slow my games down?</summary>
+      <p>Very little. The replay is encoded on your graphics card (NVIDIA NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox), with x264 as a fallback. Saving cuts the clip from what is already encoded, without encoding it again.</p>
+    </details>
+    <details class="reveal">
+      <summary>Where do my clips go?</summary>
+      <p>Into Videos/Kairo as MP4 files named after the game, with the game, your microphone and voice chat on their own tracks. Change the folder in Settings. Nothing is uploaded unless you ask for a share link.</p>
+    </details>
+    <details class="reveal">
+      <summary>Windows says it protected my PC.</summary>
+      <p>The installer isn’t code-signed yet, so SmartScreen doesn’t know it. Choose More info, then Run anyway. To be sure the file is the real one, compare it with SHA256SUMS.txt on the release page.</p>
+    </details>
+    <details class="reveal">
+      <summary>Does it work on macOS and Linux?</summary>
+      <p>Yes. macOS 11 or newer on Apple silicon and Intel: allow Screen Recording when asked (desktop sound needs macOS 13). Linux on x86_64 with X11; on Wayland, bind the command <code>kairo save</code> to a key in your desktop’s settings.</p>
+    </details>
+    <details class="reveal">
+      <summary>I used Rewindr. Do I lose anything?</summary>
+      <p>No. Rewindr was Kairo’s name before version 0.2.0. It updates itself to Kairo, or the installer replaces it, and your settings, clips and start-up setting carry over.</p>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer class="close">
+  <div class="invite">
+    <p class="invite-line">Catch the<br>next one.</p>
+    <a class="btn btn-dark" id="foot-download" href="#download">Download Kairo</a>
+  </div>
+  <ul class="links">
+    <li><a href="https://github.com/fsiuhgshiqoih32/kairo">GitHub</a></li>
+    <li><a href="https://github.com/fsiuhgshiqoih32/kairo/releases">Releases</a></li>
+    <li><a href="https://github.com/fsiuhgshiqoih32/kairo/blob/main/CHANGELOG.md">What’s new</a></li>
+    <li><a href="https://github.com/fsiuhgshiqoih32/kairo/issues">Report a problem</a></li>
+  </ul>
+  <p class="legal">
+    <span>© 2026 fsiuhgshiqoih32 · MIT licence</span>
+    <span>Footage: Minecraft, recorded with Kairo, minimap blurred · Type: Inter, SIL Open Font License</span>
+  </p>
+  <p class="giant" aria-hidden="true">Kairo</p>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden data-ui>
+  <canvas id="toast-shot" width="264" height="148"></canvas>
+  <div>
+    <p class="t-title"><i></i>Clip saved</p>
+    <p class="t-name">This page, <span id="toast-len">0:12</span> long</p>
+    <p class="t-meta">That’s how Kairo works in a game: the last 30 seconds, kept.</p>
+    <div class="t-acts"><a class="hot" href="#download">Get Kairo</a><button type="button" id="toast-close">Close</button></div>
+  </div>
+</div>
+
+<script src="site.js" defer></script>
+</body>
+</html>

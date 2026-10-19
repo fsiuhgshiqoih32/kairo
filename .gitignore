@@ -2,5 +2,6 @@
 /dist
 *.mp4
 *.ts
-# The README demo is the one video kept in the repo.
-!docs/media/*.mp4
+# The README demo and the website's loop are the videos kept in the repo.
+!docs/media/**/*.mp4
+/.taste-skill
