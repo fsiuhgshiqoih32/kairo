@@ -1,5 +1,5 @@
-// Kairo's site: picks the download for this computer, fills in the latest release, and runs the
-// page's small live pieces. Everything works as plain links without it.
+// Kairo's site: picks the download for this computer, fills in the newest release, and runs the
+// page's live parts (the hero's replay panel, F8, the app tour). Every link works without it.
 (() => {
   "use strict";
   const $ = (s, el = document) => el.querySelector(s);
@@ -11,11 +11,13 @@
   const REPO = "fsiuhgshiqoih32/kairo";
   const release = {
     version: "0.2.0",
+    date: null,
     files: {
       windows: { name: "kairo-v0.2.0-windows-x64-setup.exe", size: 31914499 },
       portable: { name: "kairo-v0.2.0-windows-x64-portable.zip", size: 15543795 },
       mac: { name: "kairo-v0.2.0-macos-universal.zip", size: 25339367 },
       linux: { name: "kairo-v0.2.0-linux-x86_64-portable.tar.gz", size: 15746029 },
+      sums: { name: "SHA256SUMS.txt", size: 0 },
     },
   };
   const SUFFIX = {
@@ -24,55 +26,119 @@
     mac: "-macos-universal.zip",
     linux: "-linux-x86_64-portable.tar.gz",
   };
-  const NAME = { windows: "Windows", mac: "macOS", linux: "Linux" };
+  const OS = {
+    windows: {
+      name: "Windows",
+      for: "For Windows 10 and 11, 64‑bit",
+      label: "Download the installer",
+      meta: "Windows 10 and 11",
+      note: "Installs for you without administrator rights and uninstalls from Settings › Apps. It isn’t code-signed yet, so Windows may say it protected your PC: choose More info, then Run anyway.",
+    },
+    mac: {
+      name: "macOS",
+      for: "For macOS 11 or newer, Apple silicon and Intel",
+      label: "Download for Mac",
+      meta: "macOS 11 or newer",
+      note: "Unzip it and move Kairo to Applications. It isn’t notarized yet: the first time, right-click it and choose Open. Then allow Screen Recording in System Settings › Privacy & Security. Desktop sound needs macOS 13.",
+    },
+    linux: {
+      name: "Linux",
+      for: "For Linux on x86_64, with X11",
+      label: "Download for Linux",
+      meta: "x86_64, X11",
+      note: "Unpack it and run ./kairo. Desktop sound needs parec (PulseAudio or PipeWire); copying clips needs xclip or wl-copy. On Wayland, bind kairo save to a key.",
+    },
+  };
   const url = (f) => `https://github.com/${REPO}/releases/download/v${release.version}/${f.name}`;
-  const mb = (bytes) => `${Math.round(bytes / 1e6)} MB`;
+  const mb = (bytes) => `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 
   function detect() {
     const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
     const ua = navigator.userAgent || "";
-    if (/android|iphone|ipad|ipod/i.test(ua) || (/Mac/.test(p) && navigator.maxTouchPoints > 1)) {
-      return { os: "windows", phone: true };
+    const touchMac = /Mac/.test(p) && navigator.maxTouchPoints > 1;
+    if (/android|iphone|ipad|ipod/i.test(ua) || touchMac || (navigator.userAgentData && navigator.userAgentData.mobile)) {
+      return { os: /iphone|ipad|ipod/i.test(ua) || touchMac ? "mac" : "windows", phone: true };
     }
     if (/mac/i.test(p) || /Mac OS X/.test(ua)) return { os: "mac", phone: false };
     if (/linux|x11/i.test(p) || /Linux|X11/.test(ua)) return { os: "linux", phone: false };
     return { os: "windows", phone: false };
   }
   const here = detect();
+  let chosen = here.os;
 
-  function note(os) {
-    const f = release.files[os];
-    const file = `<span class="file">${esc(f.name)}</span> (${mb(f.size)})`;
-    const lead = here.phone ? "Kairo runs on computers, so send yourself this page and open it there. " : "";
-    if (os === "mac") {
-      return `${lead}${file} holds Kairo.app for Apple silicon and Intel, macOS 11 or newer. Move it to Applications; the first time, right-click it and choose Open, then allow Screen Recording.`;
-    }
-    if (os === "linux") {
-      return `${lead}${file} is for x86_64 with X11. Unpack it and run ./kairo; desktop sound needs parec from PulseAudio or PipeWire.`;
-    }
-    return `${lead}The installer, ${file}, sets Kairo up for you without administrator rights. It isn’t code-signed yet, so Windows may ask: choose More info, then Run anyway.`;
-  }
-
-  const os = $("#os");
-  function choose(which) {
-    os.value = which;
-    $("#go").href = url(release.files[which]);
-    $("#get-note").innerHTML = note(which);
-    const hero = $("#hero-download");
-    if (here.phone) {
-      hero.textContent = "Get Kairo for your computer";
-      hero.href = "#download";
-    } else {
-      hero.textContent = `Download for ${NAME[here.os]}`;
-      hero.href = url(release.files[here.os]);
-    }
+  function paint() {
+    const f = release.files[chosen];
+    const o = OS[chosen];
+    $("#pick-for").textContent = o.for;
+    $("#go-label").textContent = o.label;
+    $("#go").href = url(f);
+    $("#go-file").textContent = f.name;
+    $("#go-size").textContent = mb(f.size);
+    $("#pick-note").textContent = o.note;
+    $$(".os-switch [role=radio]").forEach((b) => {
+      const on = b.dataset.os === chosen;
+      b.setAttribute("aria-checked", String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
     $("#alt-portable").href = url(release.files.portable);
     $("#alt-mac").href = url(release.files.mac);
     $("#alt-linux").href = url(release.files.linux);
+    $("#sums").href = url(release.files.sums);
+    $$("[data-size]").forEach((el) => (el.textContent = mb(release.files[el.dataset.size].size)));
     $$("[data-version]").forEach((el) => (el.textContent = release.version));
+    if (release.date) {
+      const d = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" }).format(release.date);
+      $("#release-date").textContent = `, released ${d}`;
+    }
+
+    const hero = $("#hero-download");
+    const meta = $("#hero-meta");
+    if (here.phone) {
+      $("#hero-download-label").textContent = "Get Kairo for your computer";
+      hero.href = "#download";
+      meta.innerHTML = `Version ${esc(release.version)} · for Windows, macOS and Linux`;
+    } else {
+      const mine = release.files[here.os];
+      $("#hero-download-label").textContent = `Download for ${OS[here.os].name}`;
+      hero.href = url(mine);
+      const others = here.os === "windows" ? "macOS and Linux" : here.os === "mac" ? "Windows and Linux" : "Windows and macOS";
+      meta.innerHTML = `Version ${esc(release.version)} · ${mb(mine.size)} · ${esc(OS[here.os].meta)} · <a href="#download">${others}</a>`;
+    }
   }
-  os.addEventListener("change", () => choose(os.value));
-  choose(here.os);
+
+  const radios = $$(".os-switch [role=radio]");
+  radios.forEach((b, i) => {
+    b.addEventListener("click", () => {
+      chosen = b.dataset.os;
+      paint();
+    });
+    b.addEventListener("keydown", (e) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const next = radios[(i + step + radios.length) % radios.length];
+      chosen = next.dataset.os;
+      paint();
+      next.focus();
+    });
+  });
+
+  if (here.phone) {
+    $("#phone-note").hidden = false;
+    $("#send-link").addEventListener("click", async () => {
+      const page = { title: "Kairo: free instant replay", url: location.origin + location.pathname };
+      try {
+        if (navigator.share) await navigator.share(page);
+        else {
+          await navigator.clipboard.writeText(page.url);
+          $("#send-link").textContent = "Link copied";
+        }
+      } catch {
+        /* the visitor closed the share sheet */
+      }
+    });
+  }
+  paint();
 
   // The newest release, if GitHub answers; the 0.2.0 links above stand otherwise.
   fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: "application/vnd.github+json" } })
@@ -84,179 +150,185 @@
         if (!a) return;
         files[key] = { name: a.name, size: a.size };
       }
-      release.version = rel.tag_name.replace(/^v/, "");
+      files.sums = { name: "SHA256SUMS.txt", size: 0 };
+      release.version = String(rel.tag_name).replace(/^v/, "");
+      release.date = rel.published_at ? new Date(rel.published_at) : null;
       release.files = files;
-      choose(os.value);
+      paint();
     })
     .catch(() => {});
 
-  // ---------- Searching the sample clips ----------
-  const CLIPS = [
-    { img: "clip3", title: "Axe through the roof", meta: "Minecraft · 0:30 · today", size: "72 MB", tags: ["clutch", "build"], alt: "an axe breaking through a wooden roof at night" },
-    { img: "clip6", title: "Down the mine in four hits", meta: "Minecraft · 0:15 · yesterday", size: "31 MB", tags: ["clutch"], alt: "a diamond axe at a log beside a stone wall" },
-    { img: "clip2", title: "Last log before sunrise", meta: "Minecraft · 0:13 · trimmed", size: "26 MB", tags: ["clutch", "trimmed"], alt: "a log breaking apart against the night sky" },
-    { img: "clip1", title: "Greenhouse frame, done", meta: "Minecraft · 0:30 · today", size: "64 MB", tags: ["build"], alt: "a wooden frame around a greenhouse at dusk" },
-    { img: "clip4", title: "Night over the lake", meta: "Minecraft · 0:30 · yesterday", size: "63 MB", tags: ["lake"], alt: "beams of a half-built house over hills at night" },
-    { img: "clip5", title: "Deck down to the water", meta: "Minecraft · 0:21 · trimmed", size: "44 MB", tags: ["build", "lake", "trimmed"], alt: "a wooden deck on grass" },
-  ];
-  function preview(c) {
-    if (!c) return;
-    const img = $("#preview-img");
-    img.src = `media/site/${c.img}.jpg`;
-    img.alt = `A frame from the clip: ${c.alt}`;
-    $("#preview-title").textContent = c.title;
-    $("#preview-meta").textContent = `${c.meta} · ${c.size}`;
-    $$("#rows li").forEach((li) => li.classList.toggle("sel", li.dataset.img === c.img));
-  }
-  const q = $("#q");
-  const rows = $("#rows");
-  function search() {
-    const words = q.value.toLowerCase().split(/\s+/).filter(Boolean);
-    const hits = CLIPS.filter((c) => {
-      const hay = `${c.title} ${c.meta} ${c.tags.join(" ")}`.toLowerCase();
-      return words.every((w) => hay.includes(w));
-    }).slice(0, 3);
-    rows.innerHTML = hits.length
-      ? hits.map((c) => `<li tabindex="0" data-img="${c.img}"><img src="media/site/${c.img}.jpg" alt="" width="128" height="72"><div><b>${esc(c.title)}</b><span>${esc(c.meta)}</span></div><em>${esc(c.tags[0])}</em></li>`).join("")
-      : `<li class="none">No clips match “${esc(q.value)}”. Kairo searches names, games and tags.</li>`;
-    const n = CLIPS.filter((c) => words.every((w) => `${c.title} ${c.meta} ${c.tags.join(" ")}`.toLowerCase().includes(w))).length;
-    preview(hits[0]);
-    $("#answer-note").textContent = words.length
-      ? `${n} ${n === 1 ? "clip" : "clips"}. Kairo names each clip after the game and keeps its tags, so search finds them.`
-      : "Type a game, a name or a tag.";
-  }
-  q.addEventListener("input", search);
-  // Pointing at a result, or moving to it with Tab, shows it larger, like Kairo's hover preview.
-  const pick = (e) => {
-    const li = e.target.closest("li[data-img]");
-    if (li) preview(CLIPS.find((c) => c.img === li.dataset.img));
-  };
-  rows.addEventListener("mouseover", pick);
-  rows.addEventListener("focusin", pick);
-  preview(CLIPS[0]);
-  $$(".examples button").forEach((b) =>
-    b.addEventListener("click", () => {
-      q.value = b.dataset.q;
-      search();
-      q.focus();
-    }),
-  );
+  // ---------- Navigation ----------
+  const nav = $("#nav");
+  const onScroll = () => nav.classList.toggle("scrolled", scrollY > 24);
+  addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
 
-  // ---------- Switches ----------
-  $$(".band .switch").forEach((sw) =>
-    sw.addEventListener("click", () => {
-      const band = sw.closest(".band");
-      const on = band.dataset.on !== "true";
-      band.dataset.on = String(on);
-      sw.setAttribute("aria-checked", String(on));
-    }),
-  );
+  // ---------- Hero video and Kairo's recording panel ----------
+  const video = $("#hero-video");
+  const toggle = $("#vid-toggle");
+  const hud = $("#hud");
+  const fill = $("#hud-fill");
+  const PLAY = 8.9; // seconds of play before the loop rewinds to its first frame
+  let userPaused = reduced;
+  let inView = true;
 
-  // ---------- Stages ----------
-  const STAGES = [
-    ["It’s already recording.", "The replay runs on your graphics card’s own encoder and lives in memory, so games keep their frames."],
-    ["Then you press F8.", "Any time, even in full-screen games. Up to three more shortcuts can save other lengths, up to 20 minutes."],
-    ["Saved in a second.", "The clip is cut from what’s already encoded, named after the game, with game, mic and voice chat on their own tracks."],
-    ["Trim it, then share it.", "Trim it, slow it down, add captions or music, then make a link anyone can watch, with a QR code for phones."],
-  ];
-  const stage = $("#stage");
-  const frags = $$(".frag");
-  const stops = $$(".stops li");
-  const fill = $(".slider .fill");
-  let touched = false;
-  function show(i) {
-    stage.value = i;
-    $("#how-title").textContent = STAGES[i][0];
-    $("#clause-note").textContent = STAGES[i][1];
-    frags.forEach((f) => f.classList.toggle("on", Number(f.dataset.stage) === i));
-    stops.forEach((s, k) => s.classList.toggle("on", k === i));
-    if (fill) fill.style.transform = `scaleX(${i / 3})`;
+  function setPaused(paused) {
+    toggle.setAttribute("aria-pressed", String(paused));
+    $("#vid-toggle-label").textContent = paused ? "Play the video" : "Pause video";
   }
-  stage.addEventListener("input", () => {
-    touched = true;
-    show(Number(stage.value));
+  function sync() {
+    if (userPaused || !inView) video.pause();
+    else video.play().catch(() => {});
+  }
+  toggle.addEventListener("click", () => {
+    userPaused = !userPaused;
+    setPaused(userPaused);
+    sync();
   });
-  stops.forEach((s, k) =>
-    s.addEventListener("click", () => {
-      touched = true;
-      show(k);
-    }),
-  );
-  show(0);
-  // It steps through on its own while in view, until someone takes the slider.
-  let timer = null;
-  const how = $("#how");
+  if (reduced) {
+    video.removeAttribute("autoplay");
+    video.pause();
+  }
+  setPaused(userPaused);
   new IntersectionObserver(([e]) => {
-    clearInterval(timer);
-    if (e.isIntersecting && !reduced) {
-      timer = setInterval(() => {
-        if (touched) return clearInterval(timer);
-        show((Number(stage.value) + 1) % 4);
-      }, 3600);
-    }
-  }, { threshold: 0.4 }).observe(how);
+    inView = e.isIntersecting;
+    sync();
+  }).observe($(".hero"));
 
-  // ---------- The live part: F8 saves "this page" ----------
-  const started = performance.now();
-  const toast = $("#toast");
-  let hide = null;
-  function save() {
-    const secs = Math.min(30, Math.max(1, Math.round((performance.now() - started) / 1000)));
-    $("#toast-len").textContent = `0:${String(secs).padStart(2, "0")}`;
-    const shot = $("#toast-shot");
-    const video = $("#strip");
-    const ctx = shot.getContext("2d");
-    try {
-      ctx.drawImage(video, 0, 0, shot.width, shot.height);
-    } catch {
-      ctx.fillStyle = "#262930";
-      ctx.fillRect(0, 0, shot.width, shot.height);
+  let rewinding = null;
+  function tick() {
+    const t = video.currentTime || 0;
+    const back = t > PLAY;
+    fill.style.transform = `scaleX(${back ? Math.max(0, 1 - (t - PLAY) / (video.duration - PLAY || 1.5)) : Math.min(1, t / PLAY)})`;
+    if (back !== rewinding) {
+      rewinding = back;
+      hud.classList.toggle("rewind", back);
+      $("#hud-state").textContent = back ? "Rewinding" : "Recording";
     }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---------- F8: the save ----------
+  const toast = $("#toast");
+  const film = $("#film");
+  const keycap = $("#keycap");
+  const sprite = new Image();
+  sprite.src = "media/site/film.jpg";
+  let hideTimer = null;
+  let filmTimer = null;
+
+  function drawShot() {
+    const c = $("#toast-shot");
+    const ctx = c.getContext("2d");
+    try {
+      if (video.readyState >= 2 && inView) {
+        ctx.drawImage(video, 0, 0, c.width, c.height);
+        return;
+      }
+      if (sprite.complete && sprite.naturalWidth) {
+        ctx.drawImage(sprite, sprite.naturalWidth - 320, 0, 320, 180, 0, 0, c.width, c.height);
+        return;
+      }
+    } catch {
+      /* fall through to a plain tile */
+    }
+    ctx.fillStyle = "#23262d";
+    ctx.fillRect(0, 0, c.width, c.height);
+  }
+
+  function save() {
+    if (inView && !reduced) {
+      const f = $("#hero-flash");
+      f.classList.remove("go");
+      void f.offsetWidth;
+      f.classList.add("go");
+    }
+    film.classList.add("kept");
+    clearTimeout(filmTimer);
+    filmTimer = setTimeout(() => film.classList.remove("kept"), 2600);
+    drawShot();
     toast.hidden = false;
+    hud.classList.add("under");
     requestAnimationFrame(() => toast.classList.add("show"));
-    clearTimeout(hide);
-    hide = setTimeout(close, 7000);
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(close, 7000);
   }
   function close() {
     toast.classList.remove("show");
+    hud.classList.remove("under");
     setTimeout(() => {
       if (!toast.classList.contains("show")) toast.hidden = true;
-    }, 450);
+    }, 480);
   }
-  addEventListener("keydown", (e) => {
-    if (e.key === "F8") {
-      e.preventDefault();
-      save();
-    }
-  });
-  $("#try").addEventListener("click", save);
-  $("#toast-close").addEventListener("click", close);
-  if (here.phone || matchMedia("(pointer: coarse)").matches) {
-    $("#try").innerHTML = "Try it: tap for <kbd>F8</kbd>";
+  function pressKey() {
+    keycap.classList.add("down");
+    setTimeout(() => keycap.classList.remove("down"), 140);
   }
 
-  // ---------- Entrances, once, in reading order ----------
-  const groups = new Map();
-  $$(".reveal").forEach((el) => {
-    const sec = el.closest("section, footer");
-    const list = groups.get(sec) || [];
-    el.style.setProperty("--d", `${list.length * 80}ms`);
-    list.push(el);
-    groups.set(sec, list);
+  addEventListener("keydown", (e) => {
+    if (e.key !== "F8" || e.repeat) return;
+    e.preventDefault();
+    pressKey();
+    save();
   });
-  const io = new IntersectionObserver(
-    (entries) =>
-      entries.forEach((e) => {
-        if (!e.isIntersecting) return;
-        e.target.classList.add("in");
-        // The end of the entrance, set on the element so the transition runs from the CSS start.
-        if (!reduced && e.target.classList.contains("reveal")) {
-          e.target.style.opacity = "1";
-          e.target.style.transform = "none";
-        }
-        io.unobserve(e.target);
-      }),
-    { rootMargin: "0px 0px -12% 0px" },
-  );
-  $$(".reveal, .close").forEach((el) => io.observe(el));
+  keycap.addEventListener("click", save);
+  $("#hud-key").addEventListener("click", save);
+  $("#toast-close").addEventListener("click", close);
+  if (matchMedia("(pointer: coarse)").matches) $("#press-hint").textContent = "Tap it to save the last 30 seconds.";
+
+  // ---------- The app, tab by tab ----------
+  const tabs = $$('[role="tab"]');
+  function select(tab, focus) {
+    tabs.forEach((t) => {
+      const on = t === tab;
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+      const panel = document.getElementById(t.getAttribute("aria-controls"));
+      panel.hidden = !on;
+      if (on && !reduced) {
+        panel.classList.remove("enter");
+        void panel.offsetWidth;
+        panel.classList.add("enter");
+      }
+    });
+    if (focus) tab.focus();
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener("click", () => select(t, false));
+    t.addEventListener("keydown", (e) => {
+      const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+      if (to === undefined) return;
+      e.preventDefault();
+      select(tabs[(to + tabs.length) % tabs.length], true);
+    });
+  });
+
+  // ---------- Entrances, once, in reading order ----------
+  if (!reduced && "IntersectionObserver" in window) {
+    const groups = [
+      ".facts li", ".press-key", ".press-copy > *", ".film", ".tour-head > *", ".tabs", ".panels",
+      ".duo-item", ".features .h2", ".feat li", ".get-head > *", ".pick", ".others",
+      ".faq h2", ".qs details", ".invite", ".cols", ".fine",
+    ];
+    const seen = new Map();
+    $$(groups.join(",")).forEach((el) => {
+      const box = el.closest("section, footer");
+      const n = seen.get(box) || 0;
+      seen.set(box, n + 1);
+      el.classList.add("reveal");
+      el.style.setProperty("--d", `${Math.min(n, 8) * 70}ms`);
+    });
+    const io = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          e.target.classList.add("in");
+          io.unobserve(e.target);
+        }),
+      { rootMargin: "0px 0px -10% 0px" },
+    );
+    $$(".reveal, .close").forEach((el) => io.observe(el));
+  }
 })();
