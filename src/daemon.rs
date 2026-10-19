@@ -83,6 +83,8 @@ pub struct Report {
     pub screenshot_hotkey_error: Option<String>,
     pub marker_hotkey: Option<String>,
     pub marker_hotkey_error: Option<String>,
+    /// Problems with the quick-save shortcuts, in the settings' order.
+    pub quick_save_errors: Vec<Option<String>>,
     /// Unix milliseconds of the last update; stale means the process is gone.
     pub updated_ms: i64,
 }
@@ -184,6 +186,10 @@ pub fn run() -> Result<(), String> {
     shot_key.set(&settings.screenshot_hotkey);
     let mut mark_key = hotkey.sibling();
     mark_key.set(&settings.marker_hotkey);
+    let mut quick: Vec<Hotkey> = (0..rewindr::config::MAX_QUICK_SAVES)
+        .map(|_| hotkey.sibling())
+        .collect();
+    set_quick_keys(&mut quick, &settings);
     let launcher = autostart::launcher();
     let mut tray: Option<Tray> = None;
     let mut mtime = config::mtime(&path);
@@ -210,6 +216,9 @@ pub fn run() -> Result<(), String> {
                     start_screenshot(&shared);
                 } else if mark_key.is_press(&e) {
                     mark(&shared);
+                } else if let Some(i) = quick.iter().position(|k| k.is_press(&e)) {
+                    let secs = shared.settings().quick_saves.get(i).map(|q| q.seconds);
+                    start_save(&shared, secs);
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
@@ -252,6 +261,7 @@ pub fn run() -> Result<(), String> {
                         hotkey.set(&s.hotkey);
                         shot_key.set(&s.screenshot_hotkey);
                         mark_key.set(&s.marker_hotkey);
+                        set_quick_keys(&mut quick, &s);
                         shared.apply(s);
                     }
                     Err(e) => warning!("{e}"),
@@ -299,6 +309,7 @@ pub fn run() -> Result<(), String> {
                 screenshot_hotkey_error: shot_key.error.clone(),
                 marker_hotkey: mark_key.label().map(String::from),
                 marker_hotkey_error: mark_key.error.clone(),
+                quick_save_errors: quick.iter().map(|k| k.error.clone()).collect(),
                 updated_ms: recorder::now_us() / 1000,
             };
             if let Ok(text) = serde_json::to_string(&report) {
@@ -361,6 +372,13 @@ fn start_screenshot(shared: &Arc<Shared>) {
     });
 }
 
+/// Points the quick-save shortcuts at the settings' (unused slots are off).
+fn set_quick_keys(keys: &mut [Hotkey], s: &config::Settings) {
+    for (i, k) in keys.iter_mut().enumerate() {
+        k.set(s.quick_saves.get(i).map_or("", |q| q.hotkey.as_str()));
+    }
+}
+
 /// Marks this moment for the clip that will hold it, with a short tick.
 fn mark(shared: &Shared) {
     if !shared.status.lock().unwrap().recording {
@@ -376,7 +394,8 @@ fn mark(shared: &Shared) {
 /// Saves a clip of the last `seconds` (the settings' length if `None`) on a worker thread, then
 /// plays the sound and shows the notification.
 fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
-    if shared.saving.load(Ordering::SeqCst) {
+    // Held from the press: a second press while this one waits out its post-roll is ignored.
+    if shared.saving.swap(true, Ordering::SeqCst) {
         return;
     }
     let settings = shared.settings();
@@ -389,7 +408,18 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
     }
     let shared = shared.clone();
     std::thread::spawn(move || {
-        let result = save::save(&shared, seconds, title.as_deref());
+        // Keep recording a moment after the press, so the clip doesn't end right at it.
+        let post = settings.post_roll;
+        if post > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(post as u64));
+        }
+        let secs = seconds.unwrap_or(settings.clip_seconds) + post;
+        let result = save::save_inner(&shared, Some(secs), title.as_deref());
+        if result.is_ok() && settings.fresh_after_save {
+            shared.ring.lock().unwrap().clear();
+            shared.marks.lock().unwrap().clear();
+        }
+        shared.saving.store(false, Ordering::SeqCst);
         if !settings.notify {
             if let Err(e) = result {
                 warning!("{e}");

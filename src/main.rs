@@ -74,6 +74,8 @@ enum Cmd {
     Quit,
     /// Open a clip in the editor: play, trim, share.
     Edit { clip: PathBuf },
+    /// Write captions of what's said in a clip (an .srt beside it), offline.
+    Captions { clip: PathBuf },
     /// List screens, microphones and the encoders that work.
     Devices,
     /// Show the "clip saved" notification.
@@ -145,6 +147,7 @@ fn main() {
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
+        Some(Cmd::Captions { clip }) => captions(&clip),
         Some(Cmd::Edit { clip }) => {
             let clip = std::path::absolute(&clip).unwrap_or(clip);
             gui::run(Some(clip), false)
@@ -170,6 +173,42 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+fn captions(clip: &std::path::Path) -> Result<(), String> {
+    let ff = ffmpeg::path()?;
+    let info = ffmpeg::probe_clip(&ff, clip)?;
+    let track = info
+        .audio_tracks
+        .iter()
+        .position(|t| t == "Microphone")
+        .unwrap_or(0);
+    let job = export::start_captions(ff, clip.to_path_buf(), track);
+    let mut last = String::new();
+    while !job.finished() {
+        let line = {
+            let s = job.status.lock().unwrap();
+            format!("{} {:.0}%", s.stage, s.progress * 100.0)
+        };
+        if line != last {
+            eprintln!("{line}");
+            last = line;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let caps = job
+        .status
+        .lock()
+        .unwrap()
+        .result
+        .take()
+        .unwrap_or(Ok(Vec::new()))?;
+    let srt = rewindr::captions::srt(&caps);
+    let out = clip.with_extension("srt");
+    std::fs::write(&out, &srt).map_err(|e| format!("{}: {e}", out.display()))?;
+    print!("{srt}");
+    eprintln!("wrote {}", out.display());
+    Ok(())
 }
 
 fn share_clip(clip: &std::path::Path, lasts: Option<String>) -> Result<(), String> {

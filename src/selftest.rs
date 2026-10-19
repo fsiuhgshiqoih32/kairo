@@ -47,6 +47,7 @@ pub fn run() -> Result<(), String> {
     let plan = VideoPlan {
         source: Source::Test { w: 320, h: 240 },
         encoder,
+        codec: rewindr::config::VideoCodec::H264,
         fps: 30,
         src_size: (320, 240),
         max_height: None,
@@ -108,6 +109,30 @@ pub fn run() -> Result<(), String> {
             "the marked moment didn't land in the clip: {marks:?}"
         ));
     }
+    // H.265 too, where this encoder has it (hardware only): saved tagged hvc1.
+    if encoder
+        .ffmpeg_name_for(rewindr::config::VideoCodec::Hevc)
+        .is_some()
+    {
+        let shared = Shared::new(settings.clone());
+        let plan = VideoPlan {
+            source: Source::Test { w: 320, h: 240 },
+            encoder,
+            codec: rewindr::config::VideoCodec::Hevc,
+            fps: 30,
+            src_size: (320, 240),
+            max_height: None,
+            bitrate: 600_000,
+            vaapi_device: ffmpeg::vaapi_device(),
+        };
+        record_for(&ff, &plan, &shared, Duration::from_secs(3));
+        let clip = save::save(&shared, Some(2), Some("Self test H265"))?;
+        let info = probe(&ff, &clip.path)?;
+        println!("H.265 clip: {info}");
+        if !info.contains("Video: hevc") || !info.contains("hvc1") {
+            return Err(format!("the H.265 clip isn't tagged H.265: {info}"));
+        }
+    }
     // A screenshot: the newest frame of the buffer, full size.
     let shot = save::screenshot(&shared, Some("Self test"))?;
     let (w, h) = image::image_dimensions(&shot)
@@ -142,6 +167,7 @@ pub fn run() -> Result<(), String> {
         let plan = VideoPlan {
             source: source.clone(),
             encoder,
+            codec: rewindr::config::VideoCodec::H264,
             fps: 30,
             src_size: (monitor.w, monitor.h),
             max_height: Some(720),

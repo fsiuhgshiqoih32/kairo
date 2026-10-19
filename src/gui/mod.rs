@@ -483,6 +483,20 @@ impl App {
                     match (next, &mut self.editor) {
                         (Some(k), Some(ed)) => {
                             println!("ui self-test: exported; now {k:?}");
+                            if k == editor::ExportKind::Square {
+                                // Styled, with a caption burned in.
+                                ed.effects = rewindr::media::Effects {
+                                    look: rewindr::media::Look::Cinematic,
+                                    fade: true,
+                                    even_loudness: true,
+                                    ..Default::default()
+                                };
+                                ed.captions = vec![rewindr::captions::Caption {
+                                    start: 0.6,
+                                    end: 2.0,
+                                    text: "Self test caption".into(),
+                                }];
+                            }
                             let effect = ed.update(editor::Msg::Export(k));
                             return self.editor_effect(effect);
                         }
@@ -751,7 +765,7 @@ impl App {
                                 .map(|i| i.duration)
                                 .sum();
                             return self.finish_test(check_montage(&path, want).map(|_| {
-                                "played, then saved a trimmed copy, a GIF, a vertical copy, slow motion and a montage".into()
+                                "played, then saved a trimmed copy, a GIF, a vertical copy, slow motion, a styled square copy with a caption, and a montage".into()
                             }));
                         }
                         self.selecting = false;
@@ -1034,6 +1048,7 @@ impl App {
                 self.test = Some(SelfTest::Exporting(Instant::now()));
                 // Made in this order after the trimmed copy (popped from the end).
                 self.test_exports = vec![
+                    editor::ExportKind::Square,
                     editor::ExportKind::Slow(2),
                     editor::ExportKind::Vertical,
                     editor::ExportKind::Gif,
@@ -2024,6 +2039,8 @@ fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
     let info = crate::ffmpeg::probe_clip(&ff, path)?;
     let (want_size, want_secs) = match kind {
         editor::ExportKind::Vertical => (Some((1080, 1920)), 2.0),
+        editor::ExportKind::Square => (Some((1080, 1080)), 2.0),
+        editor::ExportKind::Portrait => (Some((1080, 1350)), 2.0),
         editor::ExportKind::Slow(f) => (Some((1280, 720)), 2.0 * f as f64),
         _ => (None, 2.0),
     };

@@ -4,6 +4,7 @@
 //! on the input, `-copyts` on the output), so every frame carries the Unix time it was captured.
 //! Rewindr stamps audio with the same clock, which is how the two line up when a clip is saved.
 
+use crate::config::VideoCodec;
 use std::path::Path;
 
 /// Where frames come from.
@@ -114,6 +115,22 @@ impl Encoder {
             Encoder::VideoToolbox => "h264_videotoolbox",
             Encoder::Vaapi => "h264_vaapi",
             Encoder::X264 => "libx264",
+        }
+    }
+
+    /// The ffmpeg encoder for `codec`, if this kind of encoder has one (the CPU one only does
+    /// H.264 in Rewindr's ffmpeg).
+    pub fn ffmpeg_name_for(self, codec: VideoCodec) -> Option<&'static str> {
+        match codec {
+            VideoCodec::H264 => Some(self.ffmpeg_name()),
+            VideoCodec::Hevc => match self {
+                Encoder::Nvenc => Some("hevc_nvenc"),
+                Encoder::Amf => Some("hevc_amf"),
+                Encoder::MediaFoundation => Some("hevc_mf"),
+                Encoder::VideoToolbox => Some("hevc_videotoolbox"),
+                Encoder::Vaapi => Some("hevc_vaapi"),
+                Encoder::X264 => None,
+            },
         }
     }
 
@@ -228,6 +245,7 @@ impl Encoder {
 pub struct VideoPlan {
     pub source: Source,
     pub encoder: Encoder,
+    pub codec: VideoCodec,
     pub fps: u32,
     /// The captured area's size in pixels.
     pub src_size: (u32, u32),
@@ -386,7 +404,10 @@ pub fn record_args(plan: &VideoPlan) -> Vec<String> {
         s("passthrough"),
         s("-an"),
         s("-c:v"),
-        s(plan.encoder.ffmpeg_name()),
+        s(plan
+            .encoder
+            .ffmpeg_name_for(plan.codec)
+            .unwrap_or(plan.encoder.ffmpeg_name())),
     ]);
     a.extend(plan.encoder.options(plan.bitrate, fps));
     a.extend([
@@ -434,7 +455,8 @@ pub fn probe_args(encoder: Encoder, vaapi_device: Option<&str>) -> Vec<String> {
 /// Joins the saved video with the sound tracks (each a WAV starting where the video starts, with a
 /// title) into an MP4. With several, the first track is their mix, which is what players and
 /// Discord play; each source follows as its own track for editing.
-pub fn save_args(video: &Path, audio: &[(&Path, &str)], out: &Path) -> Vec<String> {
+/// `hevc`: the video is H.265, tagged so Apple's players and browsers open it.
+pub fn save_args(video: &Path, audio: &[(&Path, &str)], hevc: bool, out: &Path) -> Vec<String> {
     let mut a = vec![
         s("-y"),
         s("-hide_banner"),
@@ -464,6 +486,9 @@ pub fn save_args(video: &Path, audio: &[(&Path, &str)], out: &Path) -> Vec<Strin
         titles.push(title);
     }
     a.extend([s("-c:v"), s("copy")]);
+    if hevc {
+        a.extend([s("-tag:v"), s("hvc1")]);
+    }
     if !audio.is_empty() {
         a.extend([s("-c:a"), s("aac"), s("-b:a"), s("160k")]);
     }
@@ -482,7 +507,6 @@ pub fn save_args(video: &Path, audio: &[(&Path, &str)], out: &Path) -> Vec<Strin
     a
 }
 
-/// A small picture of the clip's last moment, for the notification.
 /// A big still from `at` seconds into `clip`, for the library's banner.
 pub fn hero_args(clip: &Path, at: f64, out: &Path) -> Vec<String> {
     vec![
@@ -507,6 +531,7 @@ pub fn hero_args(clip: &Path, at: f64, out: &Path) -> Vec<String> {
     ]
 }
 
+/// A small picture of the clip's last moment, for the notification.
 pub fn thumbnail_args(clip: &Path, out: &Path) -> Vec<String> {
     vec![
         s("-y"),
@@ -541,6 +566,7 @@ mod tests {
         VideoPlan {
             source,
             encoder,
+            codec: VideoCodec::H264,
             fps: 60,
             src_size: src,
             max_height,
@@ -660,7 +686,7 @@ mod tests {
             Path::new("mic.wav"),
             Path::new("out.mp4"),
         );
-        let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], o));
+        let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], false, o));
         assert!(a.contains("-i v.ts -i desktop.wav -i mic.wav -map 0:v:0 -filter_complex [1:a][2:a]amix=inputs=2"), "{a}");
         assert!(
             a.contains("-map [mix] -map 1:a:0 -map 2:a:0 -c:v copy -c:a aac"),
@@ -675,13 +701,14 @@ mod tests {
             "{a}"
         );
         assert!(a.ends_with("-movflags +faststart -f mp4 out.mp4"));
-        let a = joined(&save_args(v, &[(d, "Game")], o));
+        let a = joined(&save_args(v, &[(d, "Game")], false, o));
         assert!(
             a.contains("-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac"),
             "{a}"
         );
         assert!(!a.contains("amix"));
-        let a = joined(&save_args(v, &[], o));
+        let a = joined(&save_args(v, &[], true, o));
+        assert!(a.contains("-c:v copy -tag:v hvc1"), "{a}");
         assert!(!a.contains("-c:a"));
     }
 

@@ -3,6 +3,7 @@
 
 pub mod args;
 pub mod art;
+pub mod captions;
 pub mod config;
 pub mod library;
 pub mod media;

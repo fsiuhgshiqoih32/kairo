@@ -84,6 +84,47 @@ impl Quality {
     }
 }
 
+/// The video format clips are recorded in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    /// Plays everywhere.
+    #[default]
+    H264,
+    /// H.265: the same picture in about two thirds of the bits, where the encoder has it.
+    Hevc,
+}
+
+impl VideoCodec {
+    pub const ALL: [VideoCodec; 2] = [VideoCodec::H264, VideoCodec::Hevc];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "H.264",
+            VideoCodec::Hevc => "H.265",
+        }
+    }
+
+    /// Bits needed for the same picture, relative to H.264.
+    pub fn bitrate_factor(self) -> f64 {
+        match self {
+            VideoCodec::H264 => 1.0,
+            VideoCodec::Hevc => 0.65,
+        }
+    }
+}
+
+/// An extra save shortcut with its own length.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuickSave {
+    pub hotkey: String,
+    pub seconds: u32,
+}
+
+/// At most this many quick saves.
+pub const MAX_QUICK_SAVES: usize = 3;
+
 /// Where the replay buffer keeps finished video.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -158,6 +199,13 @@ pub struct Settings {
     pub marker_hotkey: String,
     /// The window's accent colour, one of `ACCENTS`.
     pub accent: String,
+    pub codec: VideoCodec,
+    /// Extra shortcuts that save other lengths.
+    pub quick_saves: Vec<QuickSave>,
+    /// Keep recording this many seconds after a save is asked for, then save.
+    pub post_roll: u32,
+    /// Empty the buffer after each save, so the next clip doesn't repeat it.
+    pub fresh_after_save: bool,
 }
 
 impl Default for Settings {
@@ -186,6 +234,10 @@ impl Default for Settings {
             replay_storage: Storage::Auto,
             marker_hotkey: "F10".into(),
             accent: "red".into(),
+            codec: VideoCodec::H264,
+            quick_saves: Vec::new(),
+            post_roll: 0,
+            fresh_after_save: false,
         }
     }
 }
@@ -193,7 +245,8 @@ impl Default for Settings {
 pub const MIN_CLIP_SECONDS: u32 = 5;
 pub const DEFAULT_VOICE_PHRASE: &str = "clip that";
 pub const SHARE_EXPIRIES: [&str; 4] = ["forever", "72h", "24h", "1h"];
-pub const MAX_CLIP_SECONDS: u32 = 300;
+pub const MAX_CLIP_SECONDS: u32 = 1200;
+pub const MAX_POST_ROLL: u32 = 15;
 
 impl Settings {
     /// Brings out-of-range values back into range.
@@ -220,6 +273,12 @@ impl Settings {
         }
         self.screenshot_hotkey = self.screenshot_hotkey.trim().to_string();
         self.marker_hotkey = self.marker_hotkey.trim().to_string();
+        self.quick_saves.truncate(MAX_QUICK_SAVES);
+        for q in &mut self.quick_saves {
+            q.hotkey = q.hotkey.trim().to_string();
+            q.seconds = q.seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
+        }
+        self.post_roll = self.post_roll.min(MAX_POST_ROLL);
         if !ACCENTS.contains(&self.accent.as_str()) {
             self.accent = "red".into();
         }
@@ -253,10 +312,17 @@ impl Settings {
         }
     }
 
-    /// Seconds of video and sound to keep in memory: a clip, plus a little for the GOP a clip
-    /// starts inside.
+    /// Seconds of video and sound to keep: the longest clip any shortcut saves, plus a little
+    /// for the GOP a clip starts inside.
     pub fn buffer_seconds(&self) -> u32 {
-        self.clip_seconds + 3
+        let longest = self
+            .quick_saves
+            .iter()
+            .map(|q| q.seconds)
+            .chain([self.clip_seconds])
+            .max()
+            .unwrap_or(self.clip_seconds);
+        longest + self.post_roll + 3
     }
 }
 
@@ -442,5 +508,33 @@ mod tests {
         assert_eq!(s.replay_storage, Storage::Auto);
         assert_eq!(s.marker_hotkey, "F10");
         assert_eq!(s.accent, "red");
+        assert_eq!(s.codec, VideoCodec::H264);
+        assert!(s.quick_saves.is_empty() && s.post_roll == 0 && !s.fresh_after_save);
+    }
+
+    #[test]
+    fn the_buffer_holds_the_longest_save_and_the_post_roll() {
+        let mut s = Settings {
+            clip_seconds: 30,
+            post_roll: 5,
+            quick_saves: vec![
+                QuickSave {
+                    hotkey: "Shift+F8".into(),
+                    seconds: 120,
+                },
+                QuickSave {
+                    hotkey: " F7 ".into(),
+                    seconds: 99_999,
+                },
+            ],
+            ..Default::default()
+        };
+        s.sanitize();
+        assert_eq!(s.quick_saves[1].hotkey, "F7");
+        assert_eq!(s.quick_saves[1].seconds, MAX_CLIP_SECONDS);
+        assert_eq!(s.buffer_seconds(), MAX_CLIP_SECONDS + 5 + 3);
+        let text = toml::to_string(&s).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back, s);
     }
 }

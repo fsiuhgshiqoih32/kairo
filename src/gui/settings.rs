@@ -12,8 +12,8 @@ use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
 use rewindr::args::{self, Encoder};
 use rewindr::config::{
-    ACCENTS, MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings,
-    Storage, normalize_phrase,
+    ACCENTS, MAX_CLIP_SECONDS, MAX_QUICK_SAVES, MIN_CLIP_SECONDS, Quality, QuickSave, Resolution,
+    SHARE_EXPIRIES, Settings, Storage, VideoCodec, normalize_phrase,
 };
 
 use super::icons::{Icon, icon};
@@ -47,6 +47,8 @@ pub struct State {
     pub capturing_key: Option<Target>,
     hotkey_problem: Option<(Target, String)>,
     clip_text: String,
+    /// The quick saves' lengths as typed.
+    quick_texts: Vec<String>,
     gb_text: String,
     phrase_text: String,
     /// Bytes done and total while the speech files download.
@@ -61,6 +63,8 @@ pub enum Target {
     Save,
     Screenshot,
     Marker,
+    /// A quick save, by its place in the list.
+    Quick(usize),
 }
 
 #[derive(Default)]
@@ -82,6 +86,12 @@ pub enum Msg {
     ShareExpiry(&'static str),
     ClipSeconds(u32),
     ClipText(String),
+    AddQuickSave,
+    RemoveQuickSave(usize),
+    QuickText(usize, String),
+    PostRoll(u32),
+    FreshAfterSave(bool),
+    Codec(VideoCodec),
     Monitor(Choice),
     Fps(u32),
     Resolution(Resolution),
@@ -148,6 +158,11 @@ impl State {
                 capturing_key: None,
                 hotkey_problem: None,
                 clip_text: settings.clip_seconds.to_string(),
+                quick_texts: settings
+                    .quick_saves
+                    .iter()
+                    .map(|q| q.seconds.to_string())
+                    .collect(),
                 gb_text: settings.max_storage_gb.max(1).to_string(),
                 phrase_text: settings.voice_phrase.clone(),
                 voice_install: None,
@@ -212,6 +227,12 @@ impl State {
             (Target::Marker, &s.marker_hotkey),
         ]
         .into_iter()
+        .chain(
+            s.quick_saves
+                .iter()
+                .enumerate()
+                .map(|(i, q)| (Target::Quick(i), &q.hotkey)),
+        )
         .any(|(t, k)| t != target && k.eq_ignore_ascii_case(&spec));
         if taken {
             self.hotkey_problem = Some((target, format!("{spec} is already another shortcut.")));
@@ -223,6 +244,11 @@ impl State {
                     Target::Save => s.hotkey = spec,
                     Target::Screenshot => s.screenshot_hotkey = spec,
                     Target::Marker => s.marker_hotkey = spec,
+                    Target::Quick(i) => {
+                        if let Some(q) = s.quick_saves.get_mut(i) {
+                            q.hotkey = spec;
+                        }
+                    }
                 }
                 self.hotkey_problem = None;
                 Effect::Changed
@@ -314,8 +340,53 @@ impl State {
                 self.clip_text = v.to_string();
                 return changed;
             }
+            Msg::AddQuickSave => {
+                if s.quick_saves.len() < MAX_QUICK_SAVES {
+                    let seconds = [15, 60, 300][s.quick_saves.len()];
+                    s.quick_saves.push(QuickSave {
+                        hotkey: String::new(),
+                        seconds,
+                    });
+                    self.quick_texts.push(seconds.to_string());
+                    // Ask for its key straight away.
+                    self.capturing_key = Some(Target::Quick(s.quick_saves.len() - 1));
+                    return changed;
+                }
+            }
+            Msg::RemoveQuickSave(i) => {
+                if i < s.quick_saves.len() {
+                    s.quick_saves.remove(i);
+                    self.quick_texts.remove(i);
+                    self.capturing_key = None;
+                    return changed;
+                }
+            }
+            Msg::QuickText(i, t) => {
+                let t: String = t.chars().filter(char::is_ascii_digit).take(4).collect();
+                if let Some(slot) = self.quick_texts.get_mut(i) {
+                    *slot = t.clone();
+                }
+                if let (Ok(v), Some(q)) = (t.parse::<u32>(), s.quick_saves.get_mut(i))
+                    && (MIN_CLIP_SECONDS..=MAX_CLIP_SECONDS).contains(&v)
+                {
+                    q.seconds = v;
+                    return changed;
+                }
+            }
+            Msg::PostRoll(v) => {
+                s.post_roll = v;
+                return changed;
+            }
+            Msg::FreshAfterSave(v) => {
+                s.fresh_after_save = v;
+                return changed;
+            }
+            Msg::Codec(c) => {
+                s.codec = c;
+                return changed;
+            }
             Msg::ClipText(t) => {
-                self.clip_text = t.chars().filter(char::is_ascii_digit).take(3).collect();
+                self.clip_text = t.chars().filter(char::is_ascii_digit).take(4).collect();
                 if let Ok(v) = self.clip_text.parse::<u32>()
                     && (MIN_CLIP_SECONDS..=MAX_CLIP_SECONDS).contains(&v)
                 {
@@ -481,7 +552,8 @@ impl State {
         let m = platform::choose_monitor(&s.monitor);
         let (w, h) = m.map_or((1920, 1080), |m| (m.w, m.h));
         let (ow, oh) = args::output_size((w, h), s.resolution.max_height());
-        let bps = s.quality.bitrate(ow as u64 * oh as u64, s.fps);
+        let bps = (s.quality.bitrate(ow as u64 * oh as u64, s.fps) as f64
+            * s.codec.bitrate_factor()) as u64;
         let quality = format!(
             "{ow} x {oh} at about {:.0} Mbit/s (less in calm scenes).",
             bps as f64 / 1e6
@@ -503,6 +575,48 @@ impl State {
             storage.push_str(" Automatic puts anything over 1 GB on disk.");
         }
         (quality, storage)
+    }
+
+    /// The quick-save rows: a shortcut and a length each, and a button to add one.
+    fn quick_saves_view<'a>(
+        &'a self,
+        s: &'a Settings,
+        report: Option<&'a Report>,
+    ) -> Element<'a, Msg> {
+        let mut col = column![].spacing(8).align_x(Alignment::End);
+        for (i, q) in s.quick_saves.iter().enumerate() {
+            let error = report
+                .and_then(|r| r.quick_save_errors.get(i).cloned())
+                .flatten();
+            col = col.push(
+                row![
+                    self.key_capture(Target::Quick(i), &q.hotkey, error),
+                    text("saves").size(13).color(MUTED),
+                    text_input("15", self.quick_texts.get(i).map_or("", String::as_str))
+                        .on_input(move |t| Msg::QuickText(i, t))
+                        .width(60)
+                        .padding(Padding::from([7, 9]))
+                        .size(13)
+                        .style(theme::input),
+                    text("s").size(13).color(MUTED),
+                    button(icon(Icon::Close, 14.0, TEXT_2))
+                        .padding(7)
+                        .style(theme::ghost)
+                        .on_press(Msg::RemoveQuickSave(i)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        if s.quick_saves.len() < MAX_QUICK_SAVES {
+            col = col.push(
+                button(text("Add a quick save").size(13).font(MEDIUM))
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::secondary)
+                    .on_press(Msg::AddQuickSave),
+            );
+        }
+        col.into()
     }
 
     /// The button that shows a shortcut and, when clicked, waits for a new one.
@@ -599,6 +713,34 @@ impl State {
                     key_col,
                 ),
                 setting(
+                    "Quick saves",
+                    Some(
+                        "Extra shortcuts that save another length: 15 s for one play, \
+                         5 min for the whole round."
+                            .into(),
+                    ),
+                    self.quick_saves_view(s, report),
+                ),
+                setting(
+                    "Keep recording after the press",
+                    Some("Catches what happens right after you press save.".into()),
+                    segmented(
+                        vec![
+                            (0u32, "Off".to_string()),
+                            (2, "2 s".to_string()),
+                            (5, "5 s".to_string()),
+                            (10, "10 s".to_string()),
+                        ],
+                        s.post_roll,
+                        Msg::PostRoll,
+                    ),
+                ),
+                setting(
+                    "Start fresh after saving",
+                    Some("Empties the replay, so the next clip doesn't repeat this one.".into()),
+                    switch(s.fresh_after_save, Msg::FreshAfterSave),
+                ),
+                setting(
                     "Screenshot shortcut",
                     Some("Saves a full-size picture of the moment to Screenshots.".into()),
                     shot_row,
@@ -620,7 +762,7 @@ impl State {
                     )),
                     row![
                         segmented(
-                            [15u32, 30, 60, 120]
+                            [15u32, 30, 60, 120, 300, 600]
                                 .iter()
                                 .map(|v| (*v, seconds_label(*v)))
                                 .collect(),
@@ -804,6 +946,23 @@ impl State {
                             .collect(),
                         s.replay_storage,
                         Msg::Storage,
+                    ),
+                ),
+                setting(
+                    "Video format",
+                    Some(
+                        "H.265 makes clips and the replay about a third smaller for the same \
+                         picture. It needs a graphics card encoder; some apps can't play it, so \
+                         Rewindr converts clips when you share them."
+                            .into(),
+                    ),
+                    segmented(
+                        VideoCodec::ALL
+                            .iter()
+                            .map(|c| (*c, c.label().to_string()))
+                            .collect(),
+                        s.codec,
+                        Msg::Codec,
                     ),
                 ),
                 setting("Encoder", None, encoder_row),

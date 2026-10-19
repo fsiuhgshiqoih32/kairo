@@ -43,6 +43,10 @@ pub enum Icon {
     Layers,
     ChevronDown,
     Selected,
+    Square,
+    Portrait,
+    Music,
+    Sparkles,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -90,6 +94,10 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Layers => file!("layers"),
         Icon::ChevronDown => file!("chevron-down"),
         Icon::Selected => file!("square-check"),
+        Icon::Square => file!("square"),
+        Icon::Portrait => file!("portrait"),
+        Icon::Music => file!("music"),
+        Icon::Sparkles => file!("sparkles"),
     }
 }
 

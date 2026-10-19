@@ -11,7 +11,7 @@ use iced::mouse;
 use iced::widget::canvas::{self, Action, Canvas, Frame, Geometry, Path as Shape, Stroke};
 use iced::widget::{
     Space, button, column, container, image, mouse_area, pick_list, progress_bar, row, scrollable,
-    slider, space, stack, text, text_input,
+    slider, space, stack, text, text_input, toggler,
 };
 use iced::{
     Alignment, Color, ContentFit, Element, Fill, Font, Length, Padding, Point, Rectangle, Renderer,
@@ -116,6 +116,23 @@ pub enum Msg {
     /// Trims to a few seconds either side of the mark nearest the playhead.
     TrimAroundMark,
     ClearMarks,
+    Speed(f64),
+    Look(media::Look),
+    Fade(bool),
+    PickMusic,
+    MusicVolume(f32),
+    ClearMusic,
+    GameVolume(f32),
+    MicVolume(f32),
+    MicCleanup(bool),
+    EvenLoudness(bool),
+    ResetStyle,
+    MakeCaptions,
+    CancelCaptions,
+    CaptionText(usize, String),
+    DeleteCaption(usize),
+    BurnCaptions(bool),
+    RevealSrt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +141,8 @@ pub enum ExportKind {
     Share,
     Gif,
     Vertical,
+    Square,
+    Portrait,
     Slow(u32),
 }
 
@@ -186,6 +205,13 @@ pub struct Editor {
     markers: Vec<f64>,
     /// The marker shortcut, for the hint.
     mark_key: String,
+    /// Speed, look, fades, music and the mix, for every copy made from here.
+    pub effects: media::Effects,
+    /// What's said in the clip (saved as an .srt beside it).
+    pub captions: Vec<rewindr::captions::Caption>,
+    /// Burn the captions into copies.
+    burn_captions: bool,
+    caption_job: Option<export::CaptionJob>,
 }
 
 impl Editor {
@@ -243,6 +269,12 @@ impl Editor {
                 shared_file: None,
                 markers: library::Library::load().markers(&clip_path).to_vec(),
                 mark_key: settings.marker_hotkey.clone(),
+                effects: media::Effects::default(),
+                captions: std::fs::read_to_string(clip_path.with_extension("srt"))
+                    .map(|t| rewindr::captions::parse_srt(&t))
+                    .unwrap_or_default(),
+                burn_captions: true,
+                caption_job: None,
             },
             strip,
         ))
@@ -291,7 +323,64 @@ impl Editor {
 
     /// Whether the page needs a message every frame (playing, fetching a frame, exporting).
     pub fn busy(&self) -> bool {
-        self.player.is_playing() || self.player.has_pending_still() || self.job.is_some()
+        self.player.is_playing()
+            || self.player.has_pending_still()
+            || self.job.is_some()
+            || self.caption_job.is_some()
+    }
+
+    /// Copies get something beyond a plain cut: a style, or captions burned in.
+    fn styled(&self) -> bool {
+        !self.effects.is_plain() || (self.burn_captions && !self.captions.is_empty())
+    }
+
+    /// The captions copies get.
+    fn captions_for_copies(&self) -> Vec<rewindr::captions::Caption> {
+        if self.burn_captions {
+            self.captions.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Writes the captions beside the clip (or removes the file when there are none).
+    fn save_captions(&self) {
+        let path = self.clip.with_extension("srt");
+        if self.captions.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            let _ = std::fs::write(path, rewindr::captions::srt(&self.captions));
+        }
+    }
+
+    fn poll_captions(&mut self) -> Effect {
+        if !self.caption_job.as_ref().is_some_and(|j| j.finished()) {
+            return Effect::None;
+        }
+        let job = self.caption_job.take().expect("finished");
+        let result = job.status.lock().unwrap().result.take();
+        match result {
+            Some(Ok(caps)) if caps.is_empty() => {
+                Effect::Note("No speech heard in this clip.".into(), false)
+            }
+            Some(Ok(caps)) => {
+                self.captions = caps;
+                self.save_captions();
+                Effect::None
+            }
+            Some(Err(e)) if e == "Cancelled" => Effect::None,
+            Some(Err(e)) => Effect::Note(format!("Couldn't make captions: {e}"), false),
+            None => Effect::None,
+        }
+    }
+
+    /// The caption on screen at the playhead.
+    fn caption_now(&self) -> Option<&str> {
+        let t = self.player.position;
+        self.captions
+            .iter()
+            .find(|c| c.start <= t && t < c.end)
+            .map(|c| c.text.as_str())
     }
 
     fn trimmed(&self) -> bool {
@@ -412,7 +501,46 @@ impl Editor {
                 if let Some(e) = self.player.error.take() {
                     return Effect::Note(e, false);
                 }
+                if let Effect::Note(t, ok) = self.poll_captions() {
+                    return Effect::Note(t, ok);
+                }
                 return self.poll_job();
+            }
+            Msg::MakeCaptions => {
+                if self.caption_job.is_none() {
+                    let tracks = &self.player.info.audio_tracks;
+                    // The microphone alone hears the player best; else the whole mix.
+                    let track = tracks.iter().position(|t| t == "Microphone").unwrap_or(0);
+                    self.caption_job = Some(export::start_captions(
+                        self.ff.clone(),
+                        self.clip.clone(),
+                        track,
+                    ));
+                }
+            }
+            Msg::CancelCaptions => {
+                if let Some(j) = &self.caption_job {
+                    j.cancel();
+                }
+            }
+            Msg::CaptionText(i, t) => {
+                if let Some(c) = self.captions.get_mut(i) {
+                    c.text = t;
+                    self.save_captions();
+                }
+            }
+            Msg::DeleteCaption(i) => {
+                if i < self.captions.len() {
+                    self.captions.remove(i);
+                    self.save_captions();
+                }
+            }
+            Msg::BurnCaptions(on) => self.burn_captions = on,
+            Msg::RevealSrt => {
+                let p = self.clip.with_extension("srt");
+                if p.exists() {
+                    crate::app::reveal(&p);
+                }
             }
             Msg::Strip(s) => {
                 self.strip = s;
@@ -455,6 +583,33 @@ impl Editor {
             }
             Msg::Loop => self.looping = !self.looping,
             Msg::Volume(v) => self.player.set_volume(v),
+            Msg::Speed(v) => self.effects.speed = v,
+            Msg::Look(l) => self.effects.look = l,
+            Msg::Fade(on) => self.effects.fade = on,
+            Msg::PickMusic => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Music for your clip")
+                    .add_filter(
+                        "Music",
+                        &["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4"],
+                    )
+                    .pick_file();
+                if let Some(path) = picked {
+                    let volume = self.effects.music.as_ref().map_or(0.35, |m| m.volume);
+                    self.effects.music = Some(media::Music { path, volume });
+                }
+            }
+            Msg::MusicVolume(v) => {
+                if let Some(m) = &mut self.effects.music {
+                    m.volume = v;
+                }
+            }
+            Msg::ClearMusic => self.effects.music = None,
+            Msg::GameVolume(v) => self.effects.game_volume = v,
+            Msg::MicVolume(v) => self.effects.mic_volume = v,
+            Msg::MicCleanup(on) => self.effects.mic_cleanup = on,
+            Msg::EvenLoudness(on) => self.effects.even_loudness = on,
+            Msg::ResetStyle => self.effects = media::Effects::default(),
             Msg::Track(t) => self.player.set_track(t.index),
             Msg::Name(n) => self.name = n,
             Msg::Rename => return self.rename(),
@@ -484,6 +639,14 @@ impl Editor {
             Msg::AskDelete => return Effect::AskDelete(self.clip.clone()),
             Msg::Back => return Effect::Back,
             Msg::GetLink => {
+                // With a style or captions, share the styled copy: make it, then upload it.
+                if self.styled() {
+                    let e = self.start_export(ExportKind::Trim);
+                    if self.job.is_some() {
+                        self.share_after_export = true;
+                    }
+                    return e;
+                }
                 // A trimmed clip shares just the trimmed part (the link copy is cut from it).
                 self.shared_file = None;
                 return Effect::Share {
@@ -578,6 +741,8 @@ impl Editor {
             ExportKind::Share => Kind::Share(self.discord_mb as u64 * 1_000_000),
             ExportKind::Gif => Kind::Gif,
             ExportKind::Vertical => Kind::Vertical,
+            ExportKind::Square => Kind::Square,
+            ExportKind::Portrait => Kind::Portrait,
             ExportKind::Slow(f) => Kind::Slow(f),
         };
         self.share_after_export = false;
@@ -587,12 +752,13 @@ impl Editor {
         } else {
             (0.0, self.player.duration())
         };
+        let length = self.effects.length(range.0, range.1);
         if let Kind::Share(limit) = kind
-            && let Err(e) = media::share_plan(limit, range.1 - range.0, &self.player.info, 1.0)
+            && let Err(e) = media::share_plan(limit, length, &self.player.info, 1.0)
         {
             return Effect::Note(e, false);
         }
-        if kind == Kind::Gif && range.1 - range.0 > export::GIF_MAX_SECONDS + 0.05 {
+        if kind == Kind::Gif && length > export::GIF_MAX_SECONDS + 0.05 {
             return Effect::Note(
                 format!(
                     "Trim it to {:.0} seconds or less to make a GIF.",
@@ -609,6 +775,8 @@ impl Editor {
             self.player.info.clone(),
             range,
             self.encoders.clone(),
+            self.effects.clone(),
+            self.captions_for_copies(),
         ));
         Effect::None
     }
@@ -729,6 +897,32 @@ impl Editor {
             None => text("Loading...").color(MUTED).into(),
         };
         let mut monitor = stack![container(picture).center(Fill)];
+        if let Some(line) = self.caption_now() {
+            monitor = monitor.push(
+                container(
+                    container(
+                        text(line.to_string())
+                            .size(20)
+                            .font(BOLD)
+                            .color(Color::WHITE),
+                    )
+                    .padding(Padding::from([6, 14]))
+                    .style(|_| container::Style {
+                        background: Some(theme::alpha(Color::BLACK, 0.62).into()),
+                        border: iced::Border {
+                            radius: 8.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                )
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Bottom)
+                .padding(26),
+            );
+        }
         if !self.player.is_playing() && self.frame.is_some() {
             monitor = monitor.push(
                 container(
@@ -816,6 +1010,8 @@ impl Editor {
                 self.share_panel(share),
                 self.trim_panel(),
                 self.marks_panel(),
+                self.captions_panel(),
+                self.style_panel(),
                 self.export_panel(),
                 self.details_panel()
             ]
@@ -1002,6 +1198,241 @@ impl Editor {
         ]
         .spacing(10);
         panel("Trim", body)
+    }
+
+    /// What's said in the clip, as captions: make them, fix them, burn them into copies.
+    fn captions_panel(&self) -> Element<'_, Msg> {
+        if let Some(job) = &self.caption_job {
+            let (stage, p) = {
+                let s = job.status.lock().unwrap();
+                (s.stage.clone(), s.progress)
+            };
+            return panel(
+                "Captions",
+                column![
+                    row![
+                        text(if stage.is_empty() {
+                            "Starting".into()
+                        } else {
+                            stage
+                        })
+                        .size(13)
+                        .font(MEDIUM),
+                        space::horizontal(),
+                        text(format!("{:.0}%", p * 100.0)).size(13).color(TEXT_2)
+                    ],
+                    progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
+                    button(text("Cancel").size(12).font(MEDIUM))
+                        .padding(Padding::from([6, 10]))
+                        .style(theme::ghost)
+                        .on_press(Msg::CancelCaptions),
+                ]
+                .spacing(10),
+            );
+        }
+        let make = |label: &'static str| {
+            button(
+                row![
+                    icon(Icon::Sparkles, 14.0, theme::accent()),
+                    text(label).size(12).font(MEDIUM)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([6, 9]))
+            .style(theme::secondary)
+            .on_press(Msg::MakeCaptions)
+        };
+        if self.captions.is_empty() {
+            let mut c = column![
+                text("Subtitles of what's said, made on this computer (English).")
+                    .size(12)
+                    .color(TEXT_2),
+                make("Make captions"),
+            ]
+            .spacing(8);
+            if !crate::voice::installed() {
+                c = c.push(
+                    text("The first time, it downloads the speech files (about 55 MB).")
+                        .size(11)
+                        .color(MUTED),
+                );
+            }
+            return panel("Captions", c);
+        }
+        let mut list = column![].spacing(5);
+        for (i, cap) in self.captions.iter().enumerate() {
+            list = list.push(
+                row![
+                    button(
+                        text(format_time(cap.start))
+                            .font(Font::MONOSPACE)
+                            .size(11)
+                            .color(MUTED)
+                    )
+                    .padding(Padding::from([4, 4]))
+                    .style(theme::ghost)
+                    .on_press(Msg::Seek(cap.start)),
+                    text_input("", &cap.text)
+                        .on_input(move |t| Msg::CaptionText(i, t))
+                        .size(12)
+                        .padding(Padding::from([5, 7]))
+                        .style(theme::input),
+                    button(icon(Icon::Close, 12.0, TEXT_2))
+                        .padding(5)
+                        .style(theme::ghost)
+                        .on_press(Msg::DeleteCaption(i)),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            );
+        }
+        panel(
+            "Captions",
+            column![
+                list,
+                row![
+                    text("Burn into copies").size(12).color(TEXT_2).width(Fill),
+                    toggler(self.burn_captions)
+                        .on_toggle(Msg::BurnCaptions)
+                        .size(18)
+                        .style(theme::toggle)
+                ]
+                .align_y(Alignment::Center),
+                row![
+                    make("Redo"),
+                    button(text("Show .srt").size(12).font(MEDIUM))
+                        .padding(Padding::from([6, 9]))
+                        .style(theme::ghost)
+                        .on_press(Msg::RevealSrt),
+                ]
+                .spacing(6),
+            ]
+            .spacing(10),
+        )
+    }
+
+    /// Speed, look, fades, music and the mix: applied to every copy made below.
+    fn style_panel(&self) -> Element<'_, Msg> {
+        let eff = &self.effects;
+        let small = |t: &'static str| text(t).size(12).color(TEXT_2);
+        let speeds = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0];
+        let speed_row = speeds.iter().fold(row![].spacing(4), |r, v| {
+            let on = (eff.speed - v).abs() < 1e-6;
+            r.push(
+                button(text(format!("{v}x")).size(12).font(MEDIUM))
+                    .padding(Padding::from([5, 7]))
+                    .style(theme::segment(on))
+                    .on_press(Msg::Speed(*v)),
+            )
+        });
+        let look = pick_list(media::Look::ALL, Some(eff.look), Msg::Look)
+            .text_size(13)
+            .padding(Padding::from([6, 10]))
+            .width(Fill)
+            .style(theme::pick)
+            .menu_style(theme::menu);
+        let music: Element<'_, Msg> = match &eff.music {
+            Some(m) => column![
+                row![
+                    icon(Icon::Music, 14.0, theme::accent()),
+                    container(
+                        text(
+                            m.path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default()
+                        )
+                        .size(12)
+                        .wrapping(text::Wrapping::None)
+                    )
+                    .width(Fill)
+                    .clip(true),
+                    button(icon(Icon::Close, 13.0, TEXT_2))
+                        .padding(5)
+                        .style(theme::ghost)
+                        .on_press(Msg::ClearMusic),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+                slider(0.0..=1.0, m.volume, Msg::MusicVolume)
+                    .step(0.01_f32)
+                    .style(theme::volume_slider),
+            ]
+            .spacing(6)
+            .into(),
+            None => button(
+                row![
+                    icon(Icon::Music, 14.0, TEXT_2),
+                    text("Add music").size(12).font(MEDIUM)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([6, 9]))
+            .style(theme::secondary)
+            .on_press(Msg::PickMusic)
+            .into(),
+        };
+        let toggle = |on: bool, label: &'static str, m: fn(bool) -> Msg| {
+            row![
+                text(label).size(12).color(TEXT_2).width(Fill),
+                toggler(on).on_toggle(m).size(18).style(theme::toggle)
+            ]
+            .align_y(Alignment::Center)
+        };
+        let mut body = column![
+            small("Speed"),
+            speed_row,
+            small("Look"),
+            look,
+            small("Music"),
+            music,
+            toggle(eff.fade, "Fade in and out", Msg::Fade),
+            toggle(eff.even_loudness, "Even out loudness", Msg::EvenLoudness),
+        ]
+        .spacing(8);
+        let tracks = &self.player.info.audio_tracks;
+        if tracks.iter().any(|t| t == "Game") && tracks.iter().any(|t| t == "Microphone") {
+            body = body
+                .push(
+                    row![
+                        small("Game").width(70),
+                        slider(0.0..=2.0, eff.game_volume, Msg::GameVolume)
+                            .step(0.05_f32)
+                            .style(theme::volume_slider)
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .push(
+                    row![
+                        small("Mic").width(70),
+                        slider(0.0..=2.0, eff.mic_volume, Msg::MicVolume)
+                            .step(0.05_f32)
+                            .style(theme::volume_slider)
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .push(toggle(eff.mic_cleanup, "Clean up the mic", Msg::MicCleanup));
+        }
+        body = body.push(
+            row![
+                text(if eff.is_plain() {
+                    "Applies to every copy you make below."
+                } else {
+                    "Every copy below gets this style."
+                })
+                .size(11)
+                .color(MUTED)
+                .width(Fill),
+                button(text("Reset").size(12).font(MEDIUM))
+                    .padding(Padding::from([5, 8]))
+                    .style(theme::ghost)
+                    .on_press_maybe((!eff.is_plain()).then_some(Msg::ResetStyle)),
+            ]
+            .align_y(Alignment::Center),
+        );
+        panel("Style", body)
     }
 
     /// The marked moments: jump to one, keep the seconds around it.
@@ -1248,14 +1679,24 @@ impl Editor {
                 wide(button(
                     row![
                         icon(Icon::Scissors, 16.0, TEXT),
-                        text("Save trimmed copy").font(SEMIBOLD).size(14)
+                        text(if !self.styled() {
+                            "Save trimmed copy"
+                        } else {
+                            "Save edited copy"
+                        })
+                        .font(SEMIBOLD)
+                        .size(14)
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center)
                 ))
                 .style(theme::secondary)
-                .on_press_maybe(self.trimmed().then_some(Msg::Export(ExportKind::Trim))),
-                text(if self.trimmed() {
+                .on_press_maybe(
+                    (self.trimmed() || self.styled()).then_some(Msg::Export(ExportKind::Trim))
+                ),
+                text(if self.styled() {
+                    "A copy with your style, saved next to this clip."
+                } else if self.trimmed() {
                     "An exact cut at full quality, saved next to this clip."
                 } else {
                     "Drag the handles under the video to choose the part to keep."
@@ -1278,6 +1719,18 @@ impl Editor {
                         Msg::Export(ExportKind::Vertical)
                     ),
                     format_button(
+                        Icon::Square,
+                        "1:1",
+                        "Square for feeds",
+                        Msg::Export(ExportKind::Square)
+                    ),
+                    format_button(
+                        Icon::Portrait,
+                        "4:5",
+                        "Tall for Instagram and X feeds",
+                        Msg::Export(ExportKind::Portrait)
+                    ),
+                    format_button(
                         Icon::Snail,
                         "0.5x",
                         "Slow motion, half speed",
@@ -1290,7 +1743,9 @@ impl Editor {
                         Msg::Export(ExportKind::Slow(4))
                     ),
                 ]
-                .spacing(6),
+                .spacing(6)
+                .wrap()
+                .vertical_spacing(6),
             ]
             .spacing(8);
             if let Some((path, copied)) = &self.last_export {

@@ -174,7 +174,9 @@ fn prepare(
     let ff = crate::ffmpeg::path()?;
     let info = crate::ffmpeg::probe_clip(&ff, file)?;
     let size = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
-    let fine = size <= DIRECT_MAX && info.height <= 1080 && info.fps <= 61.0;
+    // H.265 plays in few browsers and not in Discord's embeds: links get H.264.
+    let fine =
+        size <= DIRECT_MAX && info.height <= 1080 && info.fps <= 61.0 && info.video_codec == "h264";
     if range.is_none() && fine {
         return Ok(None);
     }
@@ -184,7 +186,16 @@ fn prepare(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join(format!("{}-{}.mp4", std::process::id(), now_secs()));
     let encoder = crate::export::best_encoder(&ff, &Mutex::new(None));
-    let args = rewindr::media::share_args(file, start, end, &plan, encoder, &out);
+    let args = rewindr::media::share_args(
+        file,
+        start,
+        end,
+        &info,
+        &rewindr::media::Effects::default(),
+        &plan,
+        encoder,
+        &out,
+    );
     info!(
         "making a {}p copy to share ({plan:?})",
         plan.height.unwrap_or(info.height)

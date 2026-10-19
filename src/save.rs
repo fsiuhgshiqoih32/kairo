@@ -145,7 +145,12 @@ pub fn save(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Resul
     result
 }
 
-fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Result<Clip, String> {
+/// Saves while the caller holds `shared.saving` (set it first; this doesn't clear it).
+pub fn save_inner(
+    shared: &Shared,
+    seconds: Option<u32>,
+    title: Option<&str>,
+) -> Result<Clip, String> {
     let settings = shared.settings();
     if shared.paused.load(Ordering::SeqCst) {
         return Err("Recording is paused. Resume it from the tray icon to save clips.".into());
@@ -169,6 +174,7 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
     if snap.end_us() - snap.start_us() < MIN_CLIP_US {
         return Err("Nothing to save yet: recording only just started.".into());
     }
+    let hevc = shared.ring.lock().unwrap().codec() == Some(rewindr::ts::Codec::Hevc);
     let fps = settings.fps.max(1) as i64;
     let start = snap.start_us();
     let end = snap.end_us() + 1_000_000 / fps;
@@ -207,7 +213,7 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
     let partial = out.with_extension("mp4.part");
     let refs: Vec<(&Path, &str)> = audio.iter().map(|(p, t)| (p.as_path(), *t)).collect();
     // ffmpeg picks the format from the name; write to .part and rename, so a clip appears whole.
-    let save_args = args::save_args(&video, &refs, &partial);
+    let save_args = args::save_args(&video, &refs, hevc, &partial);
     ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
         .map_err(|e| format!("could not save the clip: {e}"))?;
     std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;

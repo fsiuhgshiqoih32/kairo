@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rewindr::args::{self, Encoder};
 use rewindr::library;
-use rewindr::media::{self, Info};
+use rewindr::media::{self, Effects, Info};
 
 use crate::ffmpeg;
 use crate::log::{info, warning};
@@ -23,6 +23,10 @@ pub enum Kind {
     Gif,
     /// 9:16 for phones.
     Vertical,
+    /// 1:1 for feeds.
+    Square,
+    /// 4:5 for feeds.
+    Portrait,
     /// Slowed down this many times.
     Slow(u32),
 }
@@ -58,6 +62,7 @@ pub fn best_encoder(ff: &Path, found: &Mutex<Option<Vec<Encoder>>>) -> Encoder {
     list.first().copied().unwrap_or(Encoder::X264)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     kind: Kind,
     ff: PathBuf,
@@ -65,6 +70,8 @@ pub fn start(
     info: Info,
     range: (f64, f64),
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
+    eff: Effects,
+    caps: Vec<rewindr::captions::Caption>,
 ) -> Job {
     let status = Arc::new(Mutex::new(Status {
         stage: match kind {
@@ -72,6 +79,8 @@ pub fn start(
             Kind::Share(_) => "Making a copy for Discord".into(),
             Kind::Gif => "Making a GIF".into(),
             Kind::Vertical => "Making a vertical copy".into(),
+            Kind::Square => "Making a square copy".into(),
+            Kind::Portrait => "Making a 4:5 copy".into(),
             Kind::Slow(f) => format!("Slowing it down {f}x"),
         },
         ..Default::default()
@@ -81,7 +90,21 @@ pub fn start(
         let status = status.clone();
         let cancel = cancel.clone();
         std::thread::spawn(move || {
-            let result = run(kind, &ff, &clip, &info, range, &encoders, &status, &cancel);
+            let job = Export {
+                kind,
+                ff: &ff,
+                clip: &clip,
+                info: &info,
+                range,
+                caps: &caps,
+                burns_dir: rewindr::config::config_dir().join("captions").join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    crate::recorder::now_us()
+                )),
+            };
+            let result = run(&job, &encoders, &eff, &status, &cancel);
+            let _ = std::fs::remove_dir_all(&job.burns_dir);
             if let Err(e) = &result {
                 warning!("export failed: {e}");
             }
@@ -95,24 +118,52 @@ pub fn start(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run(
+/// What an export works on.
+struct Export<'a> {
     kind: Kind,
-    ff: &Path,
-    clip: &Path,
-    info: &Info,
-    (start, end): (f64, f64),
+    ff: &'a Path,
+    clip: &'a Path,
+    info: &'a Info,
+    range: (f64, f64),
+    caps: &'a [rewindr::captions::Caption],
+    /// Where caption pictures go while it runs.
+    burns_dir: PathBuf,
+}
+
+impl Export<'_> {
+    /// `eff` with the captions drawn for a picture of `size`.
+    fn with_captions(&self, eff: &Effects, size: (u32, u32)) -> Result<Effects, String> {
+        if self.caps.is_empty() {
+            return Ok(eff.clone());
+        }
+        let burns = render_burns(self.caps, self.range, eff.speed, size, &self.burns_dir)?;
+        Ok(Effects {
+            burns,
+            ..eff.clone()
+        })
+    }
+}
+
+fn run(
+    job: &Export,
     encoders: &Mutex<Option<Vec<Encoder>>>,
+    eff: &Effects,
     status: &Mutex<Status>,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, String> {
+    let (kind, ff, clip, info) = (job.kind, job.ff, job.clip, job.info);
+    let (start, end) = job.range;
+    let size = (info.width, info.height);
     let encoder = best_encoder(ff, encoders);
-    let length = end - start;
+    // How long the export runs once sped up or slowed down.
+    let length = eff.length(start, end);
     match kind {
         Kind::Trim => {
-            let out = library::sibling(clip, "trim");
+            let eff = job.with_captions(eff, size)?;
+            let what = if eff.is_plain() { "trim" } else { "edit" };
+            let out = library::sibling(clip, what);
             let part = out.with_extension("mp4.part");
-            let a = media::trim_args(clip, start, end, info, encoder, &part);
+            let a = media::trim_args(clip, start, end, info, &eff, encoder, &part);
             encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
             finish(ff, &part, &out)
         }
@@ -125,7 +176,15 @@ fn run(
                 if attempt > 0 {
                     status.lock().unwrap().stage = "Too big, trying smaller".into();
                 }
-                let a = media::share_args(clip, start, end, &plan, encoder, &part);
+                let shown = match plan.height {
+                    Some(h) => (
+                        (info.width as u64 * h as u64 / info.height.max(1) as u64) as u32 & !1,
+                        h,
+                    ),
+                    None => size,
+                };
+                let eff = job.with_captions(eff, shown)?;
+                let a = media::share_args(clip, start, end, info, &eff, &plan, encoder, &part);
                 encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
                 let size = std::fs::metadata(&part)
                     .map(|m| m.len())
@@ -149,27 +208,34 @@ fn run(
             }
             let out = library::sibling_with(clip, "GIF", "gif");
             let part = out.with_extension("gif.part");
-            let a = media::gif_args(clip, start, end, 480, 15, &part);
+            let a = media::gif_args(clip, start, end, info, eff, 480, 15, &part);
             encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
             std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
             info!("exported {}", out.display());
             Ok(out)
         }
-        Kind::Vertical => {
-            let out = library::sibling(clip, "vertical");
+        Kind::Vertical | Kind::Square | Kind::Portrait => {
+            let (what, frame) = match kind {
+                Kind::Vertical => ("vertical", (1080, 1920)),
+                Kind::Square => ("square", (1080, 1080)),
+                _ => ("4x5", (1080, 1350)),
+            };
+            let eff = job.with_captions(eff, frame)?;
+            let out = library::sibling(clip, what);
             let part = out.with_extension("mp4.part");
-            let a = media::vertical_args(clip, start, end, info, encoder, &part);
+            let a = media::framed_args(clip, start, end, info, &eff, frame, encoder, &part);
             encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
             finish(ff, &part, &out)
         }
         Kind::Slow(factor) => {
             let out = library::sibling(clip, &format!("slow {factor}x"));
             let part = out.with_extension("mp4.part");
-            let a = media::slow_args(clip, start, end, factor, info, encoder, &part);
+            let slow = job.with_captions(&eff.at_speed(eff.speed / factor.max(1) as f64), size)?;
+            let a = media::trim_args(clip, start, end, info, &slow, encoder, &part);
             encode(
                 ff,
                 &a,
-                length * factor as f64,
+                slow.length(start, end),
                 &part,
                 status,
                 cancel,
@@ -252,6 +318,122 @@ fn montage(
         (0.0, 1.0),
     )?;
     finish(ff, &part, &out)
+}
+
+/// Caption pictures for an export: drawn for `out_size` (the export's picture), written as raw
+/// RGBA into `dir`, placed in the export's timeline.
+pub fn render_burns(
+    caps: &[rewindr::captions::Caption],
+    range: (f64, f64),
+    speed: f64,
+    out_size: (u32, u32),
+    dir: &Path,
+) -> Result<Vec<media::Burn>, String> {
+    let font = include_bytes!("../assets/fonts/Inter-Bold.ttf");
+    let (w, h) = out_size;
+    let size = (w.min(h) as f32 * 0.058).max(14.0);
+    let mut out = Vec::new();
+    for (i, c) in caps.iter().enumerate() {
+        let Some((start, end)) = media::burn_window(c.start, c.end, range, speed) else {
+            continue;
+        };
+        let Some(p) = rewindr::captions::render(&c.text, w * 88 / 100, size, font) else {
+            continue;
+        };
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{i}.rgba"));
+        std::fs::write(&path, &p.rgba).map_err(|e| e.to_string())?;
+        out.push(media::Burn {
+            path,
+            width: p.width,
+            height: p.height,
+            start,
+            end,
+        });
+    }
+    Ok(out)
+}
+
+/// Captions being made for a clip.
+pub struct CaptionJob {
+    pub status: Arc<Mutex<CaptionStatus>>,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+pub struct CaptionStatus {
+    pub stage: String,
+    pub progress: f32,
+    pub result: Option<Result<Vec<rewindr::captions::Caption>, String>>,
+}
+
+impl CaptionJob {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn finished(&self) -> bool {
+        self.status.lock().unwrap().result.is_some()
+    }
+}
+
+/// Listens to sound track `track` of `clip` and writes down what's said, on a worker thread.
+/// Downloads the speech files first if voice clipping never has.
+pub fn start_captions(ff: PathBuf, clip: PathBuf, track: usize) -> CaptionJob {
+    let status = Arc::new(Mutex::new(CaptionStatus::default()));
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let (status, cancel) = (status.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let result = captions(&ff, &clip, track, &status, &cancel);
+            if let Err(e) = &result {
+                warning!("captions failed: {e}");
+            }
+            status.lock().unwrap().result = Some(result);
+        });
+    }
+    CaptionJob { status, cancel }
+}
+
+fn captions(
+    ff: &Path,
+    clip: &Path,
+    track: usize,
+    status: &Mutex<CaptionStatus>,
+    cancel: &AtomicBool,
+) -> Result<Vec<rewindr::captions::Caption>, String> {
+    let set = |stage: &str, p: f32| {
+        let mut s = status.lock().unwrap();
+        s.stage = stage.to_string();
+        s.progress = p;
+    };
+    if !crate::voice::installed() {
+        set("Downloading the speech files", 0.0);
+        crate::voice::install(&|done, total| {
+            set(
+                "Downloading the speech files",
+                done as f32 / total.max(1) as f32,
+            )
+        })?;
+    }
+    set("Listening", 0.0);
+    let out = ffmpeg::command(ff)
+        .args(media::speech_args(clip, track))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let samples: Vec<i16> = out
+        .stdout
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    if samples.is_empty() {
+        return Err("This clip has no sound to caption.".into());
+    }
+    let words = crate::voice::transcribe(&samples, &|p| set("Listening", p), cancel)?;
+    info!("captions: {} words from {}", words.len(), clip.display());
+    Ok(rewindr::captions::lines(&words))
 }
 
 /// Longest stretch a GIF export takes.

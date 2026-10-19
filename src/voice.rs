@@ -194,6 +194,7 @@ fn unpack(bytes: &[u8], take: &[(&str, &str)], root: &Path) -> Result<(), String
 type ModelNew = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 type Free = unsafe extern "C" fn(*mut c_void);
 type RecognizerNewGrm = unsafe extern "C" fn(*mut c_void, c_float, *const c_char) -> *mut c_void;
+type RecognizerNew = unsafe extern "C" fn(*mut c_void, c_float) -> *mut c_void;
 type AcceptShort = unsafe extern "C" fn(*mut c_void, *const i16, c_int) -> c_int;
 type Text = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 type SetLogLevel = unsafe extern "C" fn(c_int);
@@ -204,9 +205,12 @@ pub struct Engine {
     model: *mut c_void,
     model_free: Free,
     recognizer_new: RecognizerNewGrm,
+    /// A recognizer for anything said (captions), not one phrase.
+    recognizer_new_open: RecognizerNew,
     recognizer_free: Free,
     accept: AcceptShort,
     result: Text,
+    final_result: Text,
     set_words: SetWords,
     _lib: libloading::Library,
 }
@@ -243,13 +247,62 @@ impl Engine {
                 model,
                 model_free: get(&lib, b"vosk_model_free\0")?,
                 recognizer_new: get(&lib, b"vosk_recognizer_new_grm\0")?,
+                recognizer_new_open: get(&lib, b"vosk_recognizer_new\0")?,
                 recognizer_free: get(&lib, b"vosk_recognizer_free\0")?,
                 accept: get(&lib, b"vosk_recognizer_accept_waveform_s\0")?,
                 result: get(&lib, b"vosk_recognizer_result\0")?,
+                final_result: get(&lib, b"vosk_recognizer_final_result\0")?,
                 set_words: get(&lib, b"vosk_recognizer_set_words\0")?,
                 _lib: lib,
             })
         }
+    }
+}
+
+/// Everything said in `samples` (16 kHz mono), each word with its time, for captions.
+/// `progress` gets 0 to 1; `cancel` stops it early.
+pub fn transcribe(
+    samples: &[i16],
+    progress: &dyn Fn(f32),
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<rewindr::captions::Word>, String> {
+    let engine = Engine::load(&dir())?;
+    let read = |p: *const c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            // SAFETY: Vosk returns a NUL-terminated string that lives until the next call.
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    // SAFETY: the recognizer is made, used and freed here, with the model alive throughout.
+    unsafe {
+        let rec = (engine.recognizer_new_open)(engine.model, RATE as c_float);
+        if rec.is_null() {
+            return Err("The speech recognizer couldn't start.".into());
+        }
+        (engine.set_words)(rec, 1);
+        let mut words = Vec::new();
+        let chunk = RATE as usize / 2;
+        let total = samples.len().max(1);
+        for (i, part) in samples.chunks(chunk).enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                (engine.recognizer_free)(rec);
+                return Err("Cancelled".into());
+            }
+            if (engine.accept)(rec, part.as_ptr(), part.len() as c_int) == 1 {
+                words.extend(rewindr::captions::words_from_vosk(&read((engine.result)(
+                    rec,
+                ))));
+            }
+            progress(((i + 1) * chunk).min(total) as f32 / total as f32);
+        }
+        words.extend(rewindr::captions::words_from_vosk(&read((engine
+            .final_result)(
+            rec
+        ))));
+        (engine.recognizer_free)(rec);
+        Ok(words)
     }
 }
 

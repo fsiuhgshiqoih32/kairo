@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use rewindr::args::{self, Encoder, Source, VideoPlan};
-use rewindr::config::Settings;
+use rewindr::config::{Settings, VideoCodec};
 use rewindr::pcm::PcmRing;
 use rewindr::ring::Ring;
 
@@ -45,6 +45,8 @@ pub struct Status {
     pub recording: bool,
     pub paused: bool,
     pub encoder: Option<String>,
+    /// "H.264" or "H.265".
+    pub codec: Option<String>,
     pub source: Option<String>,
     pub size: Option<(u32, u32)>,
     pub fps: u32,
@@ -139,6 +141,7 @@ impl Shared {
             &old.encoder,
             &old.monitor,
             old.replay_storage,
+            old.codec,
         ) != (
             new.fps,
             new.resolution,
@@ -146,6 +149,7 @@ impl Shared {
             &new.encoder,
             &new.monitor,
             new.replay_storage,
+            new.codec,
         );
         if video {
             self.video_generation.fetch_add(1, Ordering::SeqCst);
@@ -215,7 +219,7 @@ pub fn run(shared: Arc<Shared>) {
         ffmpeg.display()
     );
     // The combination that worked last, tried first after a restart.
-    let mut good: Option<(Source, Encoder)> = None;
+    let mut good: Option<(Source, Encoder, VideoCodec)> = None;
     let mut encoders: Option<Vec<Encoder>> = None;
     let mut last_plan: Option<VideoPlan> = None;
     while !shared.stop.load(Ordering::Relaxed) {
@@ -255,10 +259,16 @@ pub fn run(shared: Arc<Shared>) {
             }
             continue;
         }
-        let mut combos: Vec<(Source, Encoder)> = Vec::new();
+        // H.265 first where it's asked for and the encoder has it; H.264 if that won't start.
+        let mut combos: Vec<(Source, Encoder, VideoCodec)> = Vec::new();
         for e in &encoder_list {
             for s in platform::capture_sources(&monitor) {
-                combos.push((s, *e));
+                if settings.codec == VideoCodec::Hevc
+                    && e.ffmpeg_name_for(VideoCodec::Hevc).is_some()
+                {
+                    combos.push((s.clone(), *e, VideoCodec::Hevc));
+                }
+                combos.push((s, *e, VideoCodec::H264));
             }
         }
         if let Some(g) = &good
@@ -269,18 +279,21 @@ pub fn run(shared: Arc<Shared>) {
         }
         let mut last_error = None;
         let mut restart_now = false;
-        for (source, encoder) in combos {
+        for (source, encoder, codec) in combos {
             let size = (monitor.w, monitor.h);
             let (ow, oh) = args::output_size(size, settings.resolution.max_height());
+            let bitrate = settings
+                .quality
+                .bitrate(ow as u64 * oh as u64, settings.fps) as f64
+                * codec.bitrate_factor();
             let plan = VideoPlan {
                 source: source.clone(),
                 encoder,
+                codec,
                 fps: settings.fps,
                 src_size: size,
                 max_height: settings.resolution.max_height(),
-                bitrate: settings
-                    .quality
-                    .bitrate(ow as u64 * oh as u64, settings.fps),
+                bitrate: bitrate as u64,
                 vaapi_device: ffmpeg::vaapi_device(),
             };
             {
@@ -307,18 +320,19 @@ pub fn run(shared: Arc<Shared>) {
                 }
                 Outcome::FailedToStart(e) => {
                     warning!(
-                        "{} with {} didn't start: {e}",
+                        "{} with {} ({}) didn't start: {e}",
                         source.label(),
-                        encoder.label()
+                        encoder.label(),
+                        codec.label()
                     );
-                    if good.as_ref() == Some(&(source.clone(), encoder)) {
+                    if good.as_ref() == Some(&(source.clone(), encoder, codec)) {
                         good = None;
                     }
                     last_error = Some(e);
                 }
                 Outcome::Ended(e) => {
                     warning!("recording stopped: {e}");
-                    good = Some((source, encoder));
+                    good = Some((source, encoder, codec));
                     // Pick everything again: the screen may have changed.
                     if wait_or_stop(&shared, Duration::from_millis(500)) {
                         return;
@@ -452,8 +466,9 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
             announced = true;
             let size = args::output_size(plan.src_size, plan.max_height);
             info!(
-                "recording {} via {} at {}x{} {} fps",
+                "recording {} {} via {} at {}x{} {} fps",
                 plan.encoder.label(),
+                plan.codec.label(),
                 plan.source.label(),
                 size.0,
                 size.1,
@@ -463,6 +478,7 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
             st.recording = true;
             st.error = None;
             st.encoder = Some(plan.encoder.label().into());
+            st.codec = Some(plan.codec.label().into());
             st.source = Some(plan.source.label().into());
             st.size = Some(size);
             st.fps = plan.fps;

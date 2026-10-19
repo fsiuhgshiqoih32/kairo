@@ -256,6 +256,11 @@ impl Ring {
         Ok(true)
     }
 
+    /// The video codec of the stream, once its headers have arrived.
+    pub fn codec(&self) -> Option<Codec> {
+        self.video.map(|(_, c)| c)
+    }
+
     /// Whether finished GOPs go to a file.
     pub fn on_disk(&self) -> bool {
         self.spill.as_ref().is_some_and(|s| !s.broken)

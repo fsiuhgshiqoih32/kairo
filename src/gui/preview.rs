@@ -124,9 +124,42 @@ fn shoot_at<'a, M: 'a>(
     snap.matches_image(out(name)).expect("write png");
 }
 
+/// A burned-in caption over a frame of the fixture clip, as exports draw it.
+fn caption_sample() {
+    let font = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
+    let cap = rewindr::captions::render(
+        "Two behind the wall, watch out on the left",
+        1700,
+        62.0,
+        font,
+    )
+    .expect("caption");
+    let real = super::load_clips(&rewindr::config::default_save_dir());
+    let frame = real
+        .iter()
+        .find_map(|c| image::open(crate::save::thumb_for(&c.path)).ok())
+        .expect("a thumbnail");
+    let mut frame = frame
+        .resize_exact(1920, 1080, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let (x0, y0) = ((1920 - cap.width) / 2, 1080 - cap.height - 1080 / 14);
+    for y in 0..cap.height {
+        for x in 0..cap.width {
+            let i = ((y * cap.width + x) * 4) as usize;
+            let a = cap.rgba[i + 3] as f32 / 255.0;
+            let px = frame.get_pixel_mut(x0 + x, y0 + y);
+            for c in 0..3 {
+                px[c] = (cap.rgba[i + c] as f32 * a + px[c] as f32 * (1.0 - a)) as u8;
+            }
+        }
+    }
+    frame.save(out("caption")).expect("save");
+}
+
 #[test]
 #[ignore = "renders the windows to PNGs; needs REWINDR_HOME with clips and REWINDR_SNAPSHOTS"]
 fn preview() {
+    caption_sample();
     let size = (1280.0, 800.0);
     let now = SystemTime::now();
     let (mut app, _) = App::new(rewindr::config::Settings::default());

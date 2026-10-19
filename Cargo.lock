@@ -4634,6 +4634,7 @@ dependencies = [
 name = "rewindr"
 version = "0.1.1"
 dependencies = [
+ "ab_glyph",
  "auto-launch",
  "block2 0.6.2",
  "chrono",

@@ -16,6 +16,8 @@ pub struct Info {
     pub video_bps: Option<u64>,
     /// Titles of the sound tracks, in order ("" when untitled).
     pub audio_tracks: Vec<String>,
+    /// The video codec's ffmpeg name ("h264", "hevc").
+    pub video_codec: String,
 }
 
 fn secs(hms: &str) -> Option<f64> {
@@ -38,6 +40,14 @@ pub fn parse_info(text: &str) -> Option<Info> {
         } else if l.starts_with("Stream #") && l.contains("Video:") && !seen_video {
             seen_video = true;
             last_was_audio = false;
+            if let Some(after) = l.split("Video:").nth(1) {
+                info.video_codec = after
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end_matches(',')
+                    .to_string();
+            }
             let words: Vec<&str> = l
                 .split(|c: char| c == ',' || c.is_whitespace())
                 .filter(|w| !w.is_empty())
@@ -149,6 +159,27 @@ pub fn audio_args(clip: &Path, start: f64, track: usize, rate: u32, channels: u1
     a
 }
 
+/// Sound track `track` as 16 kHz mono 16-bit samples on stdout, for speech recognition.
+pub fn speech_args(clip: &Path, track: usize) -> Vec<String> {
+    let mut a = head();
+    a.extend([
+        s("-i"),
+        clip.display().to_string(),
+        s("-vn"),
+        s("-sn"),
+        s("-map"),
+        format!("0:a:{track}"),
+        s("-ac"),
+        s("1"),
+        s("-ar"),
+        s("16000"),
+        s("-f"),
+        s("s16le"),
+        s("pipe:1"),
+    ]);
+    a
+}
+
 /// Small RGBA pictures of every keyframe (one a second in Rewindr's clips), for the timeline.
 pub fn filmstrip_args(clip: &Path, size: (u32, u32)) -> Vec<String> {
     let mut a = head();
@@ -223,13 +254,294 @@ pub fn export_encoder(e: Encoder) -> Encoder {
     }
 }
 
-/// A frame-exact copy of `start..end` of the clip, re-encoded at about the original quality,
-/// keeping every sound track. Progress goes to stdout (`-progress`).
+/// A colour look for exports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Look {
+    #[default]
+    None,
+    Vivid,
+    Cinematic,
+    Mono,
+    Vintage,
+}
+
+impl Look {
+    pub const ALL: [Look; 5] = [
+        Look::None,
+        Look::Vivid,
+        Look::Cinematic,
+        Look::Mono,
+        Look::Vintage,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Look::None => "None",
+            Look::Vivid => "Vivid",
+            Look::Cinematic => "Cinematic",
+            Look::Mono => "Black & white",
+            Look::Vintage => "Vintage",
+        }
+    }
+
+    fn filter(self) -> Option<&'static str> {
+        match self {
+            Look::None => None,
+            Look::Vivid => Some("eq=contrast=1.06:saturation=1.35,unsharp=5:5:0.5"),
+            Look::Cinematic => Some(
+                "eq=contrast=1.12:saturation=0.88:gamma=0.97,curves=preset=medium_contrast,vignette=PI/5",
+            ),
+            Look::Mono => Some("hue=s=0,eq=contrast=1.12"),
+            Look::Vintage => Some("curves=preset=vintage,vignette=PI/4"),
+        }
+    }
+}
+
+impl std::fmt::Display for Look {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Music played under an export.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Music {
+    pub path: std::path::PathBuf,
+    /// 0 to 1.
+    pub volume: f32,
+}
+
+/// A caption picture to lay over the picture: raw RGBA in a file, shown from `start` to `end`
+/// (seconds into the clip).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Burn {
+    pub path: std::path::PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// What an export changes on the way: speed, colour, fades, the mix, music, captions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effects {
+    /// 1 is normal; 0.25 to 4.
+    pub speed: f64,
+    pub look: Look,
+    /// Fade picture and sound in at the start and out at the end.
+    pub fade: bool,
+    pub music: Option<Music>,
+    /// Volumes of the game and microphone tracks (1 is as recorded).
+    pub game_volume: f32,
+    pub mic_volume: f32,
+    /// Take the hiss and hum out of the microphone.
+    pub mic_cleanup: bool,
+    /// Bring the whole thing to a steady, loud-enough level.
+    pub even_loudness: bool,
+    /// Captions to burn in (made for the export's size just before it runs).
+    pub burns: Vec<Burn>,
+}
+
+impl Default for Effects {
+    fn default() -> Self {
+        Effects {
+            speed: 1.0,
+            look: Look::None,
+            fade: false,
+            music: None,
+            game_volume: 1.0,
+            mic_volume: 1.0,
+            mic_cleanup: false,
+            even_loudness: false,
+            burns: Vec::new(),
+        }
+    }
+}
+
+/// How long fades last, in seconds.
+const FADE: f64 = 0.5;
+
+impl Effects {
+    /// Nothing to change: a plain copy.
+    pub fn is_plain(&self) -> bool {
+        *self == Effects::default()
+    }
+
+    /// The same effects at another speed (slow motion presets).
+    pub fn at_speed(&self, speed: f64) -> Effects {
+        Effects {
+            speed,
+            ..self.clone()
+        }
+    }
+
+    /// How long `start..end` of a clip lasts once exported.
+    pub fn length(&self, start: f64, end: f64) -> f64 {
+        (end - start).max(0.05) / self.speed.clamp(0.25, 4.0)
+    }
+
+    fn mixes_tracks(&self) -> bool {
+        self.game_volume != 1.0 || self.mic_volume != 1.0 || self.mic_cleanup
+    }
+}
+
+/// `atempo` steps for a speed: each step does at most 2x either way.
+fn tempo_chain(speed: f64) -> Vec<String> {
+    let mut left = speed.clamp(0.25, 4.0);
+    let mut steps = Vec::new();
+    while left >= 2.0 - 1e-9 {
+        steps.push(s("atempo=2.0"));
+        left /= 2.0;
+    }
+    while left <= 0.5 + 1e-9 {
+        steps.push(s("atempo=0.5"));
+        left /= 0.5;
+    }
+    if (left - 1.0).abs() > 1e-6 {
+        steps.push(format!("atempo={left:.4}"));
+    }
+    steps
+}
+
+/// The filter graph for an export: the picture through speed, look and fades into `shape`
+/// (the format's own layout, from `[pre]` to `[v]`), and with `sound`, the mix through speed,
+/// fades, music (input 1) and levelling into `[a]`. `length` is the output's length.
+fn effects_graph(
+    eff: &Effects,
+    info: &Info,
+    shape: &str,
+    out_fps: u32,
+    length: f64,
+    sound: bool,
+) -> String {
+    let mut parts = Vec::new();
+    let mut pic = Vec::new();
+    if (eff.speed - 1.0).abs() > 1e-6 {
+        pic.push(format!("setpts=PTS/{:.4}", eff.speed.clamp(0.25, 4.0)));
+    }
+    pic.push(format!("fps={out_fps}"));
+    if let Some(l) = eff.look.filter() {
+        pic.push(s(l));
+    }
+    if eff.fade && length > FADE * 2.5 {
+        pic.push(format!("fade=t=in:st=0:d={FADE}"));
+        pic.push(format!("fade=t=out:st={:.3}:d={FADE}", length - FADE));
+    }
+    parts.push(format!("[0:v]{}[pre]", pic.join(",")));
+    if eff.burns.is_empty() {
+        parts.push(s(shape));
+    } else {
+        // Captions over the finished picture, each for its time (in the export's timeline).
+        let shaped = shape.strip_suffix("[v]").unwrap_or(shape);
+        parts.push(format!("{shaped}[sv]"));
+        let first = if eff.music.is_some() { 2 } else { 1 };
+        let mut last = s("sv");
+        let n = eff.burns.len();
+        for (i, b) in eff.burns.iter().enumerate() {
+            let to = if i + 1 == n { s("v") } else { format!("c{i}") };
+            parts.push(format!(
+                "[{last}][{}:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,{:.3},{:.3})'[{to}]",
+                first + i,
+                b.start,
+                b.end
+            ));
+            last = to;
+        }
+    }
+    if !sound {
+        return parts.join(";");
+    }
+    let track = |name: &str| info.audio_tracks.iter().position(|t| t == name);
+    let base = match (track("Game"), track("Microphone")) {
+        (Some(g), Some(m)) if eff.mixes_tracks() => {
+            let clean = if eff.mic_cleanup {
+                "afftdn=nr=12,highpass=f=90,"
+            } else {
+                ""
+            };
+            format!(
+                "[0:a:{g}]volume={:.2}[ga];[0:a:{m}]{clean}volume={:.2}[ma];\
+                 [ga][ma]amix=inputs=2:duration=longest:normalize=0",
+                eff.game_volume, eff.mic_volume
+            )
+        }
+        _ if info.audio_tracks.is_empty() => {
+            format!("anullsrc=r=48000:cl=stereo,atrim=0:{length:.3}")
+        }
+        _ => format!("[0:a:0]volume={:.2}", eff.game_volume),
+    };
+    let mut snd = vec![s("aformat=sample_rates=48000:channel_layouts=stereo")];
+    snd.extend(tempo_chain(eff.speed));
+    if eff.fade && length > FADE * 2.5 {
+        snd.push(format!("afade=t=in:st=0:d={FADE}"));
+        snd.push(format!("afade=t=out:st={:.3}:d={FADE}", length - FADE));
+    }
+    parts.push(format!("{base},{}[mix]", snd.join(",")));
+    let mut last = s("mix");
+    if let Some(m) = &eff.music {
+        let tail = (length - 1.5).max(0.0);
+        parts.push(format!(
+            "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={:.2},atrim=0:{length:.3},\
+             afade=t=out:st={tail:.3}:d=1.5[mus]",
+            m.volume.clamp(0.0, 2.0)
+        ));
+        parts.push(s(
+            "[mix][mus]amix=inputs=2:duration=first:normalize=0[withmusic]",
+        ));
+        last = s("withmusic");
+    }
+    if eff.even_loudness {
+        parts.push(format!(
+            "[{last}]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[a]"
+        ));
+    } else {
+        parts.push(format!("[{last}]anull[a]"));
+    }
+    parts.join(";")
+}
+
+/// The start of an export with effects: the clip's part, then the music (looped) if any.
+fn effects_head(clip: &Path, start: f64, end: f64, eff: &Effects) -> Vec<String> {
+    let mut a = export_head(clip, start, end);
+    if let Some(m) = &eff.music {
+        a.extend([
+            s("-stream_loop"),
+            s("-1"),
+            s("-i"),
+            m.path.display().to_string(),
+        ]);
+    }
+    for b in &eff.burns {
+        a.extend([
+            s("-f"),
+            s("rawvideo"),
+            s("-pix_fmt"),
+            s("rgba"),
+            s("-video_size"),
+            format!("{}x{}", b.width, b.height),
+            s("-i"),
+            b.path.display().to_string(),
+        ]);
+    }
+    a
+}
+
+/// Where captions shown at `start..end` of the clip land in an export of `range` at `speed`,
+/// or `None` if they're outside it.
+pub fn burn_window(start: f64, end: f64, range: (f64, f64), speed: f64) -> Option<(f64, f64)> {
+    let (a, b) = (start.max(range.0), end.min(range.1));
+    (b > a).then(|| ((a - range.0) / speed, (b - range.0) / speed))
+}
+
+/// A frame-exact copy of `start..end` of the clip, re-encoded at about the original quality.
+/// Without effects it keeps every sound track; with them, one mixed track. Progress goes to
+/// stdout (`-progress`).
 pub fn trim_args(
     clip: &Path,
     start: f64,
     end: f64,
     info: &Info,
+    eff: &Effects,
     encoder: Encoder,
     out: &Path,
 ) -> Vec<String> {
@@ -238,6 +550,23 @@ pub fn trim_args(
     let bitrate = info.video_bps.unwrap_or_else(|| {
         crate::config::Quality::High.bitrate(info.width as u64 * info.height as u64, fps)
     });
+    if !eff.is_plain() {
+        let length = eff.length(start, end);
+        let mut a = effects_head(clip, start, end, eff);
+        a.extend([
+            s("-filter_complex"),
+            effects_graph(eff, info, "[pre]null[v]", fps.min(120), length, true),
+            s("-map"),
+            s("[v]"),
+            s("-map"),
+            s("[a]"),
+            s("-c:v"),
+            s(encoder.ffmpeg_name()),
+        ]);
+        a.extend(export_video_opts(encoder, bitrate, fps.min(120), false));
+        a.extend(mp4_tail(out));
+        return a;
+    }
     let mut a = vec![s("-y")];
     a.extend(head());
     a.extend([s("-progress"), s("pipe:1")]);
@@ -299,22 +628,35 @@ fn mp4_tail(out: &Path) -> Vec<String> {
 }
 
 /// A GIF of `start..end`: `width` pixels wide at `fps`, with a palette made for this clip.
+#[allow(clippy::too_many_arguments)]
 pub fn gif_args(
     clip: &Path,
     start: f64,
     end: f64,
+    info: &Info,
+    eff: &Effects,
     width: u32,
     fps: u32,
     out: &Path,
 ) -> Vec<String> {
+    // A GIF has no sound, and captions don't survive its palette.
+    let eff = Effects {
+        music: None,
+        burns: Vec::new(),
+        ..eff.clone()
+    };
+    let shape = format!(
+        "[pre]scale={width}:-2:flags=lanczos,split[ga][gb];[ga]palettegen=stats_mode=diff[p];\
+         [gb][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[v]"
+    );
+    let length = eff.length(start, end);
     let mut a = export_head(clip, start, end);
     a.extend([
+        s("-filter_complex"),
+        effects_graph(&eff, info, &shape, fps, length, false),
+        s("-map"),
+        s("[v]"),
         s("-an"),
-        s("-vf"),
-        format!(
-            "fps={fps},scale={width}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];\
-             [b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
-        ),
         s("-loop"),
         s("0"),
         s("-f"),
@@ -324,69 +666,40 @@ pub fn gif_args(
     a
 }
 
-/// Vertical 1080x1920 for TikTok, Shorts and Reels: the whole picture in the middle, over a
-/// blurred, zoomed copy of itself.
-pub fn vertical_args(
+/// A frame for phones or feeds: `size` (1080x1920, 1080x1080, 1080x1350), the whole picture in
+/// the middle over a blurred, zoomed copy of itself.
+#[allow(clippy::too_many_arguments)]
+pub fn framed_args(
     clip: &Path,
     start: f64,
     end: f64,
     info: &Info,
+    eff: &Effects,
+    size: (u32, u32),
     encoder: Encoder,
     out: &Path,
 ) -> Vec<String> {
     let encoder = export_encoder(encoder);
+    let (w, h) = size;
     let fps = (info.fps.round() as u32).clamp(1, 60);
     let bitrate = crate::config::Quality::High
-        .bitrate(1080 * 1920, fps)
+        .bitrate(w as u64 * h as u64, fps)
         .min(16_000_000);
-    let mut a = export_head(clip, start, end);
+    let (bw, bh) = (w / 4, h / 4);
+    let shape = format!(
+        "[pre]split[bg][fg];\
+         [bg]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur=10:2,scale={w}:{h}[b];\
+         [fg]scale={w}:{h}:force_original_aspect_ratio=decrease[f];[b][f]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
+    );
+    let length = eff.length(start, end);
+    let mut a = effects_head(clip, start, end, eff);
     a.extend([
         s("-filter_complex"),
-        format!(
-            "[0:v]fps={fps},split[bg][fg];\
-             [bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920[b];\
-             [fg]scale=1080:-2[f];[b][f]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
-        ),
+        effects_graph(eff, info, &shape, fps, length, true),
         s("-map"),
         s("[v]"),
         s("-map"),
-        s("0:a:0?"),
-        s("-c:v"),
-        s(encoder.ffmpeg_name()),
-    ]);
-    a.extend(export_video_opts(encoder, bitrate, fps, false));
-    a.extend(mp4_tail(out));
-    a
-}
-
-/// Slow motion: `start..end` at 1/`factor` speed (2 or 4), the sound slowed to match without
-/// changing its pitch.
-pub fn slow_args(
-    clip: &Path,
-    start: f64,
-    end: f64,
-    factor: u32,
-    info: &Info,
-    encoder: Encoder,
-    out: &Path,
-) -> Vec<String> {
-    let encoder = export_encoder(encoder);
-    let factor = factor.clamp(2, 4);
-    let fps = info.fps.round().max(1.0) as u32;
-    let bitrate = info.video_bps.unwrap_or_else(|| {
-        crate::config::Quality::High.bitrate(info.width as u64 * info.height as u64, fps)
-    });
-    let tempo = vec!["atempo=0.5"; if factor >= 4 { 2 } else { 1 }].join(",");
-    let mut a = export_head(clip, start, end);
-    a.extend([
-        s("-map"),
-        s("0:v:0"),
-        s("-map"),
-        s("0:a:0?"),
-        s("-vf"),
-        format!("setpts={factor}.0*PTS"),
-        s("-af"),
-        tempo,
+        s("[a]"),
         s("-c:v"),
         s(encoder.ffmpeg_name()),
     ]);
@@ -464,17 +777,50 @@ pub fn web_plan(limit_bytes: u64, duration: f64, src: &Info) -> Result<SharePlan
     Ok(p)
 }
 
-/// Encodes `start..end` of the clip by `plan`, sound track 1 only (what Discord plays).
+/// Encodes `start..end` of the clip by `plan`, sound track 1 only (what Discord plays), with
+/// `eff` applied when there are any.
+#[allow(clippy::too_many_arguments)]
 pub fn share_args(
     clip: &Path,
     start: f64,
     end: f64,
+    info: &Info,
+    eff: &Effects,
     plan: &SharePlan,
     encoder: Encoder,
     out: &Path,
 ) -> Vec<String> {
     let encoder = export_encoder(encoder);
     let fps = plan.fps.unwrap_or(60);
+    if !eff.is_plain() {
+        let out_fps = plan.fps.unwrap_or((info.fps.round() as u32).clamp(1, 60));
+        let shape = match plan.height {
+            Some(h) => format!("[pre]scale=-2:{h}[v]"),
+            None => s("[pre]null[v]"),
+        };
+        let length = eff.length(start, end);
+        let mut a = effects_head(clip, start, end, eff);
+        a.extend([
+            s("-filter_complex"),
+            effects_graph(eff, info, &shape, out_fps, length, true),
+            s("-map"),
+            s("[v]"),
+            s("-map"),
+            s("[a]"),
+            s("-c:v"),
+            s(encoder.ffmpeg_name()),
+        ]);
+        a.extend(export_video_opts(encoder, plan.video_bps, out_fps, true));
+        a.extend([s("-c:a"), s("aac"), s("-b:a"), plan.audio_bps.to_string()]);
+        a.extend([
+            s("-movflags"),
+            s("+faststart"),
+            s("-f"),
+            s("mp4"),
+            out.display().to_string(),
+        ]);
+        return a;
+    }
     let mut filters = Vec::new();
     if let Some(f) = plan.fps {
         filters.push(format!("fps={f}"));
@@ -641,6 +987,7 @@ At least one output file must be specified";
         assert_eq!((i.width, i.height), (1920, 1440));
         assert_eq!(i.fps, 60.0);
         assert_eq!(i.video_bps, Some(16_660_000));
+        assert_eq!(i.video_codec, "h264");
         assert_eq!(
             i.audio_tracks,
             vec!["Everything".to_string(), "Game".to_string()]
@@ -695,6 +1042,7 @@ At least one output file must be specified";
             3.25,
             20.0,
             &info,
+            &Effects::default(),
             Encoder::Nvenc,
             Path::new("out.mp4"),
         )
@@ -703,7 +1051,17 @@ At least one output file must be specified";
         assert!(a.contains("-b:v 16660000"), "{a}");
         assert!(a.ends_with("-f mp4 out.mp4"));
         let plan = share_plan(10_000_000, 16.75, &info, 1.0).unwrap();
-        let a = share_args(clip, 3.25, 20.0, &plan, Encoder::Vaapi, Path::new("d.mp4")).join(" ");
+        let a = share_args(
+            clip,
+            3.25,
+            20.0,
+            &info,
+            &Effects::default(),
+            &plan,
+            Encoder::Vaapi,
+            Path::new("d.mp4"),
+        )
+        .join(" ");
         assert!(
             a.contains("-map 0:a:0? -vf scale=-2:1080 -c:v libx264"),
             "{a}"
@@ -770,5 +1128,199 @@ At least one output file must be specified";
         assert!(j.contains("-map [v] -map [a] -c:v libx264"));
         assert!(j.ends_with("-movflags +faststart -f mp4 m.mp4"));
         assert_eq!(montage_length(&pieces), 50.5);
+    }
+
+    fn three_tracks() -> Info {
+        Info {
+            duration: 30.0,
+            width: 1920,
+            height: 1080,
+            fps: 60.0,
+            video_bps: Some(20_000_000),
+            audio_tracks: vec!["Everything".into(), "Game".into(), "Microphone".into()],
+            video_codec: "h264".into(),
+        }
+    }
+
+    fn graph(a: &[String]) -> &str {
+        &a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1]
+    }
+
+    #[test]
+    fn plain_trims_keep_every_track() {
+        let a = trim_args(
+            Path::new("c.mp4"),
+            2.0,
+            7.0,
+            &three_tracks(),
+            &Effects::default(),
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        assert!(a.join(" ").contains("-map 0:v:0 -map 0:a?"));
+        assert!(!a.contains(&s("-filter_complex")));
+    }
+
+    #[test]
+    fn effects_change_speed_look_fades_and_the_mix() {
+        let eff = Effects {
+            speed: 0.25,
+            look: Look::Cinematic,
+            fade: true,
+            game_volume: 0.6,
+            mic_volume: 1.4,
+            mic_cleanup: true,
+            even_loudness: true,
+            music: Some(Music {
+                path: "song.mp3".into(),
+                volume: 0.3,
+            }),
+            burns: Vec::new(),
+        };
+        let a = trim_args(
+            Path::new("c.mp4"),
+            2.0,
+            7.0,
+            &three_tracks(),
+            &eff,
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        let j = a.join(" ");
+        assert!(j.contains("-i c.mp4 -stream_loop -1 -i song.mp3"), "{j}");
+        let g = graph(&a);
+        // 5 s at quarter speed: 20 s out, faded out from 19.5 s.
+        assert!(g.starts_with("[0:v]setpts=PTS/0.2500,fps=60,eq="), "{g}");
+        assert!(g.contains("fade=t=out:st=19.500:d=0.5"), "{g}");
+        assert!(
+            g.contains("[0:a:1]volume=0.60[ga];[0:a:2]afftdn=nr=12,highpass=f=90,volume=1.40[ma]"),
+            "{g}"
+        );
+        assert!(g.contains("atempo=0.5,atempo=0.5"), "{g}");
+        assert!(
+            g.contains(
+                "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=0.30,atrim=0:20.000"
+            ),
+            "{g}"
+        );
+        assert!(
+            g.contains("loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[a]"),
+            "{g}"
+        );
+        assert!(j.contains("-map [v] -map [a]"));
+    }
+
+    #[test]
+    fn speeds_split_into_tempo_steps() {
+        assert!(tempo_chain(1.0).is_empty());
+        assert_eq!(tempo_chain(4.0), ["atempo=2.0", "atempo=2.0"]);
+        assert_eq!(tempo_chain(1.5), ["atempo=1.5000"]);
+        assert_eq!(tempo_chain(0.25), ["atempo=0.5", "atempo=0.5"]);
+        assert_eq!(Effects::default().at_speed(2.0).length(0.0, 10.0), 5.0);
+    }
+
+    #[test]
+    fn framed_and_gif_exports_take_effects() {
+        let eff = Effects {
+            look: Look::Mono,
+            ..Default::default()
+        };
+        let sq = framed_args(
+            Path::new("c.mp4"),
+            0.0,
+            4.0,
+            &three_tracks(),
+            &eff,
+            (1080, 1080),
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        let g = graph(&sq);
+        assert!(g.contains("[0:v]fps=60,hue=s=0"), "{g}");
+        assert!(
+            g.contains("scale=1080:1080:force_original_aspect_ratio=decrease"),
+            "{g}"
+        );
+        assert!(g.contains("[0:a:0]volume=1.00"), "{g}");
+        let gif = gif_args(
+            Path::new("c.mp4"),
+            0.0,
+            4.0,
+            &three_tracks(),
+            &eff,
+            480,
+            15,
+            Path::new("o.gif"),
+        );
+        assert!(graph(&gif).contains("[0:v]fps=15,hue=s=0"));
+        assert!(!graph(&gif).contains("[a]"));
+        // Silent clips get silence to carry music or fades.
+        let quiet = Info {
+            audio_tracks: Vec::new(),
+            ..three_tracks()
+        };
+        let a = trim_args(
+            Path::new("c.mp4"),
+            0.0,
+            3.0,
+            &quiet,
+            &Effects {
+                fade: true,
+                ..Default::default()
+            },
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        assert!(graph(&a).contains("anullsrc=r=48000:cl=stereo,atrim=0:3.000"));
+    }
+
+    #[test]
+    fn captions_are_laid_over_the_finished_picture() {
+        let eff = Effects {
+            music: Some(Music {
+                path: "m.mp3".into(),
+                volume: 0.5,
+            }),
+            burns: vec![
+                Burn {
+                    path: "c0.rgba".into(),
+                    width: 400,
+                    height: 80,
+                    start: 0.5,
+                    end: 1.5,
+                },
+                Burn {
+                    path: "c1.rgba".into(),
+                    width: 300,
+                    height: 80,
+                    start: 2.0,
+                    end: 3.0,
+                },
+            ],
+            ..Default::default()
+        };
+        let a = framed_args(
+            Path::new("c.mp4"),
+            0.0,
+            4.0,
+            &three_tracks(),
+            &eff,
+            (1080, 1920),
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        let j = a.join(" ");
+        assert!(
+            j.contains(
+                "-i m.mp3 -f rawvideo -pix_fmt rgba -video_size 400x80 -i c0.rgba -f rawvideo"
+            ),
+            "{j}"
+        );
+        let g = graph(&a);
+        assert!(g.contains("format=yuv420p[sv];[sv][2:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,0.500,1.500)'[c0];[c0][3:v]overlay"), "{g}");
+        assert!(g.contains("between(t,2.000,3.000)'[v]"), "{g}");
+        assert_eq!(burn_window(5.0, 7.0, (4.0, 10.0), 2.0), Some((0.5, 1.5)));
+        assert_eq!(burn_window(1.0, 3.0, (4.0, 10.0), 1.0), None);
+        assert_eq!(burn_window(3.5, 4.5, (4.0, 10.0), 1.0), Some((0.0, 0.5)));
     }
 }
