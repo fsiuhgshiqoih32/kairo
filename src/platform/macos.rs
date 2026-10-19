@@ -111,6 +111,12 @@ pub fn play_saved_sound() {
         .spawn();
 }
 
+pub fn play_marker_sound() {
+    let _ = Command::new("afplay")
+        .arg("/System/Library/Sounds/Tink.aiff")
+        .spawn();
+}
+
 pub fn copy_files(paths: &[std::path::PathBuf]) -> Result<(), String> {
     // Finder-style file copy, so the clip pastes into chats and folders.
     let list: Vec<String> = paths

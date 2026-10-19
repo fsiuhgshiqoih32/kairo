@@ -35,6 +35,25 @@ use crate::{ffmpeg, platform};
 const PLAYBACK_MAX: (u32, u32) = (1280, 720);
 /// Height of the filmstrip pictures, in pixels.
 const STRIP_H: u32 = 60;
+/// "Mark" with its key, for the Moments panel.
+fn mark_button<'a>() -> Element<'a, Msg> {
+    button(
+        row![
+            icon(Icon::Flag, 13.0, theme::GOLD),
+            text("Mark").size(12).font(MEDIUM),
+            hint_key("M")
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([6, 9]))
+    .style(theme::secondary)
+    .on_press(Msg::Mark)
+    .into()
+}
+
+/// Seconds kept either side of a mark by "Keep 10 s around it".
+const MARK_SPAN: f64 = 5.0;
 const TIMELINE_H: f32 = 78.0;
 const HANDLE_W: f32 = 12.0;
 /// Room above and below the filmstrip for the playhead.
@@ -92,6 +111,11 @@ pub enum Msg {
     CopyLink(String),
     OpenLink(String),
     ShowQr,
+    /// Marks the moment at the playhead, or takes the mark there away.
+    Mark,
+    /// Trims to a few seconds either side of the mark nearest the playhead.
+    TrimAroundMark,
+    ClearMarks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +182,10 @@ pub struct Editor {
     share_after_export: bool,
     /// The file the Share panel is about: the clip, or a trimmed copy made for sharing.
     shared_file: Option<PathBuf>,
+    /// Marked moments, in seconds (kept in the library with the clip).
+    markers: Vec<f64>,
+    /// The marker shortcut, for the hint.
+    mark_key: String,
 }
 
 impl Editor {
@@ -190,6 +218,7 @@ impl Editor {
         };
         let duration = info.duration;
         let name = stem(&clip);
+        let clip_path = clip.clone();
         Ok((
             Editor {
                 player: Player::new(ff.clone(), clip.clone(), info, PLAYBACK_MAX),
@@ -212,6 +241,8 @@ impl Editor {
                 share_expiry: settings.share_expiry.clone(),
                 share_after_export: false,
                 shared_file: None,
+                markers: library::Library::load().markers(&clip_path).to_vec(),
+                mark_key: settings.marker_hotkey.clone(),
             },
             strip,
         ))
@@ -237,6 +268,12 @@ impl Editor {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         self.update(Msg::Frame);
+    }
+
+    /// Shows these marks (for previews).
+    #[cfg(test)]
+    pub fn show_marks(&mut self, marks: Vec<f64>) {
+        self.markers = marks;
     }
 
     /// The first frame and the filmstrip are in.
@@ -308,9 +345,54 @@ impl Editor {
             }
             Key::Character("i") | Key::Character("I") => self.set_in(pos),
             Key::Character("o") | Key::Character("O") => self.set_out(pos),
+            Key::Character("m") | Key::Character("M") => self.toggle_mark(),
+            Key::Character("n") | Key::Character("N") => self.jump_mark(!modifiers.shift()),
             _ => return false,
         }
         true
+    }
+
+    /// Marks the moment at the playhead, or takes the mark there away; kept with the clip.
+    fn toggle_mark(&mut self) {
+        let mut lib = library::Library::load();
+        self.markers = lib.toggle_marker(&self.clip, self.player.position);
+        let _ = lib.save();
+    }
+
+    fn set_marks(&mut self, marks: Vec<f64>) {
+        let mut lib = library::Library::load();
+        lib.set_markers(&self.clip, marks);
+        self.markers = lib.markers(&self.clip).to_vec();
+        let _ = lib.save();
+    }
+
+    /// Goes to the next mark after the playhead (or the one before), round to the first.
+    fn jump_mark(&mut self, forward: bool) {
+        let pos = self.player.position;
+        let found = if forward {
+            self.markers
+                .iter()
+                .find(|m| **m > pos + 0.05)
+                .or(self.markers.first())
+        } else {
+            self.markers
+                .iter()
+                .rev()
+                .find(|m| **m < pos - 0.05)
+                .or(self.markers.last())
+        };
+        if let Some(m) = found.copied() {
+            self.player.seek(m);
+        }
+    }
+
+    /// The mark nearest the playhead.
+    fn nearest_mark(&self) -> Option<f64> {
+        let pos = self.player.position;
+        self.markers
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - pos).abs().total_cmp(&(b - pos).abs()))
     }
 
     pub fn update(&mut self, msg: Msg) -> Effect {
@@ -362,6 +444,15 @@ impl Editor {
                 self.set_out(p);
             }
             Msg::ResetTrim => self.trim = (0.0, self.player.duration()),
+            Msg::Mark => self.toggle_mark(),
+            Msg::ClearMarks => self.set_marks(Vec::new()),
+            Msg::TrimAroundMark => {
+                if let Some(m) = self.nearest_mark() {
+                    let end = self.player.duration();
+                    self.trim = ((m - MARK_SPAN).max(0.0), (m + MARK_SPAN).min(end));
+                    self.player.seek(self.trim.0);
+                }
+            }
             Msg::Loop => self.looping = !self.looping,
             Msg::Volume(v) => self.player.set_volume(v),
             Msg::Track(t) => self.player.set_track(t.index),
@@ -691,6 +782,7 @@ impl Editor {
                     trim: self.trim,
                     position: self.player.position,
                     grab: self.grab,
+                    markers: self.markers.clone(),
                 })
                 .width(Fill)
                 .height(TIMELINE_H),
@@ -707,6 +799,9 @@ impl Editor {
                 hint_key("."),
                 text("one frame").size(12).color(MUTED),
                 Space::new().width(6),
+                hint_key("M"),
+                text("mark").size(12).color(MUTED),
+                Space::new().width(6),
                 hint_key("Shift"),
                 text("+ arrows: 5 s").size(12).color(MUTED),
             ]
@@ -720,6 +815,7 @@ impl Editor {
             column![
                 self.share_panel(share),
                 self.trim_panel(),
+                self.marks_panel(),
                 self.export_panel(),
                 self.details_panel()
             ]
@@ -906,6 +1002,74 @@ impl Editor {
         ]
         .spacing(10);
         panel("Trim", body)
+    }
+
+    /// The marked moments: jump to one, keep the seconds around it.
+    fn marks_panel(&self) -> Element<'_, Msg> {
+        if self.markers.is_empty() {
+            let while_playing = if self.mark_key.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " While you play, {} marks one for the next clip.",
+                    self.mark_key
+                )
+            };
+            return panel(
+                "Moments",
+                column![
+                    text(format!(
+                        "Mark the moments worth finding again.{while_playing}"
+                    ))
+                    .size(12)
+                    .color(MUTED),
+                    mark_button(),
+                ]
+                .spacing(10),
+            );
+        }
+        let chips = self
+            .markers
+            .iter()
+            .fold(row![].spacing(6), |r, t| {
+                r.push(
+                    button(
+                        row![
+                            icon(Icon::Flag, 12.0, theme::GOLD),
+                            text(format_time(*t)).font(Font::MONOSPACE).size(12)
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(Padding::from([5, 8]))
+                    .style(theme::secondary)
+                    .on_press(Msg::Seek(*t)),
+                )
+            })
+            .wrap()
+            .vertical_spacing(6);
+        let body = column![
+            chips,
+            row![
+                mark_button(),
+                button(
+                    text(format!("Keep {:.0} s around it", MARK_SPAN * 2.0))
+                        .size(12)
+                        .font(MEDIUM)
+                )
+                .padding(Padding::from([6, 9]))
+                .style(theme::secondary)
+                .on_press(Msg::TrimAroundMark),
+                button(text("Clear").size(12).font(MEDIUM))
+                    .padding(Padding::from([6, 9]))
+                    .style(theme::ghost)
+                    .on_press(Msg::ClearMarks),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10);
+        panel("Moments", body)
     }
 
     fn share_panel<'a>(&'a self, share: ShareView) -> Element<'a, Msg> {
@@ -1397,6 +1561,7 @@ struct Timeline {
     trim: (f64, f64),
     position: f64,
     grab: Option<Grab>,
+    markers: Vec<f64>,
 }
 
 impl Timeline {
@@ -1524,6 +1689,23 @@ impl canvas::Program<Msg> for Timeline {
                         .with_width(1.5),
                 );
             }
+        }
+
+        // Marked moments: a gold pennant on a thin line.
+        for m in &self.markers {
+            let x = self.x_at(track, *m);
+            f.fill_rectangle(
+                Point::new(x - 1.0, track.y),
+                Size::new(2.0, track.height),
+                theme::alpha(theme::GOLD, 0.85),
+            );
+            let flag = Shape::new(|p| {
+                p.move_to(Point::new(x, track.y + 2.0));
+                p.line_to(Point::new(x + 10.0, track.y + 6.5));
+                p.line_to(Point::new(x, track.y + 11.0));
+                p.close();
+            });
+            f.fill(&flag, theme::GOLD);
         }
 
         // Where the pointer is, and its time.

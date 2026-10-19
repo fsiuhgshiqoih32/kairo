@@ -60,6 +60,7 @@ pub struct State {
 pub enum Target {
     Save,
     Screenshot,
+    Marker,
 }
 
 #[derive(Default)]
@@ -74,6 +75,7 @@ pub struct Updates {
 pub enum Msg {
     Capture(Target),
     ScreenshotOff,
+    MarkerOff,
     Voice(bool),
     VoiceInstalled(Result<(), String>),
     Phrase(String),
@@ -204,12 +206,15 @@ impl State {
         parts.push(name);
         let spec = parts.join("+");
         self.capturing_key = None;
-        let other = match target {
-            Target::Save => &s.screenshot_hotkey,
-            Target::Screenshot => &s.hotkey,
-        };
-        if other.eq_ignore_ascii_case(&spec) {
-            self.hotkey_problem = Some((target, format!("{spec} is already the other shortcut.")));
+        let taken = [
+            (Target::Save, &s.hotkey),
+            (Target::Screenshot, &s.screenshot_hotkey),
+            (Target::Marker, &s.marker_hotkey),
+        ]
+        .into_iter()
+        .any(|(t, k)| t != target && k.eq_ignore_ascii_case(&spec));
+        if taken {
+            self.hotkey_problem = Some((target, format!("{spec} is already another shortcut.")));
             return Effect::None;
         }
         match hotkey::parse(&spec) {
@@ -217,6 +222,7 @@ impl State {
                 match target {
                     Target::Save => s.hotkey = spec,
                     Target::Screenshot => s.screenshot_hotkey = spec,
+                    Target::Marker => s.marker_hotkey = spec,
                 }
                 self.hotkey_problem = None;
                 Effect::Changed
@@ -241,6 +247,11 @@ impl State {
             }
             Msg::ScreenshotOff => {
                 s.screenshot_hotkey.clear();
+                self.capturing_key = None;
+                return changed;
+            }
+            Msg::MarkerOff => {
+                s.marker_hotkey.clear();
                 self.capturing_key = None;
                 return changed;
             }
@@ -567,6 +578,18 @@ impl State {
                     .on_press(Msg::ScreenshotOff),
             );
         }
+        let mark_error = report.and_then(|r| r.marker_hotkey_error.clone());
+        let mut mark_row = row![self.key_capture(Target::Marker, &s.marker_hotkey, mark_error)]
+            .spacing(8)
+            .align_y(Alignment::Start);
+        if !s.marker_hotkey.is_empty() {
+            mark_row = mark_row.push(
+                button(text("Turn off").size(13).font(MEDIUM))
+                    .padding(Padding::from([9, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::MarkerOff),
+            );
+        }
         sections = sections.push(section(
             "Replay",
             vec![
@@ -579,6 +602,15 @@ impl State {
                     "Screenshot shortcut",
                     Some("Saves a full-size picture of the moment to Screenshots.".into()),
                     shot_row,
+                ),
+                setting(
+                    "Marker shortcut",
+                    Some(
+                        "Marks a moment while you play, with a short tick. Clips that hold it \
+                         show a flag there on their timeline."
+                            .into(),
+                    ),
+                    mark_row,
                 ),
                 setting(
                     "Clip length",

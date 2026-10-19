@@ -35,6 +35,8 @@ pub struct ClipItem {
     pub kind: ClipKind,
     pub thumb: Option<image::Handle>,
     pub link: Option<Link>,
+    /// Moments marked in it.
+    pub marks: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,7 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
                 duration: rewindr::mp4::duration_secs(&c.path),
                 favorite: lib.is_favorite(&c.path),
                 link: lib.link(&c.path, now).cloned(),
+                marks: lib.markers(&c.path).len(),
                 kind: if c.name.contains("(Discord") {
                     ClipKind::Discord
                 } else if c.name.contains("(trim") {
@@ -347,7 +350,7 @@ impl App {
                 .into(),
         };
         let mut badges = row![].spacing(5);
-        let tag = |i: Icon, label: &'static str| {
+        let tag = |i: Icon, label: String| {
             container(
                 row![icon(i, 12.0, TEXT), text(label).size(11).font(SEMIBOLD)]
                     .spacing(5)
@@ -358,13 +361,16 @@ impl App {
         };
         match c.kind {
             ClipKind::Clip => {}
-            ClipKind::Trim => badges = badges.push(tag(Icon::Scissors, "Trimmed")),
-            ClipKind::Discord => badges = badges.push(tag(Icon::Send, "Discord")),
-            ClipKind::Vertical => badges = badges.push(tag(Icon::Phone, "Vertical")),
-            ClipKind::Slow => badges = badges.push(tag(Icon::Snail, "Slow-mo")),
+            ClipKind::Trim => badges = badges.push(tag(Icon::Scissors, "Trimmed".into())),
+            ClipKind::Discord => badges = badges.push(tag(Icon::Send, "Discord".into())),
+            ClipKind::Vertical => badges = badges.push(tag(Icon::Phone, "Vertical".into())),
+            ClipKind::Slow => badges = badges.push(tag(Icon::Snail, "Slow-mo".into())),
         }
         if c.link.is_some() {
-            badges = badges.push(tag(Icon::Link, "Shared"));
+            badges = badges.push(tag(Icon::Link, "Shared".into()));
+        }
+        if c.marks > 0 {
+            badges = badges.push(tag(Icon::Flag, c.marks.to_string()));
         }
         let scrub_pos = self
             .scrub

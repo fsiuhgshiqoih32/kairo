@@ -100,13 +100,37 @@ pub fn game_of(name: &str) -> String {
     }
 }
 
-/// Clips the user starred and links they shared, by file name. Stored in `clips.json` in the
-/// config folder.
+/// Clips the user starred, links they shared and moments they marked, by file name. Stored in
+/// `clips.json` in the config folder.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Library {
     pub favorites: BTreeSet<String>,
     pub links: std::collections::BTreeMap<String, Link>,
+    /// Marked moments, in seconds from the clip's start.
+    pub markers: std::collections::BTreeMap<String, Vec<f64>>,
+}
+
+/// Marks closer together than this are one.
+const SAME_MARK: f64 = 0.25;
+
+/// The marks (wall-clock µs) inside `start_us..=end_us`, as seconds into a clip that starts at
+/// `start_us`.
+pub fn marks_within(marks_us: &[i64], start_us: i64, end_us: i64) -> Vec<f64> {
+    let mut v: Vec<f64> = marks_us
+        .iter()
+        .filter(|m| (start_us..=end_us).contains(*m))
+        .map(|m| (m - start_us) as f64 / 1e6)
+        .collect();
+    tidy(&mut v);
+    v
+}
+
+/// Sorted, without near-duplicates.
+fn tidy(v: &mut Vec<f64>) {
+    v.retain(|t| t.is_finite() && *t >= 0.0);
+    v.sort_by(f64::total_cmp);
+    v.dedup_by(|b, a| *b - *a < SAME_MARK);
 }
 
 /// A share link for a clip.
@@ -185,17 +209,52 @@ impl Library {
         }
     }
 
-    /// Keeps a favourite's star and a shared link when the file is renamed.
+    /// The clip's marked moments, in seconds, in order.
+    pub fn markers(&self, clip: &Path) -> &[f64] {
+        clip.file_name()
+            .and_then(|n| self.markers.get(&*n.to_string_lossy()))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub fn set_markers(&mut self, clip: &Path, mut marks: Vec<f64>) {
+        let Some(n) = clip.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return;
+        };
+        tidy(&mut marks);
+        if marks.is_empty() {
+            self.markers.remove(&n);
+        } else {
+            self.markers.insert(n, marks);
+        }
+    }
+
+    /// Adds a mark at `t`, or takes away the one there already. Returns the clip's marks.
+    pub fn toggle_marker(&mut self, clip: &Path, t: f64) -> Vec<f64> {
+        let mut marks = self.markers(clip).to_vec();
+        match marks.iter().position(|m| (m - t).abs() < SAME_MARK) {
+            Some(i) => {
+                marks.remove(i);
+            }
+            None => marks.push(t),
+        }
+        self.set_markers(clip, marks);
+        self.markers(clip).to_vec()
+    }
+
+    /// Keeps a favourite's star, a shared link and marks when the file is renamed.
     pub fn renamed(&mut self, from: &Path, to: &Path) {
         if self.is_favorite(from) {
             self.set_favorite(from, false);
             self.set_favorite(to, true);
         }
         let key = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string());
-        if let (Some(f), Some(t)) = (key(from), key(to))
-            && let Some(l) = self.links.remove(&f)
-        {
-            self.links.insert(t, l);
+        if let (Some(f), Some(t)) = (key(from), key(to)) {
+            if let Some(l) = self.links.remove(&f) {
+                self.links.insert(t.clone(), l);
+            }
+            if let Some(m) = self.markers.remove(&f) {
+                self.markers.insert(t, m);
+            }
         }
     }
 }
@@ -364,5 +423,33 @@ mod tests {
         // Files written before links existed still load.
         let old: Library = serde_json::from_str(r#"{"favorites":["x.mp4"]}"#).unwrap();
         assert!(old.links.is_empty());
+    }
+
+    #[test]
+    fn marks_land_in_the_clip_that_holds_them() {
+        let s = 1_000_000i64;
+        let marks = [2 * s, 5 * s, 5 * s + 100_000, 9 * s, 30 * s];
+        // A clip from 4 s to 10 s: the marks at 5 s (twice, close together) and 9 s.
+        assert_eq!(marks_within(&marks, 4 * s, 10 * s), [1.0, 5.0]);
+        assert!(marks_within(&marks, 40 * s, 50 * s).is_empty());
+    }
+
+    #[test]
+    fn marks_are_kept_sorted_and_follow_renames() {
+        let mut lib = Library::default();
+        let a = Path::new("/clips/a.mp4");
+        lib.set_markers(a, vec![9.0, 1.5, 1.6, f64::NAN, -2.0]);
+        assert_eq!(lib.markers(a), [1.5, 9.0]);
+        assert_eq!(lib.toggle_marker(a, 4.0), [1.5, 4.0, 9.0]);
+        assert_eq!(lib.toggle_marker(a, 4.1), [1.5, 9.0]);
+        let b = Path::new("/clips/b.mp4");
+        lib.renamed(a, b);
+        assert!(lib.markers(a).is_empty());
+        assert_eq!(lib.markers(b), [1.5, 9.0]);
+        lib.set_markers(b, Vec::new());
+        assert!(lib.markers.is_empty());
+        // Old files without marks still load.
+        let old: Library = serde_json::from_str(r#"{"favorites":["x.mp4"]}"#).unwrap();
+        assert!(old.markers.is_empty());
     }
 }

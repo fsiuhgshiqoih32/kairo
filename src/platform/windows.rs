@@ -147,9 +147,17 @@ pub fn hide_console(cmd: &mut Command) {
 }
 
 pub fn play_saved_sound() {
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     static WAV: OnceLock<Vec<u8>> = OnceLock::new();
-    let wav = WAV.get_or_init(super::saved_sound_wav);
+    play_wav(WAV.get_or_init(super::saved_sound_wav));
+}
+
+pub fn play_marker_sound() {
+    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
+    play_wav(WAV.get_or_init(super::marker_sound_wav));
+}
+
+fn play_wav(wav: &'static [u8]) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     unsafe {
         PlaySoundW(
             wav.as_ptr() as *const u16,

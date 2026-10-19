@@ -59,7 +59,16 @@ pub fn run() -> Result<(), String> {
         .lock()
         .unwrap()
         .set_spill(Some((home.join("buffer").join("replay.bin"), 64 << 20)))?;
+    // A moment marked 3 s in: the 2 s clip saved at the end must hold it.
+    let marker = {
+        let s = shared.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            s.mark()
+        })
+    };
     record_for(&ff, &plan, &shared, Duration::from_secs(4));
+    let _ = marker.join();
     let (held, on_disk, in_memory) = {
         let r = shared.ring.lock().unwrap();
         (
@@ -89,6 +98,15 @@ pub fn run() -> Result<(), String> {
     }
     if clip.thumbnail.is_none() {
         return Err("no thumbnail".into());
+    }
+    let marks = rewindr::library::Library::load()
+        .markers(&clip.path)
+        .to_vec();
+    println!("marks in the clip: {marks:?}");
+    if marks.len() != 1 || !(0.0..=clip.seconds).contains(&marks[0]) {
+        return Err(format!(
+            "the marked moment didn't land in the clip: {marks:?}"
+        ));
     }
     // A screenshot: the newest frame of the buffer, full size.
     let shot = save::screenshot(&shared, Some("Self test"))?;

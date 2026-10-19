@@ -121,9 +121,17 @@ pub fn foreground_title() -> Option<String> {
 pub fn hide_console(_cmd: &mut Command) {}
 
 pub fn play_saved_sound() {
-    let path = std::env::temp_dir().join("rewindr-saved.wav");
+    play_wav("rewindr-saved.wav", super::saved_sound_wav);
+}
+
+pub fn play_marker_sound() {
+    play_wav("rewindr-marker.wav", super::marker_sound_wav);
+}
+
+fn play_wav(name: &str, make: fn() -> Vec<u8>) {
+    let path = std::env::temp_dir().join(name);
     if !path.exists() {
-        let _ = std::fs::write(&path, super::saved_sound_wav());
+        let _ = std::fs::write(&path, make());
     }
     if Command::new("paplay").arg(&path).spawn().is_err() {
         let _ = Command::new("aplay").arg("-q").arg(&path).spawn();

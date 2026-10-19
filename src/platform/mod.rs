@@ -76,8 +76,18 @@ pub fn is_wayland() -> bool {
 /// A short rising two-note chime (16-bit mono WAV) for "clip saved".
 #[allow(dead_code)]
 pub fn saved_sound_wav() -> Vec<u8> {
+    chime(&[(880.0, 0.07), (1318.5, 0.11)])
+}
+
+/// A single short, high blip: a moment was marked.
+pub fn marker_sound_wav() -> Vec<u8> {
+    chime(&[(1568.0, 0.06)])
+}
+
+/// Notes (Hz, seconds) one after another as a mono 16-bit WAV.
+fn chime(notes: &[(f32, f32)]) -> Vec<u8> {
     let rate = 44_100u32;
-    let notes = [(880.0f32, 0.07f32), (1318.5, 0.11)];
+    let notes = notes.iter().copied();
     let mut samples: Vec<i16> = Vec::new();
     for (freq, secs) in notes {
         let n = (rate as f32 * secs) as usize;

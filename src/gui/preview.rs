@@ -71,6 +71,7 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                 favorite: *fav,
                 kind: *kind,
                 thumb: src.thumb.clone(),
+                marks: [2, 0, 1, 0, 0, 0, 0][i],
                 link: (i == 3).then(|| rewindr::library::Link {
                     url: "https://files.catbox.moe/k3x9qa.mp4".into(),
                     created: 0,
@@ -137,6 +138,9 @@ fn preview() {
     let first = app.clips[0].path.clone();
     app.hero = super::library::hero_picture(&first, 6.0).map(|h| (first, h));
     shoot(app.view(), "iced-library", size);
+    app.save_menu = true;
+    shoot(app.view(), "iced-save-menu", size);
+    app.save_menu = false;
     theme::set_accent("purple");
     shoot_at(
         app.view(),
@@ -193,6 +197,7 @@ fn preview() {
     let _ = app.open_editor(clip);
     let ed = app.editor.as_mut().expect("editor opened");
     ed.settle((2.5, 9.0), 5.5);
+    ed.show_marks(vec![3.4, 7.1, 11.0]);
     shoot(app.view(), "iced-editor", size);
 
     app.editor = None;

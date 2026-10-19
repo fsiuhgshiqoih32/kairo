@@ -10,7 +10,7 @@ use rewindr::args;
 use rewindr::{library, pcm};
 
 use crate::ffmpeg;
-use crate::log::info;
+use crate::log::{info, warning};
 use crate::recorder::{Shared, now_us};
 
 /// Shorter than this, saving reports "nothing yet" instead of writing a clip.
@@ -221,6 +221,15 @@ fn save_inner(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Res
     )
     .ok()
     .map(|_| thumb);
+    let marks: Vec<i64> = shared.marks.lock().unwrap().iter().copied().collect();
+    let marks = library::marks_within(&marks, start, end);
+    if !marks.is_empty() {
+        let mut lib = library::Library::load();
+        lib.set_markers(&out, marks);
+        if let Err(e) = lib.save() {
+            warning!("could not keep the clip's marks: {e}");
+        }
+    }
     let seconds = (end - start) as f64 / 1e6;
     info!("saved {} ({seconds:.1} s)", out.display());
     if settings.max_storage_gb > 0 {

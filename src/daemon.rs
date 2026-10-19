@@ -24,8 +24,10 @@ use crate::{audio, autostart, platform, save, single_instance};
 /// Requests other processes leave for the background process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Saves a clip; the file may hold how many seconds (else the settings' length).
     Save,
     Screenshot,
+    Mark,
     TogglePause,
     /// After an update: start the new program file in our place.
     Restart,
@@ -37,6 +39,7 @@ impl Request {
         let name = match self {
             Request::Save => "save.request",
             Request::Screenshot => "screenshot.request",
+            Request::Mark => "mark.request",
             Request::TogglePause => "pause.request",
             Request::Restart => "restart.request",
             Request::Quit => "quit.request",
@@ -50,8 +53,23 @@ pub fn request(r: Request) -> Result<(), String> {
     std::fs::write(r.file(), b"").map_err(|e| e.to_string())
 }
 
+/// Asks for a clip of the last `seconds`.
+pub fn request_save(seconds: u32) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(config::config_dir());
+    std::fs::write(Request::Save.file(), seconds.to_string()).map_err(|e| e.to_string())
+}
+
 fn take_request(r: Request) -> bool {
     std::fs::remove_file(r.file()).is_ok()
+}
+
+/// Takes a save request, with the seconds it asks for if any.
+fn take_save_request() -> Option<Option<u32>> {
+    let f = Request::Save.file();
+    let text = std::fs::read_to_string(&f).ok();
+    std::fs::remove_file(&f)
+        .ok()
+        .map(|_| text.and_then(|t| t.trim().parse().ok()))
 }
 
 /// What the settings window shows about the background process.
@@ -63,6 +81,8 @@ pub struct Report {
     pub hotkey_error: Option<String>,
     pub screenshot_hotkey: Option<String>,
     pub screenshot_hotkey_error: Option<String>,
+    pub marker_hotkey: Option<String>,
+    pub marker_hotkey_error: Option<String>,
     /// Unix milliseconds of the last update; stale means the process is gone.
     pub updated_ms: i64,
 }
@@ -110,6 +130,7 @@ pub fn run() -> Result<(), String> {
     for r in [
         Request::Save,
         Request::Screenshot,
+        Request::Mark,
         Request::TogglePause,
         Request::Restart,
         Request::Quit,
@@ -136,7 +157,7 @@ pub fn run() -> Result<(), String> {
             let (s, s2) = (shared.clone(), shared.clone());
             std::thread::Builder::new()
                 .name("voice".into())
-                .spawn(move || crate::voice::run(s, move || start_save(&s2)))
+                .spawn(move || crate::voice::run(s, move || start_save(&s2, None)))
                 .map_err(|e| e.to_string())?
         },
     ];
@@ -161,6 +182,8 @@ pub fn run() -> Result<(), String> {
     hotkey.set(&settings.hotkey);
     let mut shot_key = hotkey.sibling();
     shot_key.set(&settings.screenshot_hotkey);
+    let mut mark_key = hotkey.sibling();
+    mark_key.set(&settings.marker_hotkey);
     let launcher = autostart::launcher();
     let mut tray: Option<Tray> = None;
     let mut mtime = config::mtime(&path);
@@ -182,14 +205,16 @@ pub fn run() -> Result<(), String> {
             }
             Event::UserEvent(UserEvent::Hotkey(e)) => {
                 if hotkey.is_press(&e) {
-                    start_save(&shared);
+                    start_save(&shared, None);
                 } else if shot_key.is_press(&e) {
                     start_screenshot(&shared);
+                } else if mark_key.is_press(&e) {
+                    mark(&shared);
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 match tray.as_ref().and_then(|t| t.action_for(e.id())) {
-                    Some(MenuAction::Save) => start_save(&shared),
+                    Some(MenuAction::Save) => start_save(&shared, None),
                     Some(MenuAction::TogglePause) => toggle_pause(&shared),
                     Some(MenuAction::OpenFolder) => {
                         let dir = shared.settings().save_dir();
@@ -226,16 +251,20 @@ pub fn run() -> Result<(), String> {
                     Ok(s) => {
                         hotkey.set(&s.hotkey);
                         shot_key.set(&s.screenshot_hotkey);
+                        mark_key.set(&s.marker_hotkey);
                         shared.apply(s);
                     }
                     Err(e) => warning!("{e}"),
                 }
             }
-            if take_request(Request::Save) {
-                start_save(&shared);
+            if let Some(seconds) = take_save_request() {
+                start_save(&shared, seconds);
             }
             if take_request(Request::Screenshot) {
                 start_screenshot(&shared);
+            }
+            if take_request(Request::Mark) {
+                mark(&shared);
             }
             if take_request(Request::TogglePause) {
                 toggle_pause(&shared);
@@ -268,6 +297,8 @@ pub fn run() -> Result<(), String> {
                 hotkey_error: hotkey.error.clone(),
                 screenshot_hotkey: shot_key.label().map(String::from),
                 screenshot_hotkey_error: shot_key.error.clone(),
+                marker_hotkey: mark_key.label().map(String::from),
+                marker_hotkey_error: mark_key.error.clone(),
                 updated_ms: recorder::now_us() / 1000,
             };
             if let Ok(text) = serde_json::to_string(&report) {
@@ -330,8 +361,21 @@ fn start_screenshot(shared: &Arc<Shared>) {
     });
 }
 
-/// Saves a clip on a worker thread, then plays the sound and shows the notification.
-fn start_save(shared: &Arc<Shared>) {
+/// Marks this moment for the clip that will hold it, with a short tick.
+fn mark(shared: &Shared) {
+    if !shared.status.lock().unwrap().recording {
+        return;
+    }
+    let n = shared.mark();
+    if shared.settings().sound {
+        platform::play_marker_sound();
+    }
+    info!("marked a moment ({n} in the buffer)");
+}
+
+/// Saves a clip of the last `seconds` (the settings' length if `None`) on a worker thread, then
+/// plays the sound and shows the notification.
+fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
     if shared.saving.load(Ordering::SeqCst) {
         return;
     }
@@ -345,7 +389,7 @@ fn start_save(shared: &Arc<Shared>) {
     }
     let shared = shared.clone();
     std::thread::spawn(move || {
-        let result = save::save(&shared, None, title.as_deref());
+        let result = save::save(&shared, seconds, title.as_deref());
         if !settings.notify {
             if let Err(e) = result {
                 warning!("{e}");

@@ -39,6 +39,10 @@ pub enum Icon {
     Snail,
     Share,
     Globe,
+    Flag,
+    Layers,
+    ChevronDown,
+    Selected,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -82,6 +86,10 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Snail => file!("snail"),
         Icon::Share => file!("share-2"),
         Icon::Globe => file!("globe"),
+        Icon::Flag => file!("flag"),
+        Icon::Layers => file!("layers"),
+        Icon::ChevronDown => file!("chevron-down"),
+        Icon::Selected => file!("square-check"),
     }
 }
 

@@ -128,6 +128,8 @@ pub struct App {
     /// The newest clip's banner picture, and the clip it's being made for.
     hero: Option<(PathBuf, image::Handle)>,
     hero_loading: Option<PathBuf>,
+    /// The menu of clip lengths under the save button is open.
+    save_menu: bool,
     test: Option<SelfTest>,
     /// Exports `--ui-self-test` still has to make, after the trimmed copy.
     test_exports: Vec<editor::ExportKind>,
@@ -158,6 +160,10 @@ pub enum Message {
     Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
     Shots(Vec<ShotItem>),
+    /// Opens or closes the menu of clip lengths under the save button.
+    SaveMenu(bool),
+    /// Saves the last this many seconds.
+    SaveFor(u32),
     /// The banner picture for a clip is ready (or couldn't be made).
     Hero(PathBuf, Option<image::Handle>),
     /// The folders changed: their new signature and contents.
@@ -242,6 +248,7 @@ impl App {
                 scan_sig: None,
                 hero: None,
                 hero_loading: None,
+                save_menu: false,
                 test: None,
                 test_exports: Vec::new(),
                 test_current: None,
@@ -701,7 +708,15 @@ impl App {
                 }
             }
             Message::SaveClip => {
+                self.save_menu = false;
                 if let Err(e) = daemon::request(Request::Save) {
+                    self.note(e, false);
+                }
+            }
+            Message::SaveMenu(open) => self.save_menu = open,
+            Message::SaveFor(secs) => {
+                self.save_menu = false;
+                if let Err(e) = daemon::request_save(secs) {
                     self.note(e, false);
                 }
             }
@@ -1002,10 +1017,77 @@ impl App {
                 .padding(22),
             );
         }
+        if self.save_menu {
+            layers = layers.push(self.save_menu_view());
+        }
         if let Some(d) = &self.dialog {
             layers = layers.push(self.dialog_view(d));
         }
         layers.into()
+    }
+
+    /// The menu under the save button: the usual length, or less of it.
+    fn save_menu_view(&self) -> Element<'_, Message> {
+        let usual = self.settings.clip_seconds;
+        let mut lengths: Vec<u32> = [10u32, 15, 30, 60, 120, 180]
+            .into_iter()
+            .filter(|l| *l < usual)
+            .collect();
+        lengths.push(usual);
+        let mut items = column![
+            container(text("Save the last").size(12).font(SEMIBOLD).color(MUTED))
+                .padding(Padding::from([6, 12]))
+        ]
+        .spacing(2);
+        for l in lengths.into_iter().rev() {
+            let mut r = row![
+                text(seconds_label(l)).size(14).font(MEDIUM),
+                space::horizontal()
+            ]
+            .align_y(Alignment::Center);
+            if l == usual {
+                r = r.push(widgets::keycap(&self.hotkey()));
+            }
+            items = items.push(
+                button(r)
+                    .width(Fill)
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::ghost)
+                    .on_press(Message::SaveFor(l)),
+            );
+        }
+        let card = container(items)
+            .padding(6)
+            .width(230)
+            .style(|_| container::Style {
+                background: Some(theme::SURFACE.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 12.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: theme::alpha(iced::Color::BLACK, 0.55),
+                    offset: iced::Vector::new(0.0, 12.0),
+                    blur_radius: 32.0,
+                },
+                ..Default::default()
+            });
+        stack![
+            // A click anywhere else closes it.
+            iced::widget::mouse_area(Space::new().width(Fill).height(Fill))
+                .on_press(Message::SaveMenu(false)),
+            container(card)
+                .width(Fill)
+                .align_x(Horizontal::Right)
+                .padding(Padding {
+                    top: 70.0,
+                    right: 28.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                }),
+        ]
+        .into()
     }
 
     fn dialog_view<'a>(&'a self, d: &'a Dialog) -> Element<'a, Message> {
@@ -1398,6 +1480,30 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
+        if let Some(st) = s
+            && st.marks > 0
+        {
+            let key = self
+                .report
+                .as_ref()
+                .and_then(|r| r.marker_hotkey.clone())
+                .unwrap_or_default();
+            c = c.push(
+                row![
+                    icon(Icon::Flag, 13.0, theme::GOLD),
+                    text(match st.marks {
+                        1 => "1 moment marked".to_string(),
+                        n => format!("{n} moments marked"),
+                    })
+                    .size(12)
+                    .color(TEXT_2),
+                    space::horizontal(),
+                    text(key).size(11).color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
         if live {
             c = c.push(bar).push(
                 text(if held >= clip_len {
@@ -1437,7 +1543,7 @@ impl App {
             .report
             .as_ref()
             .is_some_and(|r| r.status.recording && !r.status.paused);
-        let save = button(
+        let save_main = button(
             row![
                 text(format!(
                     "Save last {}",
@@ -1451,8 +1557,27 @@ impl App {
             .align_y(Alignment::Center),
         )
         .padding(Padding::from([9, 14]))
-        .style(theme::primary)
+        .style(|t, s| {
+            let mut st = theme::primary(t, s);
+            st.border.radius = iced::border::left(9.0);
+            st
+        })
         .on_press_maybe(live.then_some(Message::SaveClip));
+        let save_more = library::tip(
+            button(
+                container(icon(Icon::ChevronDown, 16.0, theme::on_accent()))
+                    .center(iced::Length::Fixed(20.0)),
+            )
+            .padding(Padding::from([9, 8]))
+            .style(|t, s| {
+                let mut st = theme::primary(t, s);
+                st.border.radius = iced::border::right(9.0);
+                st
+            })
+            .on_press_maybe(live.then_some(Message::SaveMenu(!self.save_menu))),
+            "Save a shorter clip",
+        );
+        let save = row![save_main, save_more].spacing(1);
         let mut r = row![text(title).font(BOLD).size(24), space::horizontal()]
             .spacing(12)
             .align_y(Alignment::Center);

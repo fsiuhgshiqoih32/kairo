@@ -62,6 +62,8 @@ pub struct Status {
     pub voice: Option<String>,
     pub voice_error: Option<String>,
     pub last_screenshot: Option<String>,
+    /// Moments marked inside the replay buffer.
+    pub marks: usize,
 }
 
 /// Everything the recorder, audio capture, saving and the tray share.
@@ -80,6 +82,8 @@ pub struct Shared {
     pub saving: AtomicBool,
     /// The microphone's sound also goes here while voice clipping listens.
     pub voice_tap: crate::voice::Tap,
+    /// Marked moments (wall-clock µs), oldest first, for as long as the buffer could hold them.
+    pub marks: Mutex<std::collections::VecDeque<i64>>,
 }
 
 impl Shared {
@@ -97,7 +101,21 @@ impl Shared {
             audio_generation: AtomicU64::new(0),
             saving: AtomicBool::new(false),
             voice_tap: Default::default(),
+            marks: Mutex::default(),
         })
+    }
+
+    /// Marks this moment; saved clips that hold it show it on their timeline. Returns how many
+    /// marks the buffer holds now.
+    pub fn mark(&self) -> usize {
+        let now = now_us();
+        let keep = self.settings().buffer_seconds() as i64 * 1_000_000;
+        let mut m = self.marks.lock().unwrap();
+        m.push_back(now);
+        while m.front().is_some_and(|t| *t < now - keep) {
+            m.pop_front();
+        }
+        m.len()
     }
 
     pub fn settings(&self) -> Settings {
@@ -156,6 +174,14 @@ impl Shared {
         s.buffer_on_disk = ring.on_disk();
         s.memory_mb = ring.memory_bytes() as f64 / (1024.0 * 1024.0);
         s.paused = self.paused.load(Ordering::Relaxed);
+        let since = now_us() - (s.buffer_seconds * 1e6) as i64;
+        s.marks = self
+            .marks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| **t >= since)
+            .count();
         s
     }
 }
