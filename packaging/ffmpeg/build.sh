@@ -91,7 +91,7 @@ common=(
   --enable-encoder=libx264,aac,mjpeg,gif,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe,flac
   --enable-parser=h264,hevc,aac,mjpeg,mpegaudio,flac,vorbis,opus
   --enable-bsf=dump_extradata,h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata
-  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,amix,aresample,aformat,testsrc2,sine,showinfo,hwdownload,hwupload,hwmap,split,palettegen,paletteuse,atempo,overlay,boxblur,concat,xfade,fade,afade,acrossfade,anullsrc,setsar,settb,volume,apad,tpad,reverse,areverse,eq,hue,vignette,unsharp,curves,zoompan,gblur,drawbox,afftdn,loudnorm,dynaudnorm,highpass,lowpass,alimiter,pan,amerge
+  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,aselect,asplit,amix,aresample,aformat,testsrc2,sine,showinfo,hwdownload,hwupload,hwmap,split,palettegen,paletteuse,atempo,overlay,boxblur,concat,xfade,fade,afade,acrossfade,anullsrc,setsar,settb,volume,apad,tpad,reverse,areverse,eq,hue,vignette,unsharp,curves,zoompan,gblur,drawbox,afftdn,loudnorm,dynaudnorm,highpass,lowpass,alimiter,pan,amerge
   --pkg-config-flags=--static
   --extra-cflags="-I$prefix/include $cflags"
   --extra-ldflags="-L$prefix/lib $ldflags"
@@ -105,7 +105,7 @@ case "$os" in
       --enable-ffnvcodec --enable-nvenc
       --enable-encoder=h264_nvenc,h264_amf,h264_mf,hevc_nvenc,hevc_amf,hevc_mf
       --enable-filter=gfxcapture,ddagrab,scale_d3d11
-      --enable-indev=gdigrab
+      --enable-indev=gdigrab,dshow
       --enable-hwaccel=h264_d3d11va,h264_d3d11va2,h264_dxva2,hevc_d3d11va,hevc_d3d11va2,hevc_dxva2
       --extra-ldflags=-static
     )
@@ -123,7 +123,7 @@ case "$os" in
     platform=(
       --enable-pthreads
       --enable-libxcb --enable-libxcb-shm --enable-libxcb-xfixes
-      --enable-indev=xcbgrab
+      --enable-indev=xcbgrab,v4l2
       --enable-ffnvcodec --enable-nvenc
       --enable-encoder=h264_nvenc,hevc_nvenc
     )

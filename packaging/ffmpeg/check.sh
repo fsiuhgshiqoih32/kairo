@@ -73,6 +73,28 @@ test "$(wc -c < "$dir/cap.rgba")" -eq $((120 * 40 * 4))
 "$ff" "${q[@]}" -i "$dir/clip.mp4" -f rawvideo -pix_fmt rgba -video_size 120x40 -i "$dir/cap.rgba" -filter_complex "[0:v][1:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,0.5,1.5)'[v]" -map "[v]" -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/captioned.mp4"
 test -s "$dir/captioned.mp4"
 
+step "editor cuts: parts of a clip joined back to back, every sound track kept exact"
+"$ff" "${q[@]}" -ss 0.2 -t 2.4 -i "$dir/clip.mp4" -filter_complex   "[0:v]split=2[v0][v1];[0:a:0]asplit=2[a0_0][a0_1];[v0]trim=start=0:end=0.8,setpts=PTS-STARTPTS[pv0];[a0_0]atrim=start=0:end=0.8,asetpts=PTS-STARTPTS[pa0_0];[v1]trim=start=1.6:end=2.4,setpts=PTS-STARTPTS[pv1];[a0_1]atrim=start=1.6:end=2.4,asetpts=PTS-STARTPTS[pa0_1];[pv0][pa0_0][pv1][pa0_1]concat=n=2:v=1:a=1[v][a0]"   -map "[v]" -map "[a0]" -c:v libx264 -b:v 300k -metadata:s:a:0 title=Game -c:a pcm_s16le -f matroska "$dir/cut.mkv"
+test -s "$dir/cut.mkv"
+"$ff" "${q[@]}" -ss 0.2 -i "$dir/clip.mp4" -t 1 -map 0:v:0 -map "0:a?" -c copy -avoid_negative_ts make_zero   -movflags +faststart -f mp4 "$dir/copy.mp4"
+test -s "$dir/copy.mp4"
+
+step "text: frames of an animation from their moment, laid at a place, then the still"
+"$ff" "${q[@]}" -f lavfi -i testsrc2=size=60x20:rate=30 -frames:v 6 -f rawvideo -pix_fmt rgba "$dir/in.rgba"
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -f rawvideo -pix_fmt rgba -video_size 60x20 -framerate 30 -itsoffset 0.5   -i "$dir/in.rgba" -f rawvideo -pix_fmt rgba -video_size 120x40 -i "$dir/cap.rgba" -filter_complex   "[0:v][1:v]overlay=x=40:y=30:eof_action=pass:enable='between(t,0.5,0.7)'[c0];[c0][2:v]overlay=x=30:y=20:enable='between(t,0.7,2)'[v]"   -map "[v]" -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/text.mp4"
+test -s "$dir/text.mp4"
+
+step "webcam: laid in a corner of a saved clip, starting a little late"
+"$ff" "${q[@]}" -use_wallclock_as_timestamps 1 -f lavfi -i testsrc2=size=64x36:rate=30 -frames:v 60   -vf fps=30,scale=-2:36,format=yuv420p -c:v libx264 -g 30 -bf 0 -copyts -f mpegts "$dir/cam.ts"
+"$ff" "${q[@]}" -i "$dir/video.ts" -itsoffset 0.25 -i "$dir/cam.ts" -i "$dir/game.wav"   -filter_complex "[1:v]scale=80:-2[cam];[0:v][cam]overlay=x=W-w-W*2/100:y=H-h-W*2/100:eof_action=pass[v]"   -map "[v]" -map 2:a:0 -c:v libx264 -b:v 300k -c:a aac -movflags +faststart -f mp4 "$dir/webcam.mp4"
+test -s "$dir/webcam.mp4"
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) cam=dshow ;;
+  Darwin) cam=avfoundation ;;
+  *) cam=v4l2 ;;
+esac
+"$ff" -hide_banner -devices 2>/dev/null | grep -qw "$cam" || { echo "no $cam camera input"; exit 1; }
+
 step "screenshot: one frame of the stream as JPEG"
 "$ff" "${q[@]}" -i "$dir/video.ts" -vf "select=eq(n\,80)" -frames:v 1 -q:v 2 -update 1 "$dir/shot.jpg"
 test -s "$dir/shot.jpg"
