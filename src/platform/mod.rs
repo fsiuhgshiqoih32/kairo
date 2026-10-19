@@ -80,11 +80,13 @@ pub fn saved_sound_wav() -> Vec<u8> {
 }
 
 /// A single short, high blip: a moment was marked.
+#[allow(dead_code)]
 pub fn marker_sound_wav() -> Vec<u8> {
     chime(&[(1568.0, 0.06)])
 }
 
-/// Notes (Hz, seconds) one after another as a mono 16-bit WAV.
+/// Notes (Hz, seconds) one after another as a mono 16-bit WAV. (macOS plays its own sounds.)
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn chime(notes: &[(f32, f32)]) -> Vec<u8> {
     let rate = 44_100u32;
     let notes = notes.iter().copied();
