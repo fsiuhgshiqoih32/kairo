@@ -1,4 +1,5 @@
-//! Recent audio in memory, placed on the wall clock so it can be cut to match the video.
+//! Recent audio in memory, placed on the wall clock so it can be cut to match the video. Kept
+//! as 16-bit samples: half the memory of floats, and as good as the AAC a clip gets.
 //!
 //! Capture callbacks deliver blocks of samples at slightly irregular moments. Within an unbroken
 //! run, samples are placed by count from the run's start (the device clock is steadier than the
@@ -13,7 +14,15 @@ const RESYNC_US: i64 = 40_000;
 
 struct Block {
     start_us: i64,
-    samples: Vec<f32>,
+    samples: Vec<i16>,
+}
+
+fn to_i16(s: f32) -> i16 {
+    (s.clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+fn to_f32(s: i16) -> f32 {
+    s as f32 / 32767.0
 }
 
 pub struct PcmRing {
@@ -58,7 +67,10 @@ impl PcmRing {
         self.next_us = Some(start + self.frames_to_us(frames));
         self.blocks.push_back(Block {
             start_us: start,
-            samples: samples[..frames * self.channels as usize].to_vec(),
+            samples: samples[..frames * self.channels as usize]
+                .iter()
+                .map(|s| to_i16(*s))
+                .collect(),
         });
         let cutoff = end_us - self.keep_us;
         while let Some(b) = self.blocks.front() {
@@ -86,7 +98,12 @@ impl PcmRing {
                 continue;
             }
             let src = ((lo - offset) as usize) * ch..((hi - offset) as usize) * ch;
-            out[lo as usize * ch..hi as usize * ch].copy_from_slice(&b.samples[src]);
+            for (o, s) in out[lo as usize * ch..hi as usize * ch]
+                .iter_mut()
+                .zip(&b.samples[src])
+            {
+                *o = to_f32(*s);
+            }
         }
         out
     }
@@ -128,47 +145,63 @@ mod tests {
 
     const T0: i64 = 1_792_347_000_000_000;
 
+    /// Sample `n` of a test ramp: a distinct 16-bit value for each.
+    fn ramp(n: i64) -> f32 {
+        to_f32((n % 30_000) as i16)
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1.0 / 32767.0
+    }
+
     #[test]
     fn jittery_blocks_stay_continuous() {
         // 48 kHz mono, 10 ms blocks, arrival times off by up to ±3 ms.
         let mut r = PcmRing::new(48_000, 1, 10_000_000);
         let jitter = [0, 3000, -2000, 1000, -3000];
         for i in 0..100i64 {
-            let block: Vec<f32> = (0..480).map(|k| (i * 480 + k) as f32).collect();
+            let block: Vec<f32> = (0..480).map(|k| ramp(i * 480 + k)).collect();
             r.push(&block, T0 + (i + 1) * 10_000 + jitter[i as usize % 5]);
         }
         let out = r.extract(T0, T0 + 1_000_000);
         assert_eq!(out.len(), 48_000);
-        // A continuous ramp: no dropped or doubled samples anywhere.
-        for w in out.windows(2) {
-            assert_eq!(w[1] - w[0], 1.0);
+        // The whole ramp, exactly: no dropped or doubled samples anywhere.
+        for (n, s) in out.iter().enumerate() {
+            assert_eq!(*s, ramp(n as i64), "sample {n}");
         }
     }
 
     #[test]
     fn silence_between_runs() {
         let mut r = PcmRing::new(1000, 2, 10_000_000);
-        r.push(&[1.0; 200], T0 + 100_000); // 100 frames: 0..100 ms
-        r.push(&[2.0; 200], T0 + 600_000); // nothing played for 400 ms, then 500..600 ms
+        r.push(&[0.25; 200], T0 + 100_000); // 100 frames: 0..100 ms
+        r.push(&[-0.5; 200], T0 + 600_000); // nothing played for 400 ms, then 500..600 ms
         let out = r.extract(T0, T0 + 700_000);
         assert_eq!(out.len(), 700 * 2);
-        assert_eq!(out[0], 1.0);
-        assert_eq!(out[199], 1.0);
+        assert!(near(out[0], 0.25));
+        assert!(near(out[199], 0.25));
         assert_eq!(out[200], 0.0);
         assert_eq!(out[999], 0.0);
-        assert_eq!(out[1000], 2.0);
-        assert_eq!(out[1199], 2.0);
+        assert!(near(out[1000], -0.5));
+        assert!(near(out[1199], -0.5));
         assert_eq!(out[1200], 0.0);
     }
 
     #[test]
     fn window_partly_before_the_buffer() {
         let mut r = PcmRing::new(1000, 1, 10_000_000);
-        r.push(&[5.0; 100], T0 + 1_100_000);
+        r.push(&[0.5; 100], T0 + 1_100_000);
         let out = r.extract(T0, T0 + 1_100_000);
         assert_eq!(out.len(), 1100);
         assert!(out[..1000].iter().all(|s| *s == 0.0));
-        assert!(out[1000..].iter().all(|s| *s == 5.0));
+        assert!(out[1000..].iter().all(|s| near(*s, 0.5)));
+    }
+
+    #[test]
+    fn loud_samples_clip_instead_of_wrapping() {
+        let mut r = PcmRing::new(1000, 1, 10_000_000);
+        r.push(&[3.0, -3.0, 1.0, -1.0], T0 + 4_000);
+        assert_eq!(r.extract(T0, T0 + 4_000), [1.0, -1.0, 1.0, -1.0]);
     }
 
     #[test]

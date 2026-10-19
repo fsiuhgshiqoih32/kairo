@@ -53,11 +53,27 @@ pub fn run() -> Result<(), String> {
         bitrate: 1_000_000,
         vaapi_device: ffmpeg::vaapi_device(),
     };
+    // Through the buffer on disk (the screen test below uses memory).
+    shared
+        .ring
+        .lock()
+        .unwrap()
+        .set_spill(Some((home.join("buffer").join("replay.bin"), 64 << 20)))?;
     record_for(&ff, &plan, &shared, Duration::from_secs(4));
-    let held = shared.ring.lock().unwrap().seconds();
-    println!("buffer: {held:.1} s held");
+    let (held, on_disk, in_memory) = {
+        let r = shared.ring.lock().unwrap();
+        (
+            r.seconds(),
+            r.on_disk(),
+            r.bytes() - r.memory_bytes().min(r.bytes()),
+        )
+    };
+    println!("buffer: {held:.1} s held, {in_memory} bytes of it on disk");
     if held < 2.0 {
         return Err(format!("the buffer held only {held:.1} s"));
+    }
+    if !on_disk || in_memory == 0 {
+        return Err("the buffer didn't use its file".into());
     }
     let clip = save::save(&shared, Some(2), Some("Self test"))?;
     shared.stop.store(true, Ordering::SeqCst);

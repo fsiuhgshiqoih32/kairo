@@ -22,6 +22,16 @@ use crate::{ffmpeg, platform};
 /// Memory the video buffer may use at most, whatever the settings.
 const MAX_BUFFER_BYTES: usize = 1536 * 1024 * 1024;
 
+/// Disk space a buffer on disk may use at most.
+const MAX_SPILL_BYTES: u64 = 32 << 30;
+
+/// The replay buffer's file, when it's on disk (deleted when Rewindr closes).
+fn spill_path() -> std::path::PathBuf {
+    rewindr::config::config_dir()
+        .join("buffer")
+        .join(format!("replay-{}.bin", std::process::id()))
+}
+
 pub fn now_us() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -40,6 +50,9 @@ pub struct Status {
     pub fps: u32,
     pub buffer_seconds: f64,
     pub buffer_mb: f64,
+    /// Whether the buffer is in a file rather than memory, and the memory it takes.
+    pub buffer_on_disk: bool,
+    pub memory_mb: f64,
     pub desktop_audio: Option<String>,
     pub microphone: Option<String>,
     pub error: Option<String>,
@@ -107,12 +120,14 @@ impl Shared {
             old.quality,
             &old.encoder,
             &old.monitor,
+            old.replay_storage,
         ) != (
             new.fps,
             new.resolution,
             new.quality,
             &new.encoder,
             &new.monitor,
+            new.replay_storage,
         );
         if video {
             self.video_generation.fetch_add(1, Ordering::SeqCst);
@@ -138,6 +153,8 @@ impl Shared {
         let ring = self.ring.lock().unwrap();
         s.buffer_seconds = ring.seconds();
         s.buffer_mb = ring.bytes() as f64 / (1024.0 * 1024.0);
+        s.buffer_on_disk = ring.on_disk();
+        s.memory_mb = ring.memory_bytes() as f64 / (1024.0 * 1024.0);
         s.paused = self.paused.load(Ordering::Relaxed);
         s
     }
@@ -242,7 +259,15 @@ pub fn run(shared: Arc<Shared>) {
             };
             {
                 let mut ring = shared.ring.lock().unwrap();
-                if last_plan.as_ref() == Some(&plan) {
+                let spill = settings.buffer_on_disk(plan.bitrate).then(|| {
+                    let room = settings.buffer_worst_bytes(plan.bitrate) + 64 * 1024 * 1024;
+                    (spill_path(), room.min(MAX_SPILL_BYTES))
+                });
+                let moved = ring.set_spill(spill).unwrap_or_else(|e| {
+                    warning!("keeping the replay in memory: {e}");
+                    true
+                });
+                if last_plan.as_ref() == Some(&plan) && !moved {
                     ring.new_run()
                 } else {
                     ring.clear()

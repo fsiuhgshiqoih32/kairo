@@ -123,6 +123,8 @@ pub struct App {
     pub now: Option<SystemTime>,
     window: Option<window::Id>,
     ticks: u64,
+    /// `library::folder_signature` of the last look at the folders.
+    scan_sig: Option<u64>,
     test: Option<SelfTest>,
     /// Exports `--ui-self-test` still has to make, after the trimmed copy.
     test_exports: Vec<editor::ExportKind>,
@@ -139,12 +141,22 @@ enum SelfTest {
 
 static TEST_RESULT: std::sync::Mutex<Option<Result<String, String>>> = std::sync::Mutex::new(None);
 
+/// What a look at the library's folders found.
+#[derive(Debug, Clone)]
+pub struct Scan {
+    sig: u64,
+    clips: Vec<ClipItem>,
+    shots: Vec<ShotItem>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
     Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
     Shots(Vec<ShotItem>),
+    /// The folders changed: their new signature and contents.
+    Rescanned(Option<Box<Scan>>),
     Scrub(PathBuf, f32),
     ScrubEnd(PathBuf),
     Strip(PathBuf, Vec<image::Handle>),
@@ -221,6 +233,7 @@ impl App {
                 now: None,
                 window: None,
                 ticks: 0,
+                scan_sig: None,
                 test: None,
                 test_exports: Vec::new(),
                 test_current: None,
@@ -251,6 +264,30 @@ impl App {
             Task::perform(background(move || load_clips(&dir)), Message::Clips),
             Task::perform(background(move || load_shots(&shots)), Message::Shots),
         ])
+    }
+
+    /// Reloads the library if anything in its folders changed since the last look.
+    fn refresh(&self) -> Task<Message> {
+        let dir = self.settings.save_dir();
+        let shots = self.settings.screenshot_dir();
+        let last = self.scan_sig;
+        Task::perform(
+            background(move || {
+                let thumbs = crate::save::thumbs_dir();
+                let sig = library::folder_signature(
+                    &[&dir, &shots, &thumbs],
+                    &rewindr::library::Library::path(),
+                );
+                (Some(sig) != last).then(|| {
+                    Box::new(Scan {
+                        sig,
+                        clips: load_clips(&dir),
+                        shots: load_shots(&shots),
+                    })
+                })
+            }),
+            Message::Rescanned,
+        )
     }
 
     /// How far along sharing `path` is, while it runs: "Uploading 42%" and 0 to 1.
@@ -451,6 +488,15 @@ impl App {
                 self.loaded = true;
             }
             Message::Shots(s) => self.shots = s,
+            Message::Rescanned(found) => {
+                if let Some(b) = found {
+                    let Scan { sig, clips, shots } = *b;
+                    self.scan_sig = Some(sig);
+                    self.clips = clips;
+                    self.shots = shots;
+                    self.loaded = true;
+                }
+            }
             Message::Scrub(p, f) => {
                 let start = !self.strips.contains_key(&p) && self.strip_loading.insert(p.clone());
                 self.scrub = Some((p.clone(), f));
@@ -719,8 +765,8 @@ impl App {
             background(|| daemon::read_report().map(Box::new)),
             Message::Report,
         )];
-        if self.ticks.is_multiple_of(6) {
-            tasks.push(self.reload());
+        if self.ticks.is_multiple_of(3) {
+            tasks.push(self.refresh());
         }
         if let Some(t) = self.changed_at
             && t.elapsed() > Duration::from_millis(600)
@@ -833,7 +879,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
+            // Once a second is enough for the recorder card; every wake-up rebuilds the window.
+            iced::time::every(Duration::from_millis(1000)).map(|_| Message::Tick),
             keyboard::listen().map(Message::Key),
             window::open_events().map(Message::Opened),
         ];

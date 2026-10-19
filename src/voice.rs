@@ -265,6 +265,17 @@ fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
     use libloading::os::windows::{
         LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, Library,
     };
+    // Vosk reads OPENBLAS_NUM_THREADS through msvcrt.dll, which keeps its own copy of the
+    // environment from when it loaded (often before main). Put the setting in that copy too.
+    // SAFETY: _putenv_s(const char*, const char*) -> errno_t, in every msvcrt.dll.
+    unsafe {
+        type PutEnv = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+        if let Ok(crt) = libloading::Library::new("msvcrt.dll")
+            && let Ok(put) = crt.get::<PutEnv>(b"_putenv_s\0")
+        {
+            put(c"OPENBLAS_NUM_THREADS".as_ptr(), c"1".as_ptr());
+        }
+    }
     // Its C++ runtime DLLs sit beside it. Windows looks in the DLL's own folder only when asked,
     // and only finds that folder in a path written with backslashes.
     let path = PathBuf::from(path.to_string_lossy().replace('/', "\\"));

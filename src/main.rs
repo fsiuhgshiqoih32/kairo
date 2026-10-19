@@ -106,6 +106,13 @@ enum Cmd {
 }
 
 fn main() {
+    // Voice clipping's math library (OpenBLAS, inside Vosk) otherwise starts a thread per core
+    // and reserves 128 MB for each; listening for one phrase needs one. Set before any thread
+    // starts, so nothing reads the environment meanwhile.
+    if std::env::var_os("OPENBLAS_NUM_THREADS").is_none() {
+        // SAFETY: the first thing main does; no other threads exist yet.
+        unsafe { std::env::set_var("OPENBLAS_NUM_THREADS", "1") };
+    }
     platform::init_process();
     let cli = Cli::parse();
     if cli.self_test || cli.ui_self_test {

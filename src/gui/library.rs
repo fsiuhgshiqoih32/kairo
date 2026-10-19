@@ -102,6 +102,57 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
         .collect()
 }
 
+/// A small copy of a screenshot for its card, made once in the thumbnails folder: showing the
+/// full picture (2560x1440) takes 15 MB of memory a card.
+fn shot_thumb(path: &Path, modified: Option<SystemTime>) -> PathBuf {
+    let Some(stem) = path.file_stem() else {
+        return path.to_path_buf();
+    };
+    let thumb = crate::save::thumbs_dir().join(format!("shot-{}.jpg", stem.to_string_lossy()));
+    let made = std::fs::metadata(&thumb).and_then(|m| m.modified()).ok();
+    if made.is_some() && made >= modified {
+        return thumb;
+    }
+    let small = ::image::open(path).map(|p| p.thumbnail(480, 480).to_rgb8());
+    let saved = small.ok().is_some_and(|p| {
+        let _ = std::fs::create_dir_all(crate::save::thumbs_dir());
+        std::fs::File::create(&thumb).is_ok_and(|f| {
+            let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(
+                std::io::BufWriter::new(f),
+                85,
+            );
+            enc.encode_image(&p).is_ok()
+        })
+    });
+    if saved { thumb } else { path.to_path_buf() }
+}
+
+/// A number that changes when a file in `dirs` is added, removed, renamed or rewritten, or when
+/// `file` changes. Cheap enough to check every few seconds instead of reloading everything.
+pub fn folder_signature(dirs: &[&Path], file: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for d in dirs {
+        let mut v: Vec<(std::ffi::OsString, u64, Option<SystemTime>)> = std::fs::read_dir(d)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .filter_map(|e| {
+                        let m = e.metadata().ok()?;
+                        Some((e.file_name(), m.len(), m.modified().ok()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v.hash(&mut h);
+    }
+    std::fs::metadata(file)
+        .ok()
+        .map(|m| (m.len(), m.modified().ok()))
+        .hash(&mut h);
+    h.finish()
+}
+
 /// Reads the screenshots folder, newest first.
 pub fn load_shots(dir: &Path) -> Vec<ShotItem> {
     let lib = Library::load();
@@ -123,7 +174,7 @@ pub fn load_shots(dir: &Path) -> Vec<ShotItem> {
                 name: path.file_stem()?.to_string_lossy().to_string(),
                 size: meta.len(),
                 modified: meta.modified().ok()?,
-                picture: image::Handle::from_path(&path),
+                picture: image::Handle::from_path(shot_thumb(&path, meta.modified().ok())),
                 link: lib.link(&path, now).cloned(),
                 path,
             })

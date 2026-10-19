@@ -64,17 +64,56 @@ impl Quality {
     }
 
     /// Target bits per second for `pixels` per frame at `fps`: about 12 Mbit/s for 1080p60 at
-    /// Medium, scaled by pixel rate.
+    /// Medium. Above 60 fps it grows slower than the frame rate, since neighbouring frames are
+    /// more alike: 120 fps gets about 1.5 times the bits of 60, not twice (measured on real
+    /// game footage, the picture is the same).
     pub fn bitrate(self, pixels: u64, fps: u32) -> u64 {
         let per_pixel_frame = match self {
             Quality::Low => 0.05,
             Quality::Medium => 0.1,
             Quality::High => 0.2,
         };
-        let bps = pixels as f64 * fps.max(1) as f64 * per_pixel_frame;
+        let fps = fps.max(1) as f64;
+        let frames = if fps > 60.0 {
+            60.0 * (fps / 60.0).powf(0.6)
+        } else {
+            fps
+        };
+        let bps = pixels as f64 * frames * per_pixel_frame;
         (bps as u64).clamp(1_000_000, 150_000_000)
     }
 }
+
+/// Where the replay buffer keeps finished video.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Storage {
+    /// Memory for small buffers, disk for ones that could pass `AUTO_DISK_BYTES`.
+    #[default]
+    Auto,
+    Memory,
+    Disk,
+}
+
+impl Storage {
+    pub const ALL: [Storage; 3] = [Storage::Auto, Storage::Memory, Storage::Disk];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Storage::Auto => "Automatic",
+            Storage::Memory => "Memory",
+            Storage::Disk => "Disk",
+        }
+    }
+}
+
+/// On Automatic, a buffer that could grow past this lives on disk.
+pub const AUTO_DISK_BYTES: u64 = 1 << 30;
+
+/// The window's accent colours, by name.
+pub const ACCENTS: [&str; 8] = [
+    "red", "orange", "gold", "green", "cyan", "blue", "purple", "pink",
+];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -113,6 +152,12 @@ pub struct Settings {
     /// Save a clip when the microphone hears `voice_phrase`.
     pub voice_clip: bool,
     pub voice_phrase: String,
+    /// Where the replay buffer lives.
+    pub replay_storage: Storage,
+    /// Marks the moment (shown on the clip's timeline): "F10"; empty turns it off.
+    pub marker_hotkey: String,
+    /// The window's accent colour, one of `ACCENTS`.
+    pub accent: String,
 }
 
 impl Default for Settings {
@@ -138,6 +183,9 @@ impl Default for Settings {
             share_expiry: "forever".into(),
             voice_clip: false,
             voice_phrase: DEFAULT_VOICE_PHRASE.into(),
+            replay_storage: Storage::Auto,
+            marker_hotkey: "F10".into(),
+            accent: "red".into(),
         }
     }
 }
@@ -171,6 +219,25 @@ impl Settings {
             self.voice_phrase = DEFAULT_VOICE_PHRASE.into();
         }
         self.screenshot_hotkey = self.screenshot_hotkey.trim().to_string();
+        self.marker_hotkey = self.marker_hotkey.trim().to_string();
+        if !ACCENTS.contains(&self.accent.as_str()) {
+            self.accent = "red".into();
+        }
+    }
+
+    /// The most the replay buffer can hold at `bitrate`, in bytes: encoders run up to 1.5 times
+    /// over their target in busy scenes.
+    pub fn buffer_worst_bytes(&self, bitrate: u64) -> u64 {
+        bitrate * 3 / 2 / 8 * self.buffer_seconds() as u64
+    }
+
+    /// Whether the replay buffer at `bitrate` goes to disk.
+    pub fn buffer_on_disk(&self, bitrate: u64) -> bool {
+        match self.replay_storage {
+            Storage::Memory => false,
+            Storage::Disk => true,
+            Storage::Auto => self.buffer_worst_bytes(bitrate) > AUTO_DISK_BYTES,
+        }
     }
 
     /// Where screenshots go: a folder inside the clips folder.
@@ -321,6 +388,33 @@ mod tests {
         assert!(Quality::High.bitrate(p1080, 60) > m);
         assert!(Quality::Low.bitrate(p1080, 60) < m);
         assert_eq!(Quality::Low.bitrate(100, 10), 1_000_000);
+        // Past 60 fps, bits grow slower than frames.
+        let p1440 = 2560 * 1440;
+        let (b60, b120) = (
+            Quality::High.bitrate(p1440, 60),
+            Quality::High.bitrate(p1440, 120),
+        );
+        let r = b120 as f64 / b60 as f64;
+        assert!((1.45..=1.6).contains(&r), "{r}");
+        assert_eq!(Quality::Medium.bitrate(p1080, 30) * 2, m);
+    }
+
+    #[test]
+    fn big_buffers_go_to_disk_on_automatic() {
+        let p1440 = 2560 * 1440;
+        let mut s = Settings::default();
+        // 33 s of 1080p60 Medium: about 75 MB.
+        assert!(!s.buffer_on_disk(Quality::Medium.bitrate(1920 * 1080, 60)));
+        // 200 s of 1440p120 High: several GB.
+        s.clip_seconds = 200;
+        let b = Quality::High.bitrate(p1440, 120);
+        assert!(s.buffer_worst_bytes(b) > 2 * AUTO_DISK_BYTES);
+        assert!(s.buffer_on_disk(b));
+        s.replay_storage = Storage::Memory;
+        assert!(!s.buffer_on_disk(b));
+        s.replay_storage = Storage::Disk;
+        s.clip_seconds = 10;
+        assert!(s.buffer_on_disk(1_000_000));
     }
 
     #[test]
@@ -345,5 +439,8 @@ mod tests {
         assert_eq!(s.screenshot_hotkey, "F9");
         assert!(!s.voice_clip);
         assert_eq!(s.share_expiry, "forever");
+        assert_eq!(s.replay_storage, Storage::Auto);
+        assert_eq!(s.marker_hotkey, "F10");
+        assert_eq!(s.accent, "red");
     }
 }

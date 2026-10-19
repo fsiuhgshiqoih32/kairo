@@ -12,7 +12,7 @@ use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
 use rewindr::args::{self, Encoder};
 use rewindr::config::{
-    MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings,
+    MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings, Storage,
     normalize_phrase,
 };
 
@@ -84,6 +84,7 @@ pub enum Msg {
     Fps(u32),
     Resolution(Resolution),
     Quality(Quality),
+    Storage(Storage),
     Encoder(Choice),
     Encoders(Vec<Encoder>),
     DesktopAudio(bool),
@@ -390,6 +391,10 @@ impl State {
                     return changed;
                 }
             }
+            Msg::Storage(v) => {
+                s.replay_storage = v;
+                return changed;
+            }
             Msg::Discord(mb) => {
                 s.discord_mb = mb;
                 return changed;
@@ -454,17 +459,33 @@ impl State {
         (Task::none(), Effect::None)
     }
 
-    fn memory_estimate(&self, s: &Settings) -> String {
+    /// What the quality means, and where the replay buffer lives and what it takes.
+    fn memory_estimate(&self, s: &Settings) -> (String, String) {
         let m = platform::choose_monitor(&s.monitor);
         let (w, h) = m.map_or((1920, 1080), |m| (m.w, m.h));
         let (ow, oh) = args::output_size((w, h), s.resolution.max_height());
         let bps = s.quality.bitrate(ow as u64 * oh as u64, s.fps);
-        let bytes = bps as f64 / 8.0 * s.buffer_seconds() as f64;
-        format!(
-            "{ow} x {oh} at about {:.0} Mbit/s. The replay lives in memory (about {}), never on disk.",
-            bps as f64 / 1e6,
-            human_size(bytes as u64)
-        )
+        let quality = format!(
+            "{ow} x {oh} at about {:.0} Mbit/s (less in calm scenes).",
+            bps as f64 / 1e6
+        );
+        let worst = human_size(s.buffer_worst_bytes(bps));
+        let mut storage = if s.buffer_on_disk(bps) {
+            format!(
+                "The last {} goes in a scratch file of up to {worst}. The system keeps it in spare memory \
+                 and frees that for games when they need it, so Rewindr itself stays small.",
+                seconds_label(s.clip_seconds)
+            )
+        } else {
+            format!(
+                "The last {} stays in Rewindr's memory: up to {worst} in busy scenes.",
+                seconds_label(s.clip_seconds)
+            )
+        };
+        if s.replay_storage == Storage::Auto {
+            storage.push_str(" Automatic puts anything over 1 GB on disk.");
+        }
+        (quality, storage)
     }
 
     /// The button that shows a shortcut and, when clicked, waits for a new one.
@@ -694,6 +715,7 @@ impl State {
         if self.encoders.is_none() {
             encoder_row = encoder_row.push(text("checking...").size(12).color(MUTED));
         }
+        let (quality_note, storage_note) = self.memory_estimate(s);
         sections = sections.push(section(
             "Video",
             vec![
@@ -724,7 +746,7 @@ impl State {
                 ),
                 setting(
                     "Quality",
-                    Some(self.memory_estimate(s)),
+                    Some(quality_note),
                     segmented(
                         Quality::ALL
                             .iter()
@@ -732,6 +754,18 @@ impl State {
                             .collect(),
                         s.quality,
                         Msg::Quality,
+                    ),
+                ),
+                setting(
+                    "Replay buffer",
+                    Some(storage_note),
+                    segmented(
+                        Storage::ALL
+                            .iter()
+                            .map(|v| (*v, v.label().to_string()))
+                            .collect(),
+                        s.replay_storage,
+                        Msg::Storage,
                     ),
                 ),
                 setting("Encoder", None, encoder_row),
