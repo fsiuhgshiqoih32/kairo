@@ -60,16 +60,43 @@ pub fn run() -> Result<(), String> {
         .lock()
         .unwrap()
         .set_spill(Some((home.join("buffer").join("replay.bin"), 64 << 20)))?;
-    // A moment marked 3 s in: the 2 s clip saved at the end must hold it.
+    // A session from 1.5 s on, and a moment marked 3 s in: the 2 s clip saved at the end must
+    // hold the mark, and the session must hold everything from its start.
     let marker = {
         let s = shared.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(3));
-            s.mark()
+            std::thread::sleep(Duration::from_millis(1500));
+            let started = crate::session::start(&s, Some("Self test".into()));
+            std::thread::sleep(Duration::from_millis(1500));
+            s.mark();
+            started
         })
     };
     record_for(&ff, &plan, &shared, Duration::from_secs(4));
-    let _ = marker.join();
+    marker
+        .join()
+        .map_err(|_| "the session thread panicked")?
+        .map_err(|e| format!("the session didn't start: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::session::stop(&shared, move |r| {
+        let _ = tx.send(r);
+    });
+    let (session, secs) = rx
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "the session wasn't joined")??;
+    let info = probe(&ff, &session)?;
+    let marks = rewindr::library::Library::load().markers(&session).to_vec();
+    println!(
+        "session: {} ({secs:.1} s, marks {marks:?}): {info}",
+        session.display()
+    );
+    if !(1.5..=3.5).contains(&secs) || !info.contains("Video: h264") || !info.contains("Audio: aac")
+    {
+        return Err(format!("the session isn't right ({secs:.1} s): {info}"));
+    }
+    if marks.len() != 1 {
+        return Err(format!("the session's bookmark is missing: {marks:?}"));
+    }
     let (held, on_disk, in_memory) = {
         let r = shared.ring.lock().unwrap();
         (

@@ -236,9 +236,9 @@ impl Editor {
             .max(2)
             & !1;
         let strip = {
-            let (ff, clip) = (ff.clone(), clip.clone());
+            let (ff, clip, info_duration) = (ff.clone(), clip.clone(), info.duration);
             Task::perform(
-                background(move || filmstrip(&ff, &clip, (w, STRIP_H))),
+                background(move || filmstrip(&ff, &clip, (w, STRIP_H), info_duration)),
                 Msg::Strip,
             )
         };
@@ -288,7 +288,7 @@ impl Editor {
             .round() as u32)
             .max(2)
             & !1;
-        self.strip = filmstrip(&self.ff, &self.clip, (w, STRIP_H));
+        self.strip = filmstrip(&self.ff, &self.clip, (w, STRIP_H), self.player.duration());
         self.strip_loading = false;
         self.trim = trim;
         self.player.seek(at);
@@ -1929,9 +1929,18 @@ fn format_button<'a>(i: Icon, label: &'a str, explain: &'a str, m: Msg) -> Eleme
     )
 }
 
-pub(super) fn filmstrip(ff: &Path, clip: &Path, size: (u32, u32)) -> Vec<image::Handle> {
+pub(super) fn filmstrip(
+    ff: &Path,
+    clip: &Path,
+    size: (u32, u32),
+    duration: f64,
+) -> Vec<image::Handle> {
     let Ok(mut child) = ffmpeg::command(ff)
-        .args(media::filmstrip_args(clip, size))
+        .args(media::filmstrip_args(
+            clip,
+            size,
+            media::strip_step(duration),
+        ))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()

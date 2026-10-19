@@ -42,6 +42,7 @@ pub enum Filter {
     Favorites,
     Shared,
     Screenshots,
+    Sessions,
     Game(String),
 }
 
@@ -176,6 +177,8 @@ pub enum Message {
     MontageTick,
     /// Asks before deleting the picked clips.
     DeleteSelected,
+    /// Starts or stops recording a whole session.
+    ToggleSession,
     /// Opens or closes the menu of clip lengths under the save button.
     SaveMenu(bool),
     /// Saves the last this many seconds.
@@ -330,8 +333,9 @@ impl App {
         Task::perform(
             background(move || {
                 let thumbs = crate::save::thumbs_dir();
+                let sessions = dir.join("Sessions");
                 let sig = library::folder_signature(
-                    &[&dir, &shots, &thumbs],
+                    &[&dir, &shots, &thumbs, &sessions],
                     &rewindr::library::Library::path(),
                 );
                 (Some(sig) != last).then(|| {
@@ -841,6 +845,11 @@ impl App {
                 }
             }
             Message::SaveMenu(open) => self.save_menu = open,
+            Message::ToggleSession => {
+                if let Err(e) = daemon::request(Request::Session) {
+                    self.note(e, false);
+                }
+            }
             Message::SaveFor(secs) => {
                 self.save_menu = false;
                 if let Err(e) = daemon::request_save(secs) {
@@ -1533,6 +1542,18 @@ impl App {
                 in_library && self.filter == Filter::Screenshots
             )
             .on_press(Message::Filter(Filter::Screenshots)),
+            nav_item(
+                Icon::Record,
+                "Sessions",
+                Some(
+                    self.clips
+                        .iter()
+                        .filter(|c| c.kind == library::ClipKind::Session)
+                        .count()
+                ),
+                in_library && self.filter == Filter::Sessions
+            )
+            .on_press(Message::Filter(Filter::Sessions)),
         ]
         .spacing(2);
 
@@ -1723,6 +1744,23 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
+        if let Some(ses) = s.and_then(|st| st.session.as_ref()) {
+            c = c.push(
+                row![
+                    icon(Icon::Record, 13.0, theme::accent()),
+                    text(format!("Session {}", clock(ses.seconds)))
+                        .size(12)
+                        .font(SEMIBOLD)
+                        .color(TEXT),
+                    space::horizontal(),
+                    text(human_size((ses.mb * 1024.0 * 1024.0) as u64))
+                        .size(11)
+                        .color(MUTED),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
         if let Some(st) = s
             && st.marks > 0
         {
@@ -1779,6 +1817,7 @@ impl App {
                 Filter::Favorites => "Favourites".into(),
                 Filter::Shared => "Shared".into(),
                 Filter::Screenshots => "Screenshots".into(),
+                Filter::Sessions => "Sessions".into(),
                 Filter::Game(g) => g.clone(),
             },
         };
@@ -1866,6 +1905,32 @@ impl App {
         } else {
             "Take a screenshot (the screenshot shortcut works in games)"
         };
+        let session = self.report.as_ref().and_then(|r| r.status.session.clone());
+        let session_button: Element<'_, Message> = match &session {
+            Some(s) => button(
+                row![
+                    icon(Icon::Record, 16.0, theme::on_accent()),
+                    text(format!("Stop  {}", clock(s.seconds)))
+                        .font(SEMIBOLD)
+                        .size(13)
+                        .color(theme::on_accent()),
+                ]
+                .spacing(7)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([9, 12]))
+            .style(theme::primary)
+            .on_press(Message::ToggleSession)
+            .into(),
+            None => library::tip(
+                button(container(icon(Icon::Record, 17.0, TEXT)).center(iced::Length::Fixed(20.0)))
+                    .padding(9)
+                    .style(theme::secondary)
+                    .on_press_maybe(live.then_some(Message::ToggleSession)),
+                "Record the whole session (saves and marks become bookmarks)",
+            ),
+        };
+        r = r.push(session_button);
         r = r.push(library::tip(
             button(container(icon(Icon::Camera, 17.0, TEXT)).center(iced::Length::Fixed(20.0)))
                 .padding(9)
@@ -1925,13 +1990,23 @@ fn preview_strip(clip: &Path) -> Vec<image::Handle> {
     };
     let h = 180u32;
     let w = ((h as f64 * info.width as f64 / info.height.max(1) as f64).round() as u32).max(2) & !1;
-    editor::filmstrip(&ff, clip, (w, h))
+    editor::filmstrip(&ff, clip, (w, h), info.duration)
 }
 
 fn stem(p: &Path) -> String {
     p.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default()
+}
+
+/// "1:02:03" or "12:34".
+pub fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 pub fn seconds_label(s: u32) -> String {

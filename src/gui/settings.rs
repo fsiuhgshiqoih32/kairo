@@ -63,6 +63,7 @@ pub enum Target {
     Save,
     Screenshot,
     Marker,
+    Session,
     /// A quick save, by its place in the list.
     Quick(usize),
 }
@@ -80,6 +81,8 @@ pub enum Msg {
     Capture(Target),
     ScreenshotOff,
     MarkerOff,
+    SessionOff,
+    SessionAuto(bool),
     Voice(bool),
     VoiceInstalled(Result<(), String>),
     Phrase(String),
@@ -225,6 +228,7 @@ impl State {
             (Target::Save, &s.hotkey),
             (Target::Screenshot, &s.screenshot_hotkey),
             (Target::Marker, &s.marker_hotkey),
+            (Target::Session, &s.session_hotkey),
         ]
         .into_iter()
         .chain(
@@ -244,6 +248,7 @@ impl State {
                     Target::Save => s.hotkey = spec,
                     Target::Screenshot => s.screenshot_hotkey = spec,
                     Target::Marker => s.marker_hotkey = spec,
+                    Target::Session => s.session_hotkey = spec,
                     Target::Quick(i) => {
                         if let Some(q) = s.quick_saves.get_mut(i) {
                             q.hotkey = spec;
@@ -279,6 +284,15 @@ impl State {
             Msg::MarkerOff => {
                 s.marker_hotkey.clear();
                 self.capturing_key = None;
+                return changed;
+            }
+            Msg::SessionOff => {
+                s.session_hotkey.clear();
+                self.capturing_key = None;
+                return changed;
+            }
+            Msg::SessionAuto(on) => {
+                s.session_auto = on;
                 return changed;
             }
             Msg::Voice(false) => {
@@ -704,6 +718,46 @@ impl State {
                     .on_press(Msg::MarkerOff),
             );
         }
+        let session_error = report.and_then(|r| r.session_hotkey_error.clone());
+        let mut session_row =
+            row![self.key_capture(Target::Session, &s.session_hotkey, session_error)]
+                .spacing(8)
+                .align_y(Alignment::Start);
+        if !s.session_hotkey.is_empty() {
+            session_row = session_row.push(
+                button(text("Turn off").size(13).font(MEDIUM))
+                    .padding(Padding::from([9, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::SessionOff),
+            );
+        }
+        let gb_hour = {
+            let m = platform::choose_monitor(&s.monitor);
+            let (w, h) = m.map_or((1920, 1080), |m| (m.w, m.h));
+            let (ow, oh) = args::output_size((w, h), s.resolution.max_height());
+            let bps =
+                s.quality.bitrate(ow as u64 * oh as u64, s.fps) as f64 * s.codec.bitrate_factor();
+            bps * 3600.0 / 8.0 / 1e9
+        };
+        sections = sections.push(section(
+            "Sessions",
+            vec![
+                setting(
+                    "Session shortcut",
+                    Some(format!(
+                        "Starts and stops recording everything, saved to the Sessions folder when \
+                         you stop. Saves and marks become bookmarks on its timeline. Up to about \
+                         {gb_hour:.0} GB an hour at these settings."
+                    )),
+                    session_row,
+                ),
+                setting(
+                    "Record a session when Rewindr starts",
+                    None,
+                    switch(s.session_auto, Msg::SessionAuto),
+                ),
+            ],
+        ));
         sections = sections.push(section(
             "Replay",
             vec![

@@ -206,6 +206,10 @@ pub struct Settings {
     pub post_roll: u32,
     /// Empty the buffer after each save, so the next clip doesn't repeat it.
     pub fresh_after_save: bool,
+    /// Starts and stops recording a whole session; empty turns it off.
+    pub session_hotkey: String,
+    /// Record a session from when Rewindr starts.
+    pub session_auto: bool,
 }
 
 impl Default for Settings {
@@ -238,6 +242,8 @@ impl Default for Settings {
             quick_saves: Vec::new(),
             post_roll: 0,
             fresh_after_save: false,
+            session_hotkey: String::new(),
+            session_auto: false,
         }
     }
 }
@@ -279,6 +285,7 @@ impl Settings {
             q.seconds = q.seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
         }
         self.post_roll = self.post_roll.min(MAX_POST_ROLL);
+        self.session_hotkey = self.session_hotkey.trim().to_string();
         if !ACCENTS.contains(&self.accent.as_str()) {
             self.accent = "red".into();
         }

@@ -7,6 +7,9 @@
 //! loopback capture delivers nothing while nothing plays, and that silence must stay silence.
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 /// A gap or overlap bigger than this between where a block should start and where its arrival
 /// time puts it starts a new run.
@@ -32,6 +35,95 @@ pub struct PcmRing {
     blocks: VecDeque<Block>,
     /// Where the next block of the current run starts.
     next_us: Option<i64>,
+    /// Everything from a moment on, also going to a file (a recorded session).
+    tape: Option<PcmTape>,
+}
+
+/// A 16-bit WAV file that grows with the sound from `start_us` on, silence filling the gaps.
+pub struct PcmTape {
+    pub path: PathBuf,
+    start_us: i64,
+    rate: u32,
+    channels: u16,
+    frames: u64,
+    file: BufWriter<File>,
+}
+
+impl PcmTape {
+    pub fn create(path: &Path, start_us: i64, rate: u32, channels: u16) -> std::io::Result<Self> {
+        let mut file = BufWriter::with_capacity(1 << 20, File::create(path)?);
+        file.write_all(&wav_header(rate, channels, 0))?;
+        Ok(PcmTape {
+            path: path.to_path_buf(),
+            start_us,
+            rate: rate.max(1),
+            channels: channels.max(1),
+            frames: 0,
+            file,
+        })
+    }
+
+    /// Writes a block that starts at `start_us`: silence first if it starts after the tape's
+    /// end, its overlapping start dropped if before.
+    fn write(&mut self, start_us: i64, samples: &[i16]) {
+        let ch = self.channels as usize;
+        let rate = self.rate as i128;
+        let at = ((start_us - self.start_us) as i128 * rate).div_euclid(1_000_000) as i64;
+        let gap = at - self.frames as i64;
+        let mut skip = 0usize;
+        if gap > 0 {
+            let silence = vec![0u8; gap as usize * ch * 2];
+            if self.file.write_all(&silence).is_err() {
+                return;
+            }
+            self.frames += gap as u64;
+        } else if gap < 0 {
+            skip = (-gap) as usize;
+        }
+        let frames = samples.len() / ch;
+        if skip >= frames {
+            return;
+        }
+        let mut bytes = Vec::with_capacity((frames - skip) * ch * 2);
+        for s in &samples[skip * ch..frames * ch] {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        if self.file.write_all(&bytes).is_ok() {
+            self.frames += (frames - skip) as u64;
+        }
+    }
+
+    /// Closes the file with its real length in the header.
+    pub fn finish(mut self) -> std::io::Result<PathBuf> {
+        let data = self.frames * self.channels as u64 * 2;
+        self.file.flush()?;
+        let mut f = self.file.into_inner().map_err(|e| e.into_error())?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&wav_header(
+            self.rate,
+            self.channels,
+            data.min(u32::MAX as u64 - 44) as u32,
+        ))?;
+        Ok(self.path)
+    }
+}
+
+/// A 16-bit PCM WAV header for `data_len` bytes of samples.
+fn wav_header(rate: u32, channels: u16, data_len: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(44);
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(36 + data_len).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes());
+    v.extend_from_slice(&channels.to_le_bytes());
+    v.extend_from_slice(&rate.to_le_bytes());
+    v.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
+    v.extend_from_slice(&(channels * 2).to_le_bytes());
+    v.extend_from_slice(&16u16.to_le_bytes());
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&data_len.to_le_bytes());
+    v
 }
 
 impl PcmRing {
@@ -42,7 +134,24 @@ impl PcmRing {
             keep_us,
             blocks: VecDeque::new(),
             next_us: None,
+            tape: None,
         }
+    }
+
+    /// Starts writing everything from `start_us` on to a WAV file at `path`, beginning with
+    /// what's already held after that moment.
+    pub fn start_tape(&mut self, path: &Path, start_us: i64) -> std::io::Result<()> {
+        let mut tape = PcmTape::create(path, start_us, self.rate, self.channels)?;
+        for b in &self.blocks {
+            tape.write(b.start_us, &b.samples);
+        }
+        self.tape = Some(tape);
+        Ok(())
+    }
+
+    /// Stops the tape, if one runs.
+    pub fn take_tape(&mut self) -> Option<PcmTape> {
+        self.tape.take()
     }
 
     pub fn set_keep_us(&mut self, keep_us: i64) {
@@ -65,13 +174,17 @@ impl PcmRing {
             _ => by_clock,
         };
         self.next_us = Some(start + self.frames_to_us(frames));
-        self.blocks.push_back(Block {
+        let block = Block {
             start_us: start,
             samples: samples[..frames * self.channels as usize]
                 .iter()
                 .map(|s| to_i16(*s))
                 .collect(),
-        });
+        };
+        if let Some(t) = &mut self.tape {
+            t.write(block.start_us, &block.samples);
+        }
+        self.blocks.push_back(block);
         let cutoff = end_us - self.keep_us;
         while let Some(b) = self.blocks.front() {
             let b_end = b.start_us + self.frames_to_us(b.samples.len() / self.channels as usize);
@@ -221,5 +334,37 @@ mod tests {
         assert_eq!(u16::from_le_bytes([w[20], w[21]]), 3);
         assert_eq!(u32::from_le_bytes([w[40], w[41], w[42], w[43]]), 16);
         assert_eq!(w.len(), 44 + 16);
+    }
+
+    #[test]
+    fn a_tape_keeps_everything_from_its_start_with_gaps_as_silence() {
+        let dir = std::env::temp_dir().join(format!("rewindr-tape-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.wav");
+        // 1 kHz mono: 100 frames = 100 ms.
+        let mut r = PcmRing::new(1000, 1, 10_000_000);
+        r.push(&[0.25; 100], T0 + 100_000); // 0..100 ms, held before the tape starts
+        r.start_tape(&path, T0 + 50_000).unwrap(); // the tape starts at 50 ms
+        r.push(&[0.5; 100], T0 + 200_000); // 100..200 ms
+        r.push(&[-0.5; 100], T0 + 700_000); // nothing for 400 ms, then 600..700 ms
+        let wav = r.take_tape().unwrap().finish().unwrap();
+        let bytes = std::fs::read(&wav).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        let data = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+        assert_eq!(data, bytes.len() - 44);
+        let s: Vec<i16> = bytes[44..]
+            .chunks(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        // 50 ms of the first block, 100 of the second, 400 of silence, 100 of the third.
+        assert_eq!(s.len(), 650);
+        assert!(s[..50].iter().all(|v| *v == to_i16(0.25)));
+        assert!(s[50..150].iter().all(|v| *v == to_i16(0.5)));
+        assert!(s[150..550].iter().all(|v| *v == 0));
+        assert!(s[550..].iter().all(|v| *v == to_i16(-0.5)));
+        // Later sound doesn't go to a stopped tape.
+        r.push(&[0.5; 100], T0 + 800_000);
+        assert_eq!(std::fs::read(&wav).unwrap().len(), 44 + 650 * 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

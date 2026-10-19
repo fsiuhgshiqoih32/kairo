@@ -47,6 +47,7 @@ pub enum Icon {
     Portrait,
     Music,
     Sparkles,
+    Record,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -98,6 +99,7 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Portrait => file!("portrait"),
         Icon::Music => file!("music"),
         Icon::Sparkles => file!("sparkles"),
+        Icon::Record => file!("circle-dot"),
     }
 }
 

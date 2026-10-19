@@ -120,6 +120,29 @@ impl SpillFile {
     }
 }
 
+/// The stream from a keyframe on, also written to a file (a recorded session).
+pub struct Tape {
+    pub path: PathBuf,
+    /// Wall-clock time (Unix µs) of its first frame.
+    pub start_us: i64,
+    pub bytes: u64,
+    file: std::io::BufWriter<File>,
+}
+
+impl Tape {
+    fn write(&mut self, data: &[u8]) {
+        if self.file.write_all(data).is_ok() {
+            self.bytes += data.len() as u64;
+        }
+    }
+
+    /// Flushes and closes the file.
+    pub fn finish(mut self) -> std::io::Result<PathBuf> {
+        self.file.flush()?;
+        Ok(self.path)
+    }
+}
+
 /// Finished GOPs written one after another into a file of fixed size, wrapping to its start.
 struct Spill {
     file: Arc<SpillFile>,
@@ -202,6 +225,9 @@ pub struct Ring {
     /// The last finished GOP's size: about what to reserve for the next one.
     gop_hint: usize,
     spill: Option<Spill>,
+    tape: Option<Tape>,
+    /// A tape the stream ended under (new settings): it can't go on, so it waits to be taken.
+    ended_tape: Option<Tape>,
 }
 
 impl Ring {
@@ -221,7 +247,45 @@ impl Ring {
             done_in_memory: 0,
             gop_hint: 256 * 1024,
             spill: None,
+            tape: None,
+            ended_tape: None,
         }
+    }
+
+    /// Starts writing the stream to a .ts file at `path`, from the keyframe of the GOP being
+    /// filled (so the file starts decodable). Returns that keyframe's time.
+    pub fn start_tape(&mut self, path: &Path) -> Result<i64, String> {
+        let (Some(pat), Some(pmt), Some(gop)) = (&self.pat, &self.pmt, &self.current) else {
+            return Err("Nothing is being recorded yet.".into());
+        };
+        let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut tape = Tape {
+            path: path.to_path_buf(),
+            start_us: gop.start_us,
+            bytes: 0,
+            file: std::io::BufWriter::with_capacity(4 << 20, file),
+        };
+        tape.write(pat);
+        tape.write(pmt);
+        tape.write(&gop.bytes);
+        let start = tape.start_us;
+        self.tape = Some(tape);
+        Ok(start)
+    }
+
+    /// Stops the tape (the running one, or one the stream ended under).
+    pub fn take_tape(&mut self) -> Option<Tape> {
+        self.tape.take().or(self.ended_tape.take())
+    }
+
+    /// The tape's start and size so far, while one runs.
+    pub fn tape_progress(&self) -> Option<(i64, u64)> {
+        self.tape.as_ref().map(|t| (t.start_us, t.bytes))
+    }
+
+    /// Whether the stream ended under a tape, which is now waiting to be taken.
+    pub fn tape_ended(&self) -> bool {
+        self.ended_tape.is_some()
     }
 
     pub fn set_keep_us(&mut self, keep_us: i64) {
@@ -240,7 +304,9 @@ impl Ring {
         if same {
             return Ok(false);
         }
+        let ended = self.tape.take().or(self.ended_tape.take());
         *self = Ring::new(self.keep_us, self.max_bytes);
+        self.ended_tape = ended;
         if let Some((path, capacity)) = to {
             let file = SpillFile::create(&path)
                 .map_err(|e| format!("could not make {}: {e}", path.display()))?;
@@ -275,8 +341,11 @@ impl Ring {
             s.pos = 0;
             s
         });
+        // A new stream can't follow the old one in the tape's file: it ends here.
+        let ended = self.tape.take().or(self.ended_tape.take());
         *self = Ring::new(self.keep_us, self.max_bytes);
         self.spill = spill;
+        self.ended_tape = ended;
     }
 
     /// A new encoder run with the same settings: what's held stays usable, but the old stream's
@@ -386,6 +455,9 @@ impl Ring {
         // Packets before the first keyframe can't be decoded; drop them.
         if let Some(g) = &mut self.current {
             g.bytes.extend_from_slice(p);
+            if let Some(t) = &mut self.tape {
+                t.write(p);
+            }
         }
     }
 
@@ -708,5 +780,40 @@ mod tests {
         // Back to memory: the buffer starts over.
         assert!(ring.set_spill(None).unwrap());
         assert!(!ring.on_disk() && ring.bytes() == 0);
+    }
+
+    #[test]
+    fn a_tape_holds_the_stream_from_a_keyframe_until_it_stops() {
+        let dir = std::env::temp_dir().join(format!("rewindr-vtape-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.ts");
+        let mut ring = Ring::new(2 * SEC, usize::MAX);
+        let s = stream(60 * 10, 60, 60);
+        for (data, now) in &s[..60 * 3 + 20] {
+            ring.push(data, *now);
+        }
+        // Starts at the keyframe of the GOP being filled (3 s), with the stream's headers.
+        let start = ring.start_tape(&path).unwrap();
+        assert_eq!(start, BASE_US + 3 * SEC);
+        for (data, now) in &s[60 * 3 + 20..] {
+            ring.push(data, *now);
+        }
+        // The buffer forgot the early seconds; the tape didn't.
+        assert!(ring.seconds() < 3.1);
+        let (_, bytes) = ring.tape_progress().unwrap();
+        let file = ring.take_tape().unwrap().finish().unwrap();
+        let data = std::fs::read(&file).unwrap();
+        assert_eq!(data.len() as u64, bytes);
+        // PAT, PMT, then 7 s of 60 frames at two packets each.
+        assert_eq!(data.len(), (2 + 7 * GOP / PACKET) * PACKET);
+        assert_eq!(ts::header(&data).unwrap().pid, 0);
+        let first_video = ts::header(&data[2 * PACKET..]).unwrap();
+        assert!(first_video.random_access);
+        // A new stream ends a tape; it waits to be taken.
+        ring.start_tape(&path).unwrap();
+        ring.clear();
+        assert!(ring.tape_ended() && ring.tape_progress().is_none());
+        assert!(ring.take_tape().is_some() && !ring.tape_ended());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

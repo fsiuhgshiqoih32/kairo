@@ -180,8 +180,9 @@ pub fn speech_args(clip: &Path, track: usize) -> Vec<String> {
     a
 }
 
-/// Small RGBA pictures of every keyframe (one a second in Rewindr's clips), for the timeline.
-pub fn filmstrip_args(clip: &Path, size: (u32, u32)) -> Vec<String> {
+/// Small RGBA pictures of every `every`th keyframe (one a second in Rewindr's clips), for the
+/// timeline.
+pub fn filmstrip_args(clip: &Path, size: (u32, u32), every: u32) -> Vec<String> {
     let mut a = head();
     a.extend([
         s("-skip_frame"),
@@ -191,7 +192,14 @@ pub fn filmstrip_args(clip: &Path, size: (u32, u32)) -> Vec<String> {
         s("-an"),
         s("-sn"),
         s("-vf"),
-        format!("scale={}:{}:flags=bilinear,format=rgba", size.0, size.1),
+        if every > 1 {
+            format!(
+                "select='not(mod(n\\,{every}))',scale={}:{}:flags=bilinear,format=rgba",
+                size.0, size.1
+            )
+        } else {
+            format!("scale={}:{}:flags=bilinear,format=rgba", size.0, size.1)
+        },
         s("-fps_mode"),
         s("passthrough"),
         s("-f"),
@@ -201,6 +209,12 @@ pub fn filmstrip_args(clip: &Path, size: (u32, u32)) -> Vec<String> {
         s("pipe:1"),
     ]);
     a
+}
+
+/// How many keyframes to step for a filmstrip of about 150 pictures (one a second up to
+/// 2.5 minutes).
+pub fn strip_step(duration: f64) -> u32 {
+    (duration / 150.0).ceil().max(1.0) as u32
 }
 
 /// Encoder options for an export at `bitrate`. `exact` holds the rate steady, for a size limit.

@@ -28,6 +28,8 @@ pub enum Request {
     Save,
     Screenshot,
     Mark,
+    /// Starts or stops recording a session.
+    Session,
     TogglePause,
     /// After an update: start the new program file in our place.
     Restart,
@@ -40,6 +42,7 @@ impl Request {
             Request::Save => "save.request",
             Request::Screenshot => "screenshot.request",
             Request::Mark => "mark.request",
+            Request::Session => "session.request",
             Request::TogglePause => "pause.request",
             Request::Restart => "restart.request",
             Request::Quit => "quit.request",
@@ -85,6 +88,8 @@ pub struct Report {
     pub marker_hotkey_error: Option<String>,
     /// Problems with the quick-save shortcuts, in the settings' order.
     pub quick_save_errors: Vec<Option<String>>,
+    pub session_hotkey: Option<String>,
+    pub session_hotkey_error: Option<String>,
     /// Unix milliseconds of the last update; stale means the process is gone.
     pub updated_ms: i64,
 }
@@ -133,6 +138,7 @@ pub fn run() -> Result<(), String> {
         Request::Save,
         Request::Screenshot,
         Request::Mark,
+        Request::Session,
         Request::TogglePause,
         Request::Restart,
         Request::Quit,
@@ -186,6 +192,11 @@ pub fn run() -> Result<(), String> {
     shot_key.set(&settings.screenshot_hotkey);
     let mut mark_key = hotkey.sibling();
     mark_key.set(&settings.marker_hotkey);
+    let mut session_key = hotkey.sibling();
+    session_key.set(&settings.session_hotkey);
+    shared
+        .session_wanted
+        .store(settings.session_auto, Ordering::SeqCst);
     let mut quick: Vec<Hotkey> = (0..rewindr::config::MAX_QUICK_SAVES)
         .map(|_| hotkey.sibling())
         .collect();
@@ -216,6 +227,8 @@ pub fn run() -> Result<(), String> {
                     start_screenshot(&shared);
                 } else if mark_key.is_press(&e) {
                     mark(&shared);
+                } else if session_key.is_press(&e) {
+                    toggle_session(&shared);
                 } else if let Some(i) = quick.iter().position(|k| k.is_press(&e)) {
                     let secs = shared.settings().quick_saves.get(i).map(|q| q.seconds);
                     start_save(&shared, secs);
@@ -225,6 +238,7 @@ pub fn run() -> Result<(), String> {
                 match tray.as_ref().and_then(|t| t.action_for(e.id())) {
                     Some(MenuAction::Save) => start_save(&shared, None),
                     Some(MenuAction::TogglePause) => toggle_pause(&shared),
+                    Some(MenuAction::ToggleSession) => toggle_session(&shared),
                     Some(MenuAction::OpenFolder) => {
                         let dir = shared.settings().save_dir();
                         let _ = std::fs::create_dir_all(&dir);
@@ -261,6 +275,7 @@ pub fn run() -> Result<(), String> {
                         hotkey.set(&s.hotkey);
                         shot_key.set(&s.screenshot_hotkey);
                         mark_key.set(&s.marker_hotkey);
+                        session_key.set(&s.session_hotkey);
                         set_quick_keys(&mut quick, &s);
                         shared.apply(s);
                     }
@@ -275,6 +290,12 @@ pub fn run() -> Result<(), String> {
             }
             if take_request(Request::Mark) {
                 mark(&shared);
+            }
+            if take_request(Request::Session) {
+                toggle_session(&shared);
+            }
+            if crate::session::tend(&shared, game_title) {
+                finish_session(&shared);
             }
             if take_request(Request::TogglePause) {
                 toggle_pause(&shared);
@@ -310,6 +331,8 @@ pub fn run() -> Result<(), String> {
                 marker_hotkey: mark_key.label().map(String::from),
                 marker_hotkey_error: mark_key.error.clone(),
                 quick_save_errors: quick.iter().map(|k| k.error.clone()).collect(),
+                session_hotkey: session_key.label().map(String::from),
+                session_hotkey_error: session_key.error.clone(),
                 updated_ms: recorder::now_us() / 1000,
             };
             if let Ok(text) = serde_json::to_string(&report) {
@@ -320,6 +343,14 @@ pub fn run() -> Result<(), String> {
             }
         }
         if quit {
+            // Join a running session before going (its files would be lost otherwise).
+            if shared.session.lock().unwrap().is_some() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                crate::session::stop(&shared, move |r| {
+                    let _ = tx.send(r);
+                });
+                let _ = rx.recv_timeout(Duration::from_secs(600));
+            }
             shared.stop.store(true, Ordering::SeqCst);
             if let Some(ts) = threads.take() {
                 for t in ts {
@@ -372,6 +403,51 @@ fn start_screenshot(shared: &Arc<Shared>) {
     });
 }
 
+/// The game or app in front, for naming clips.
+fn game_title() -> Option<String> {
+    platform::foreground_title()
+        .and_then(|t| platform::clean_title(&t))
+        .filter(|t| t != "Rewindr")
+}
+
+/// Starts recording a session, or stops the one running.
+fn toggle_session(shared: &Arc<Shared>) {
+    let on = !shared.session_wanted.load(Ordering::SeqCst);
+    shared.session_wanted.store(on, Ordering::SeqCst);
+    if on {
+        if let Err(e) = crate::session::start(shared, game_title()) {
+            warning!("couldn't start a session yet: {e}");
+        }
+    } else {
+        finish_session(shared);
+    }
+}
+
+/// Stops the session and joins it, then shows it like a saved clip.
+fn finish_session(shared: &Arc<Shared>) {
+    let notify = shared.settings().notify;
+    crate::session::stop(shared, move |r| {
+        let args: Vec<String> = match r {
+            Ok((path, seconds)) if notify => vec![
+                "notify".into(),
+                "--clip".into(),
+                path.display().to_string(),
+                "--seconds".into(),
+                format!("{seconds:.1}"),
+            ],
+            Ok(_) => return,
+            Err(e) => {
+                warning!("{e}");
+                vec!["notify".into(), "--error".into(), e]
+            }
+        };
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        if let Err(e) = crate::app::spawn_self(&refs) {
+            warning!("{e}");
+        }
+    });
+}
+
 /// Points the quick-save shortcuts at the settings' (unused slots are off).
 fn set_quick_keys(keys: &mut [Hotkey], s: &config::Settings) {
     for (i, k) in keys.iter_mut().enumerate() {
@@ -394,6 +470,10 @@ fn mark(shared: &Shared) {
 /// Saves a clip of the last `seconds` (the settings' length if `None`) on a worker thread, then
 /// plays the sound and shows the notification.
 fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
+    // During a session, a save is a bookmark too.
+    if shared.session.lock().unwrap().is_some() {
+        shared.mark();
+    }
     // Held from the press: a second press while this one waits out its post-roll is ignored.
     if shared.saving.swap(true, Ordering::SeqCst) {
         return;

@@ -10,6 +10,7 @@ use rewindr::art;
 pub enum MenuAction {
     Save,
     TogglePause,
+    ToggleSession,
     OpenFolder,
     Settings,
     ToggleAutostart,
@@ -20,6 +21,7 @@ pub struct Tray {
     icon: TrayIcon,
     save: MenuItem,
     pause: MenuItem,
+    session: MenuItem,
     folder: MenuItem,
     settings: MenuItem,
     autostart: CheckMenuItem,
@@ -47,6 +49,7 @@ impl Tray {
     ) -> Result<Self, String> {
         let save = MenuItem::new(save_label(seconds, hotkey), true, None);
         let pause = MenuItem::new("Pause recording", true, None);
+        let session = MenuItem::new("Record a session", true, None);
         let folder = MenuItem::new("Open clips folder", true, None);
         let settings = MenuItem::new("Clips and settings...", true, None);
         let autostart_item = CheckMenuItem::new(
@@ -60,6 +63,7 @@ impl Tray {
         menu.append_items(&[
             &save,
             &pause,
+            &session,
             &PredefinedMenuItem::separator(),
             &folder,
             &settings,
@@ -80,6 +84,7 @@ impl Tray {
             icon,
             save,
             pause,
+            session,
             folder,
             settings,
             autostart: autostart_item,
@@ -92,6 +97,7 @@ impl Tray {
         [
             (self.save.id(), MenuAction::Save),
             (self.pause.id(), MenuAction::TogglePause),
+            (self.session.id(), MenuAction::ToggleSession),
             (self.folder.id(), MenuAction::OpenFolder),
             (self.settings.id(), MenuAction::Settings),
             (self.autostart.id(), MenuAction::ToggleAutostart),
@@ -117,6 +123,12 @@ impl Tray {
             "Pause recording"
         });
         self.autostart.set_checked(autostart.unwrap_or(false));
+        self.session.set_text(match &status.session {
+            Some(s) => format!("Stop the session ({})", clock(s.seconds)),
+            None => "Record a session".to_string(),
+        });
+        self.session
+            .set_enabled(status.recording || status.session.is_some());
         let active = status.recording && !status.paused;
         let tip = if status.paused {
             "Rewindr - paused".to_string()
@@ -141,6 +153,16 @@ impl Tray {
             let _ = self.icon.set_tooltip(Some(tip));
             self.shown = Some(state);
         }
+    }
+}
+
+/// "1:02:03" or "12:34".
+fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
     }
 }
 

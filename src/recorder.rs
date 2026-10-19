@@ -66,6 +66,15 @@ pub struct Status {
     pub last_screenshot: Option<String>,
     /// Moments marked inside the replay buffer.
     pub marks: usize,
+    /// The session being recorded: how long so far, and how big.
+    pub session: Option<SessionStatus>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionStatus {
+    pub seconds: f64,
+    pub mb: f64,
 }
 
 /// Everything the recorder, audio capture, saving and the tray share.
@@ -84,8 +93,12 @@ pub struct Shared {
     pub saving: AtomicBool,
     /// The microphone's sound also goes here while voice clipping listens.
     pub voice_tap: crate::voice::Tap,
-    /// Marked moments (wall-clock µs), oldest first, for as long as the buffer could hold them.
+    /// Marked moments (wall-clock µs), oldest first, for as long as the buffer (or a session)
+    /// could hold them.
     pub marks: Mutex<std::collections::VecDeque<i64>>,
+    /// The session being recorded, and whether one should be.
+    pub session: Mutex<Option<crate::session::Session>>,
+    pub session_wanted: AtomicBool,
 }
 
 impl Shared {
@@ -104,6 +117,8 @@ impl Shared {
             saving: AtomicBool::new(false),
             voice_tap: Default::default(),
             marks: Mutex::default(),
+            session: Mutex::new(None),
+            session_wanted: AtomicBool::new(false),
         })
     }
 
@@ -112,9 +127,16 @@ impl Shared {
     pub fn mark(&self) -> usize {
         let now = now_us();
         let keep = self.settings().buffer_seconds() as i64 * 1_000_000;
+        // A session keeps its marks from its start, however long ago.
+        let since = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(now - keep, |s| s.start_us.min(now - keep));
         let mut m = self.marks.lock().unwrap();
         m.push_back(now);
-        while m.front().is_some_and(|t| *t < now - keep) {
+        while m.front().is_some_and(|t| *t < since) {
             m.pop_front();
         }
         m.len()
@@ -177,6 +199,10 @@ impl Shared {
         s.buffer_mb = ring.bytes() as f64 / (1024.0 * 1024.0);
         s.buffer_on_disk = ring.on_disk();
         s.memory_mb = ring.memory_bytes() as f64 / (1024.0 * 1024.0);
+        s.session = ring.tape_progress().map(|(start, bytes)| SessionStatus {
+            seconds: (now_us() - start).max(0) as f64 / 1e6,
+            mb: bytes as f64 / (1024.0 * 1024.0),
+        });
         s.paused = self.paused.load(Ordering::Relaxed);
         let since = now_us() - (s.buffer_seconds * 1e6) as i64;
         s.marks = self

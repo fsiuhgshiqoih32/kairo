@@ -15,6 +15,7 @@ mod player;
 mod recorder;
 mod save;
 mod selftest;
+mod session;
 mod share;
 mod single_instance;
 mod tray;

@@ -46,6 +46,8 @@ pub enum ClipKind {
     Discord,
     Vertical,
     Slow,
+    /// A whole recorded session.
+    Session,
 }
 
 impl ClipItem {
@@ -70,12 +72,16 @@ pub struct ShotItem {
     pub link: Option<Link>,
 }
 
-/// Reads the clips folder: names, games, lengths, favourites, links, thumbnails.
+/// Reads the clips folder (and its Sessions folder): names, games, lengths, favourites, links,
+/// thumbnails.
 pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
     let lib = Library::load();
     let now = crate::share::now_secs();
+    let sessions = library::scan(&dir.join("Sessions"));
+    let session_paths: Vec<PathBuf> = sessions.iter().map(|c| c.path.clone()).collect();
     library::scan(dir)
         .into_iter()
+        .chain(sessions)
         .map(|c| {
             let thumb = crate::save::thumb_for(&c.path);
             ClipItem {
@@ -83,7 +89,9 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
                 favorite: lib.is_favorite(&c.path),
                 link: lib.link(&c.path, now).cloned(),
                 marks: lib.markers(&c.path).len(),
-                kind: if c.name.contains("(Discord") {
+                kind: if session_paths.contains(&c.path) {
+                    ClipKind::Session
+                } else if c.name.contains("(Discord") {
                     ClipKind::Discord
                 } else if c.name.contains("(trim") {
                     ClipKind::Trim
@@ -219,7 +227,9 @@ impl App {
             .clips
             .iter()
             .filter(|c| match &self.filter {
-                Filter::All => true,
+                // Sessions are long: they have their own list.
+                Filter::All => c.kind != ClipKind::Session,
+                Filter::Sessions => c.kind == ClipKind::Session,
                 Filter::Favorites => c.favorite,
                 Filter::Shared => c.link.is_some(),
                 Filter::Game(g) => &c.game == g,
@@ -317,6 +327,10 @@ impl App {
             let what = match (&self.filter, self.search.trim()) {
                 (_, q) if !q.is_empty() => format!("No clips match \"{q}\"."),
                 (Filter::Shared, _) => "Clips you share as a link show up here.".to_string(),
+                (Filter::Sessions, _) => {
+                    "Record a whole session with the Session button; it lands here when you stop."
+                        .to_string()
+                }
                 (Filter::Favorites, _) => {
                     "Star a clip to keep it here (and safe from clean-up).".to_string()
                 }
@@ -379,6 +393,7 @@ impl App {
             ClipKind::Discord => badges = badges.push(tag(Icon::Send, "Discord".into())),
             ClipKind::Vertical => badges = badges.push(tag(Icon::Phone, "Vertical".into())),
             ClipKind::Slow => badges = badges.push(tag(Icon::Snail, "Slow-mo".into())),
+            ClipKind::Session => badges = badges.push(tag(Icon::Record, "Session".into())),
         }
         if c.link.is_some() {
             badges = badges.push(tag(Icon::Link, "Shared".into()));
