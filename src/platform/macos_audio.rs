@@ -3,9 +3,9 @@
 //! same as WASAPI loopback on Windows and the PulseAudio monitor on Linux.
 
 use std::ptr::{NonNull, null_mut};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -41,6 +41,13 @@ struct Ivars {
 /// Sample buffers seen, for the self-test: video frames, audio buffers, audio buffers decoded.
 static COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 
+/// Why the first audio buffer that couldn't be read was rejected.
+static FIRST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn first_error() -> Option<String> {
+    FIRST_ERROR.lock().unwrap().clone()
+}
+
 pub fn counts() -> (u64, u64, u64) {
     let c = |i: usize| COUNTS[i].load(Ordering::Relaxed);
     (c(0), c(1), c(2))
@@ -69,9 +76,18 @@ define_class!(
                 return;
             }
             COUNTS[1].fetch_add(1, Ordering::Relaxed);
-            if let Some((samples, rate, channels)) = unsafe { interleaved_f32(buffer) } {
-                COUNTS[2].fetch_add(1, Ordering::Relaxed);
-                push(&self.ivars().shared, &samples, rate, channels);
+            match unsafe { interleaved_f32(buffer) } {
+                Ok((samples, rate, channels)) => {
+                    COUNTS[2].fetch_add(1, Ordering::Relaxed);
+                    push(&self.ivars().shared, &samples, rate, channels);
+                }
+                Err(e) => {
+                    let mut first = FIRST_ERROR.lock().unwrap();
+                    if first.is_none() {
+                        crate::log::warning!("desktop audio: can't read a buffer: {e}");
+                        *first = Some(e);
+                    }
+                }
             }
         }
     }
@@ -106,11 +122,20 @@ struct BufferList {
 }
 
 /// The sample buffer's sound as interleaved 32-bit float, with its rate and channel count.
-unsafe fn interleaved_f32(buffer: &CMSampleBuffer) -> Option<(Vec<f32>, u32, u16)> {
-    let desc = unsafe { buffer.format_description() }?;
-    let asbd = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(&desc).as_ref() }?;
+unsafe fn interleaved_f32(buffer: &CMSampleBuffer) -> Result<(Vec<f32>, u32, u16), String> {
+    let desc = unsafe { buffer.format_description() }.ok_or("no format description")?;
+    let asbd = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(&desc).as_ref() }
+        .ok_or("not an audio format")?;
+    let format = format!(
+        "{} Hz, {} ch, {} bits, flags {:#x}, {} bytes/frame",
+        asbd.mSampleRate,
+        asbd.mChannelsPerFrame,
+        asbd.mBitsPerChannel,
+        asbd.mFormatFlags,
+        asbd.mBytesPerFrame
+    );
     if asbd.mFormatFlags & FLAG_FLOAT == 0 || asbd.mBitsPerChannel != 32 {
-        return None;
+        return Err(format!("not 32-bit float ({format})"));
     }
     let channels = asbd.mChannelsPerFrame.max(1) as usize;
     let rate = asbd.mSampleRate.round() as u32;
@@ -130,7 +155,9 @@ unsafe fn interleaved_f32(buffer: &CMSampleBuffer) -> Option<(Vec<f32>, u32, u16
     // The block buffer owns the memory the list points into; release it when done.
     let _block = NonNull::new(block).map(|b| unsafe { CFRetained::from_raw(b) });
     if status != 0 {
-        return None;
+        return Err(format!(
+            "CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer returned {status} ({format})"
+        ));
     }
     let count = (lists.list.mNumberBuffers as usize).min(8);
     let base = &lists.list.mBuffers as *const AudioBuffer;
@@ -156,9 +183,13 @@ unsafe fn interleaved_f32(buffer: &CMSampleBuffer) -> Option<(Vec<f32>, u32, u16
         }
         (v, rate, buffers.len().max(1) as u16)
     } else {
-        (buffers.first()?.to_vec(), rate, channels as u16)
+        (
+            buffers.first().ok_or("no buffers")?.to_vec(),
+            rate,
+            channels as u16,
+        )
     };
-    Some(out)
+    Ok(out)
 }
 
 /// A running system-audio capture; dropping it stops the stream.

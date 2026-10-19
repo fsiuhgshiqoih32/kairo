@@ -146,6 +146,9 @@ fn system_audio_check() {
                 .as_ref()
                 .map_or(0.0, |r| r.seconds());
             let (frames, buffers, decoded) = crate::platform::macos_audio::counts();
+            if let Some(e) = crate::platform::macos_audio::first_error() {
+                println!("desktop audio: first unreadable buffer: {e}");
+            }
             println!(
                 "desktop audio: ScreenCaptureKit delivered {held:.1} s ({frames} video frames, {buffers} audio buffers, {decoded} decoded)"
             );
