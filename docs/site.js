@@ -335,6 +335,38 @@
     });
   });
 
+  // ---------- The hero's footage goes soft as you scroll past it ----------
+  const heroVideo = $("#hero-video");
+  if (!reduced && heroVideo) {
+    let ticking = false;
+    let last = -1;
+    const soften = () => {
+      ticking = false;
+      const p = Math.min(1, Math.max(0, scrollY / (heroVideo.offsetHeight || innerHeight)));
+      const step = Math.round(p * 100);
+      if (step === last) return;
+      last = step;
+      if (step === 0) {
+        heroVideo.style.filter = "";
+        heroVideo.style.transform = "";
+      } else {
+        heroVideo.style.filter = `blur(${(p * 14).toFixed(1)}px) brightness(${(1 - p * 0.35).toFixed(3)})`;
+        heroVideo.style.transform = `scale(${(1 + p * 0.05).toFixed(4)})`;
+      }
+    };
+    addEventListener(
+      "scroll",
+      () => {
+        if (!ticking) {
+          ticking = true;
+          requestAnimationFrame(soften);
+        }
+      },
+      { passive: true },
+    );
+    soften();
+  }
+
   // ---------- Entrances, once, in reading order ----------
   if (!reduced && "IntersectionObserver" in window) {
     const groups = [

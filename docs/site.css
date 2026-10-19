@@ -250,8 +250,8 @@ kbd { font: inherit; }
 .shot img { width: 100%; height: auto; }
 .panel.enter .shot { animation: shot-in 520ms var(--ease) both; }
 .panel.enter .panel-copy { animation: copy-in 420ms var(--ease) both; }
-@keyframes shot-in { from { opacity: 0; transform: translateY(14px) scale(0.985); } }
-@keyframes copy-in { from { opacity: 0; transform: translateX(-10px); } }
+@keyframes shot-in { from { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(10px); } }
+@keyframes copy-in { from { opacity: 0; transform: translateX(-10px); filter: blur(6px); } }
 
 /* ---------- Two outputs, side by side. ---------- */
 .duo { padding-top: var(--gap); }
@@ -368,14 +368,17 @@ details a { color: var(--ink); text-underline-offset: 3px; }
   .js .hero-actions { animation-delay: 620ms; }
   .js .hero-meta { animation-delay: 700ms; }
   .js .hud { opacity: 0; animation: hud-in 900ms var(--ease) 900ms forwards; }
-  .js .reveal { opacity: 0; transform: translateY(26px); transition: opacity 760ms var(--ease), transform 860ms var(--ease); transition-delay: var(--d, 0ms); }
-  .js .reveal.in { opacity: 1; transform: none; }
+  .js .reveal { opacity: 0; transform: translateY(26px); filter: blur(10px); transition: opacity 760ms var(--ease), transform 860ms var(--ease), filter 900ms var(--ease); transition-delay: var(--d, 0ms); }
+  .js .reveal.in { opacity: 1; transform: none; filter: none; }
+  /* Clips arrive from further out of focus, like a camera pulling focus. */
+  .js .replay.reveal { transform: translateY(30px) scale(0.96); filter: blur(18px); }
+  .js .replay.reveal.in { transform: none; filter: none; }
   .js .giant { transform: translateY(40%); transition: transform 1300ms var(--ease); }
   .js .close.in .giant { transform: none; }
 }
-@keyframes rise { to { transform: none; } }
-@keyframes fade-up { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-@keyframes hud-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes rise { from { filter: blur(12px); } to { transform: none; filter: none; } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(18px); filter: blur(10px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes hud-in { from { opacity: 0; transform: translateY(16px); filter: blur(10px); } to { opacity: 1; transform: none; filter: none; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 1ms !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
   html { scroll-behavior: auto; }
