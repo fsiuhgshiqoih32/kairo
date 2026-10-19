@@ -121,6 +121,10 @@ pub struct App {
     posts: Vec<share::Post>,
     /// What's in Recently deleted.
     pub trash: Vec<lib::Trashed>,
+    /// The games and tags in the clip list, with how many clips each, for the sidebar: counted
+    /// when the list changes rather than every frame.
+    games: Vec<(String, usize)>,
+    tags: Vec<(String, usize)>,
     pub report: Option<Report>,
     pub settings: Settings,
     saved: Settings,
@@ -273,6 +277,8 @@ impl App {
                 uploads: Vec::new(),
                 posts: Vec::new(),
                 trash: Vec::new(),
+                games: Vec::new(),
+                tags: Vec::new(),
                 report: None,
                 saved: settings.clone(),
                 settings,
@@ -466,6 +472,24 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Counts the games and tags in the clip list.
+    fn index_clips(&mut self) {
+        let count = |names: &mut dyn Iterator<Item = &String>| {
+            let mut m: HashMap<&String, usize> = HashMap::new();
+            for n in names {
+                *m.entry(n).or_default() += 1;
+            }
+            m.into_iter()
+                .map(|(n, c)| (n.clone(), c))
+                .collect::<Vec<_>>()
+        };
+        self.games = count(&mut self.clips.iter().map(|c| &c.game));
+        self.games
+            .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        self.tags = count(&mut self.clips.iter().flat_map(|c| &c.tags));
+        self.tags.sort_by_key(|(t, _)| t.to_lowercase());
+    }
+
     /// Moves files to Recently deleted, with Undo on the notice.
     fn delete(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
         let dir = self.settings.save_dir();
@@ -483,6 +507,7 @@ impl App {
                     self.clips.retain(|c| c.path != *p);
                     self.shots.retain(|s| s.path != *p);
                     self.selected.retain(|s| s != p);
+                    self.index_clips();
                     if self.editor.as_ref().is_some_and(|e| e.clip == *p) {
                         self.editor = None;
                         self.page = Page::Library;
@@ -680,6 +705,7 @@ impl App {
                 for c in self.clips.iter_mut().filter(|c| c.path == clip) {
                     c.tags = tags.clone();
                 }
+                self.index_clips();
                 if let Filter::Tag(t) = &self.filter
                     && !l.all_tags().iter().any(|(name, _)| name == t)
                 {
@@ -716,6 +742,7 @@ impl App {
             }
             Message::Clips(c) => {
                 self.clips = c;
+                self.index_clips();
                 self.loaded = true;
                 return self.ensure_hero();
             }
@@ -755,6 +782,7 @@ impl App {
                     } = *b;
                     self.scan_sig = Some(sig);
                     self.clips = clips;
+                    self.index_clips();
                     self.shots = shots;
                     self.trash = trash;
                     self.loaded = true;
@@ -1290,13 +1318,7 @@ impl App {
                         .iter()
                         .find(|p| p.clip == e.clip)
                         .map(share::Post::progress),
-                    tags: {
-                        let mut all: Vec<String> =
-                            self.clips.iter().flat_map(|c| c.tags.clone()).collect();
-                        all.sort_by_key(|t| t.to_lowercase());
-                        all.dedup();
-                        all
-                    },
+                    tags: self.tags.iter().map(|(t, _)| t.clone()).collect(),
                 };
                 column![
                     Space::new().height(18),
@@ -1751,45 +1773,29 @@ impl App {
         ]
         .spacing(2);
 
-        let mut games: Vec<(String, usize)> = Vec::new();
-        for c in &self.clips {
-            match games.iter_mut().find(|(g, _)| *g == c.game) {
-                Some((_, n)) => *n += 1,
-                None => games.push((c.game.clone(), 1)),
-            }
-        }
-        games.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        if !games.is_empty() {
+        if !self.games.is_empty() {
             nav = nav.push(Space::new().height(14)).push(
                 container(text("Games").size(12).font(SEMIBOLD).color(MUTED))
                     .padding(Padding::from([4, 12])),
             );
-            for (g, n) in games {
-                let active = in_library && self.filter == Filter::Game(g.clone());
+            for (g, n) in &self.games {
+                let active = in_library && matches!(&self.filter, Filter::Game(f) if f == g);
                 nav = nav.push(
-                    nav_item(Icon::Gamepad, &g, Some(n), active)
-                        .on_press(Message::Filter(Filter::Game(g))),
+                    nav_item(Icon::Gamepad, g, Some(*n), active)
+                        .on_press(Message::Filter(Filter::Game(g.clone()))),
                 );
             }
         }
-        let mut tags: Vec<(String, usize)> = Vec::new();
-        for t in self.clips.iter().flat_map(|c| &c.tags) {
-            match tags.iter_mut().find(|(name, _)| name == t) {
-                Some((_, n)) => *n += 1,
-                None => tags.push((t.clone(), 1)),
-            }
-        }
-        tags.sort_by_key(|(t, _)| t.to_lowercase());
-        if !tags.is_empty() {
+        if !self.tags.is_empty() {
             nav = nav.push(Space::new().height(14)).push(
                 container(text("Tags").size(12).font(SEMIBOLD).color(MUTED))
                     .padding(Padding::from([4, 12])),
             );
-            for (t, n) in tags {
-                let active = in_library && self.filter == Filter::Tag(t.clone());
+            for (t, n) in &self.tags {
+                let active = in_library && matches!(&self.filter, Filter::Tag(f) if f == t);
                 nav = nav.push(
-                    nav_item(Icon::Tag, &t, Some(n), active)
-                        .on_press(Message::Filter(Filter::Tag(t))),
+                    nav_item(Icon::Tag, t, Some(*n), active)
+                        .on_press(Message::Filter(Filter::Tag(t.clone()))),
                 );
             }
         }

@@ -12,19 +12,28 @@ unless you ask for a share link.
 - **Instant saves.** A clip is cut from the buffer without re-encoding. It's saved in about a
   second and named after the game in front.
 - **Editor.** Play a clip with sound, scrub its filmstrip, drag the handles to trim, and save an
-  exact trimmed copy.
+  exact trimmed copy. Change its speed and look, add fades and music, balance game, mic and voice
+  chat, and make square, 4:5 and 9:16 copies.
+- **Captions** of what's said, recognised offline, to edit, keep as .srt or burn in.
 - **Share links.** One click uploads a clip and copies a link friends can watch in their browser
   (Discord plays it inline), with a QR code for phones. Links last forever or 1 hour to 3 days.
 - **Share for Discord.** One click makes a copy under 10 MB (or 50/500 MB for Nitro) and puts it
-  on the clipboard: paste it into Discord.
+  on the clipboard, or posts it straight to a channel you connected with a webhook.
 - **Voice clipping.** Say "clip that" and it saves a clip. Speech is recognised offline (Vosk).
 - **Markers.** F10 marks a moment while you play; the clip shows a flag there.
+- **Longer clips and sessions.** Clips up to 20 minutes, quick-save shortcuts with their own
+  lengths, and whole-session recording with bookmarks.
+- **H.265** recording on graphics cards that support it, for smaller files.
 - **Montages.** Pick clips and join them into one video that dips to black between them.
 - **Screenshots** with F9, and **more formats**: GIF, vertical 9:16, slow motion.
-- **Gallery.** Filter by game, search, star favourites, rename, and optionally keep the clips
-  folder under a size limit (oldest go first, favourites stay).
+- **Gallery.** Filter by game or tag, search, star favourites, rename. Deleted clips wait 30 days
+  in Recently deleted, with Undo. Optionally keep the folder under a size limit or drop clips
+  older than a week, 30 or 90 days (favourites always stay).
 - **Sound.** Desktop audio and your microphone are mixed on the first track, and each is also
-  kept on its own track for editing.
+  kept on its own track for editing. On Windows 11, voice chat (Discord by default) can go on a
+  track of its own.
+- **Keys and clicks overlay** (Windows): show the gaming keys and mouse buttons you pressed over
+  a clip.
 
 ## Download
 
@@ -50,6 +59,7 @@ Run Rewindr. A tray icon appears and the window opens. Then:
 | **F8** | Save the last 30 seconds (change the key and length in Settings) |
 | **F9** | Save a screenshot |
 | **F10** | Mark this moment; the clip that holds it shows a flag there |
+| Session shortcut | Start or stop recording a whole session (set one in Settings > Sessions) |
 | "clip that" | Save a clip by voice (turn it on in Settings > Voice clipping) |
 | Click a clip | Open it in the editor: play, trim, share |
 | Space, Left/Right, `,` `.`, I/O | In the editor: play, jump a second, step a frame, set start/end |
@@ -59,6 +69,7 @@ Run Rewindr. A tray icon appears and the window opens. Then:
 | `rewindr save` | Save a clip from a script or desktop shortcut (needed on Wayland) |
 | `rewindr screenshot` | Save a screenshot the same way |
 | `rewindr share <clip>` | Upload a clip and print its share link |
+| `rewindr captions <clip>` | Write captions of what's said (an .srt beside the clip), offline |
 | `rewindr edit <clip>` | Open a clip in the editor |
 | `rewindr pause`, `rewindr quit` | Pause or resume; stop the background process |
 | `rewindr devices` | List screens, microphones and the encoders that work |
@@ -83,7 +94,8 @@ sound beside it, and ffmpeg joins them into an MP4.
 
 ## Platform notes
 
-- **Windows:** everything works. ARM64 builds aren't published yet.
+- **Windows:** everything works. Voice chat on its own track needs Windows 11. ARM64 builds
+  aren't published yet.
 - **macOS:** desktop audio is captured through ScreenCaptureKit on macOS 13 and later (it uses
   the Screen Recording permission); on macOS 11 and 12, only the microphone.
 - **Linux:** X11 sessions work. On Wayland, apps can't capture other windows or register global

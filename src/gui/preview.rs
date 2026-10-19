@@ -199,6 +199,7 @@ fn preview() {
     let (mut app, _) = App::new(rewindr::config::Settings::default());
     app.now = Some(now);
     app.clips = sample(now);
+    app.index_clips();
     app.loaded = true;
     app.report = Some(report());
     // The banner's big picture, made the way the window makes it.

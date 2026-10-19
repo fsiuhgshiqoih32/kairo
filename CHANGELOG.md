@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+Everything below is free: no account, no subscription, no watermark.
+
+- **Longer clips and quick saves.** Clips can be up to 20 minutes. Add up to three quick-save
+  shortcuts with their own lengths (15 s for one play, 5 min for the round). "Keep recording
+  after the press" catches the 2 to 10 seconds after you hit save, and "Start fresh after saving"
+  stops the next clip repeating this one.
+- **Session recording.** A shortcut (or the Session button, or the tray) records everything until
+  you stop, up to 5 hours, into a Sessions folder with its own list. Markers you set while it runs
+  become bookmarks on its timeline. It can start with Rewindr.
+- **H.265.** Settings > Video > Video format records clips and the replay about a third smaller
+  for the same picture, on graphics cards that encode it, and falls back to H.264 where they
+  don't. Share links are converted to H.264 so every browser plays them.
+- **Editor effects.** Speed (0.25x to 4x, sound kept in tune), a look (Vivid, Cinematic, Mono,
+  Vintage), fade in and out, background music with its own volume, a mix of game, microphone and
+  voice chat, microphone clean-up and even loudness. They apply to every copy you make.
+- **Captions.** Make captions writes subtitles of what's said, recognised offline on your
+  computer. Fix any line, keep them as an .srt beside the clip, or burn them into copies.
+  `rewindr captions <clip>` does it from a terminal.
+- **Square and 4:5 copies** for feeds, beside the 9:16 one.
+- **Send to a Discord channel.** Connect a channel once with its webhook link (Settings > Saving)
+  and the editor posts a Discord-size copy there in one click. The link is kept in the system's
+  password store (Credential Manager, the keychain, the Secret Service), not in the settings
+  file. Posts never ping anyone.
+- **Recently deleted.** Deleting moves clips and screenshots to Recently deleted, with Undo right
+  on the notice. Put them back or delete them for good from its page; it empties itself after 30
+  days. The size limit counts it, and empties it before touching your clips.
+- **Keep clips** for a week, 30 or 90 days: older ones (never favourites) move to Recently
+  deleted.
+- **Tags.** Tag clips in the editor (tags from other clips are a click away), filter by tag in
+  the sidebar, and find them in search.
+- **Voice chat on its own track (Windows 11).** Rewindr records Discord (or any app you name) on a
+  track of its own and keeps it out of the game track, so you can turn chat down or off in
+  copies.
+- **Keys and clicks overlay (Windows).** Turn it on and Rewindr remembers the gaming keys you
+  press (WASD, QERF, Space, Shift, Ctrl, Tab, 1 to 4) and your mouse buttons while it records;
+  nothing else you type is kept. The editor shows them over the clip and can put them in copies.
+- The sidebar's game and tag counts are worked out when the clip list changes, not on every frame
+  of playback.
+
 - **Markers.** Press F10 while you play to mark a moment (a short tick confirms it). Clips that
   hold it show a gold flag there on their timeline; the editor's Moments panel jumps to each one
   or keeps the 10 seconds around it. M marks a moment in the editor, N jumps to the next.
