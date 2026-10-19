@@ -68,7 +68,7 @@ test -s "$dir/effects.mp4"
 test -s "$dir/reverse.mp4"
 
 step "captions: raw RGBA pictures laid over the picture for their time"
-"$ff" "${q[@]}" -f lavfi -i "color=c=white@0.6:s=120x40,format=rgba" -frames:v 1 -f rawvideo -pix_fmt rgba "$dir/cap.rgba"
+"$ff" "${q[@]}" -f lavfi -i testsrc2=size=120x40:rate=1 -frames:v 1 -f rawvideo -pix_fmt rgba "$dir/cap.rgba"
 test "$(wc -c < "$dir/cap.rgba")" -eq $((120 * 40 * 4))
 "$ff" "${q[@]}" -i "$dir/clip.mp4" -f rawvideo -pix_fmt rgba -video_size 120x40 -i "$dir/cap.rgba" -filter_complex "[0:v][1:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,0.5,1.5)'[v]" -map "[v]" -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/captioned.mp4"
 test -s "$dir/captioned.mp4"
