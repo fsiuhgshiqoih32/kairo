@@ -134,6 +134,9 @@ pub struct App {
     scrub_moved: Option<Instant>,
     /// The first-start setup's step, while it's showing.
     welcome: Option<usize>,
+    /// When the page (or setup step) on screen and the open dialog appeared, for their entrances.
+    page_in: Option<Instant>,
+    dialog_in: Option<Instant>,
     /// Achievements earned, with when.
     earned: achievements::Earned,
     /// Keyframe pictures for hover previews, most recent last.
@@ -238,6 +241,8 @@ pub enum Message {
     Scrub(PathBuf, f32),
     /// Moves a resting hover preview on by a frame.
     HoverTick,
+    /// A frame of an entrance (pages, dialogs, notices).
+    AnimTick,
     /// A step of the first-start setup.
     WelcomeStep(usize),
     /// The first-start setup is finished (or skipped).
@@ -313,6 +318,8 @@ impl App {
                 scrub: None,
                 scrub_moved: None,
                 welcome: None,
+                page_in: None,
+                dialog_in: None,
                 earned: achievements::load(),
                 strips: HashMap::new(),
                 strip_order: Vec::new(),
@@ -866,8 +873,86 @@ impl App {
         Task::none()
     }
 
+    /// Handles a message, starting an entrance when it changes the page or opens a dialog.
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let page = (self.page, self.filter.clone(), self.welcome);
+        let had_dialog = self.dialog.is_some();
+        let task = self.handle(message);
+        if (self.page, self.filter.clone(), self.welcome) != page {
+            self.page_in = Some(Instant::now());
+        }
+        if !had_dialog && self.dialog.is_some() {
+            self.dialog_in = Some(Instant::now());
+        }
+        task
+    }
+
+    /// No entrances: turned off, or left to a system that asks for less motion, or a preview.
+    fn still(&self) -> bool {
+        self.now.is_some()
+            || match self.settings.motion.as_str() {
+                "on" => false,
+                "off" => true,
+                _ => crate::platform::reduce_motion(),
+            }
+    }
+
+    /// How far an entrance that started at `since` and lasts `ms` has come: 0 to 1, eased.
+    fn entrance(&self, since: Option<Instant>, ms: u64) -> f32 {
+        match since {
+            Some(s) if !self.still() => {
+                let t = (s.elapsed().as_secs_f32() * 1000.0 / ms as f32).min(1.0);
+                1.0 - (1.0 - t).powi(3)
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// Something is still easing in, so the window draws every frame until it settles.
+    fn animating(&self) -> bool {
+        !self.still()
+            && [
+                self.page_in.map(|s| (s, PAGE_IN_MS)),
+                self.dialog_in.map(|s| (s, DIALOG_IN_MS)),
+                self.notice.as_ref().map(|n| (n.at, NOTICE_IN_MS)),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|(s, ms)| s.elapsed() < Duration::from_millis(ms + 20))
+    }
+
+    /// `content` rising (or, `sideways`, sliding) into place out of the background.
+    fn entering<'a>(
+        &self,
+        content: Element<'a, Message>,
+        shown: f32,
+        sideways: bool,
+    ) -> Element<'a, Message> {
+        if shown >= 1.0 {
+            return content;
+        }
+        let shift = (1.0 - shown) * 18.0;
+        let moved: Element<'a, Message> = if sideways {
+            row![Space::new().width(shift), content].into()
+        } else {
+            column![Space::new().height(shift), content].into()
+        };
+        stack![
+            moved,
+            container(Space::new())
+                .width(Fill)
+                .height(Fill)
+                .style(move |_| container::Style {
+                    background: Some(theme::alpha(theme::bg(), (1.0 - shown) * 0.92).into()),
+                    ..Default::default()
+                })
+        ]
+        .into()
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::AnimTick => {}
             Message::Tick => return self.tick(),
             Message::Report(r) => {
                 let r = r.map(|b| *b);
@@ -1522,6 +1607,9 @@ impl App {
         if self.montage.is_some() {
             subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::MontageTick));
         }
+        if self.animating() {
+            subs.push(window::frames().map(|_| Message::AnimTick));
+        }
         if self.scrub.is_some() {
             // The hovered card's preview plays at about ten times speed.
             subs.push(iced::time::every(HOVER_FRAME).map(|_| Message::HoverTick));
@@ -1549,7 +1637,8 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         if let Some(step) = self.welcome {
-            return self.welcome_view(step);
+            let shown = self.entrance(self.page_in, PAGE_IN_MS);
+            return self.entering(self.welcome_view(step), shown, true);
         }
         let page: Element<'_, Message> = match (self.page, &self.editor) {
             (Page::Editor, Some(e)) => {
@@ -1586,6 +1675,7 @@ impl App {
             }
             _ => column![self.top_bar(), self.library_view()].into(),
         };
+        let page = self.entering(page, self.entrance(self.page_in, PAGE_IN_MS), false);
         let mut layers =
             stack![row![self.sidebar(), container(page).width(Fill).height(Fill)].height(Fill)];
         if let Some(n) = &self.notice {
@@ -1624,7 +1714,11 @@ impl App {
                 .height(Fill)
                 .align_x(Horizontal::Center)
                 .align_y(iced::alignment::Vertical::Bottom)
-                .padding(22),
+                .padding(Padding {
+                    // Rises from the window's edge.
+                    bottom: 22.0 - (1.0 - self.entrance(Some(n.at), NOTICE_IN_MS)) * 20.0,
+                    ..Padding::new(22.0)
+                }),
             );
         }
         if self.selecting && self.page == Page::Library {
@@ -1819,6 +1913,7 @@ impl App {
     }
 
     fn dialog_view<'a>(&'a self, d: &'a Dialog) -> Element<'a, Message> {
+        let shown = self.entrance(self.dialog_in, DIALOG_IN_MS);
         match d {
             Dialog::Folder { from, name, error } => {
                 let mut body = column![
@@ -1857,6 +1952,7 @@ impl App {
                     ]
                     .spacing(8),
                     Message::CloseDialog,
+                    shown,
                 )
             }
             Dialog::WhatsNew { version, notes } => {
@@ -1898,6 +1994,7 @@ impl App {
                     ]
                     .spacing(8),
                     Message::CloseDialog,
+                    shown,
                 )
             }
             Dialog::Rename { name, error, .. } => {
@@ -1929,6 +2026,7 @@ impl App {
                     ]
                     .spacing(8),
                     Message::CloseDialog,
+                    shown,
                 )
             }
             Dialog::Link { url, expires, qr } => {
@@ -2016,6 +2114,7 @@ impl App {
                     ]
                     .spacing(8),
                     Message::CloseDialog,
+                    shown,
                 )
             }
             Dialog::Delete(paths) => dialog(
@@ -2051,6 +2150,7 @@ impl App {
                 ]
                 .spacing(8),
                 Message::CloseDialog,
+                shown,
             ),
         }
     }
@@ -2601,6 +2701,11 @@ fn nav_item<'a>(
         .width(Fill)
         .style(theme::nav(active))
 }
+
+/// How long pages, dialogs and notices take to ease in.
+const PAGE_IN_MS: u64 = 260;
+const DIALOG_IN_MS: u64 = 220;
+const NOTICE_IN_MS: u64 = 280;
 
 /// How long the pointer rests on a card before its preview plays, and how fast it plays.
 const HOVER_PLAY_AFTER: Duration = Duration::from_millis(350);

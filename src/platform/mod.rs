@@ -84,6 +84,12 @@ pub fn saved_sound_wav() -> Vec<u8> {
 }
 
 /// One of the built-in save sounds (`kairo::config::SAVE_SOUNDS`) as a WAV.
+/// The system asks apps for less motion: checked once, when first needed.
+pub fn reduce_motion() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(animations_off)
+}
+
 pub fn save_sound_wav(kind: &str) -> Vec<u8> {
     match kind {
         "click" => chime(&[(2093.0, 0.012), (1568.0, 0.02)]),

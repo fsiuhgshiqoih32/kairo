@@ -98,13 +98,16 @@ pub fn divider<'a, M: 'a>() -> Element<'a, M> {
         .into()
 }
 
-/// A modal: dims everything and shows `body` in a card in the middle.
+/// A modal: dims everything and shows `body` in a card in the middle. `shown` runs from 0 to 1
+/// as it appears: the backdrop darkens and the card rises into place.
 pub fn dialog<'a, M: Clone + 'a>(
     title: &str,
     body: impl Into<Element<'a, M>>,
     actions: impl Into<Element<'a, M>>,
     on_dismiss: M,
+    shown: f32,
 ) -> Element<'a, M> {
+    let shown = shown.clamp(0.0, 1.0);
     let card = container(
         column![
             text(title.to_string()).font(BOLD).size(18),
@@ -122,11 +125,14 @@ pub fn dialog<'a, M: Clone + 'a>(
         iced::widget::mouse_area(
             container(iced::widget::opaque(card))
                 .center(Fill)
-                .padding(20)
-                .style(|_| container::Style {
+                .padding(Padding {
+                    top: 20.0 + (1.0 - shown) * 36.0,
+                    ..Padding::new(20.0)
+                })
+                .style(move |_| container::Style {
                     background: Some(
                         Color {
-                            a: 0.6,
+                            a: 0.6 * shown,
                             ..Color::BLACK
                         }
                         .into(),

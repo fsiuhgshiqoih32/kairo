@@ -21,6 +21,24 @@ use kairo::args::Source;
 use super::Monitor;
 
 /// Windows' "Choose your app mode": `Some(true)` for light, `None` if it can't be read.
+/// Windows' "Animation effects" is off (Settings, Accessibility, Visual effects).
+pub fn animations_off() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut on: i32 = 1;
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL into `on`.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut on as *mut i32).cast(),
+            0,
+        )
+    };
+    ok != 0 && on == 0
+}
+
 pub fn prefers_light() -> Option<bool> {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
     let wide = |s: &str| {

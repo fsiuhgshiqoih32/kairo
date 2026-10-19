@@ -279,6 +279,9 @@ pub struct Settings {
     pub webcam_corner: String,
     /// The webcam's width, in percent of the clip's.
     pub webcam_size: u32,
+    /// Pages, dialogs and notices ease in: "system" (unless the computer asks for less motion),
+    /// "on" or "off".
+    pub motion: String,
 }
 
 impl Default for Settings {
@@ -330,6 +333,7 @@ impl Default for Settings {
             webcam_device: String::new(),
             webcam_corner: "bottom-right".into(),
             webcam_size: 25,
+            motion: "system".into(),
         }
     }
 }
@@ -393,6 +397,9 @@ impl Settings {
             self.webcam_corner = "bottom-right".into();
         }
         self.webcam_size = self.webcam_size.clamp(10, 40);
+        if !["system", "on", "off"].contains(&self.motion.as_str()) {
+            self.motion = "system".into();
+        }
         self.game_rules.truncate(MAX_GAME_RULES);
         for r in &mut self.game_rules {
             r.hotkey = r.hotkey.trim().to_string();

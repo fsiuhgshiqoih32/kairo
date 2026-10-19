@@ -207,6 +207,27 @@ fn preview() {
     let first = app.clips[0].path.clone();
     app.hero = super::library::hero_picture(&first, 6.0).map(|h| (first, h));
     shoot(app.view(), "iced-library", size);
+    // Caught a third of the way into entrances: a page rising out of the background, and a
+    // dialog over a backdrop still darkening.
+    {
+        app.settings.motion = "on".into();
+        app.now = None;
+        app.page_in = Some(std::time::Instant::now() - std::time::Duration::from_millis(60));
+        shoot(app.view(), "iced-entering-page", size);
+        app.page_in = None;
+        app.dialog = Some(super::Dialog::Folder {
+            from: None,
+            name: "Best of the week".into(),
+            error: None,
+        });
+        app.dialog_in = Some(std::time::Instant::now() - std::time::Duration::from_millis(50));
+        shoot(app.view(), "iced-entering-dialog", size);
+        app.dialog = None;
+        app.dialog_in = None;
+        app.now = Some(now);
+        app.settings.motion = "system".into();
+    }
+
     // The first-start setup.
     for step in [0, 1, 3, 4] {
         app.welcome = Some(step);

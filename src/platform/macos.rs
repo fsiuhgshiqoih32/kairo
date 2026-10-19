@@ -37,6 +37,14 @@ unsafe extern "C" {
 }
 
 /// Light unless the system appearance is Dark; `None` if it can't be read.
+/// "Reduce motion" is on in Accessibility settings.
+pub fn animations_off() -> bool {
+    Command::new("defaults")
+        .args(["read", "com.apple.universalaccess", "reduceMotion"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+}
+
 pub fn prefers_light() -> Option<bool> {
     let out = Command::new("defaults")
         .args(["read", "-g", "AppleInterfaceStyle"])

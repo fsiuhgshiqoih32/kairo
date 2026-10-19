@@ -137,6 +137,7 @@ pub enum Msg {
     Storage(Storage),
     Accent(&'static str),
     Look(&'static str),
+    Motion(&'static str),
     Encoder(Choice),
     Encoders(Vec<Encoder>),
     DesktopAudio(bool),
@@ -906,6 +907,10 @@ impl State {
             Msg::Look(look) => {
                 s.look = look.into();
                 theme::apply_look(look);
+                return changed;
+            }
+            Msg::Motion(m) => {
+                s.motion = m.into();
                 return changed;
             }
             Msg::Storage(v) => {
@@ -2016,6 +2021,28 @@ impl State {
                     "Accent colour",
                     Some("Buttons, highlights and the glow around clips.".into()),
                     swatches,
+                ),
+                setting(
+                    "Animations",
+                    Some(if crate::platform::reduce_motion() {
+                        "Pages, dialogs and notices ease in. Your computer asks for less motion,                          so Match system leaves them still."
+                            .into()
+                    } else {
+                        "Pages, dialogs and notices ease in.".into()
+                    }),
+                    segmented(
+                        vec![
+                            ("system", "Match system".to_string()),
+                            ("on", "On".to_string()),
+                            ("off", "Off".to_string()),
+                        ],
+                        match s.motion.as_str() {
+                            "on" => "on",
+                            "off" => "off",
+                            _ => "system",
+                        },
+                        Msg::Motion,
+                    ),
                 ),
                 setting(
                     "Start with the computer",

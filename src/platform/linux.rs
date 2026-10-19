@@ -9,6 +9,14 @@ use kairo::args::Source;
 use super::Monitor;
 
 /// The desktop's colour scheme (GNOME and others that follow its setting); `None` if unknown.
+/// The desktop's animations are turned off (GNOME and others that follow its setting).
+pub fn animations_off() -> bool {
+    Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .output()
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "false")
+}
+
 pub fn prefers_light() -> Option<bool> {
     let out = Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
