@@ -101,7 +101,12 @@ fn shoot<'a, M: 'a>(view: impl Into<Element<'a, M>>, name: &str, size: (f32, f32
 }
 
 /// With the pointer resting at `at`, to show hover states.
-fn shoot_at<'a, M: 'a>(view: impl Into<Element<'a, M>>, name: &str, size: (f32, f32), at: Option<(f32, f32)>) {
+fn shoot_at<'a, M: 'a>(
+    view: impl Into<Element<'a, M>>,
+    name: &str,
+    size: (f32, f32),
+    at: Option<(f32, f32)>,
+) {
     let mut ui = Simulator::with_size(settings(), size, view);
     if let Some(p) = at {
         ui.point_at(iced::Point::new(p.0, p.1));
