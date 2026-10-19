@@ -4,6 +4,7 @@
 
 use std::ptr::{NonNull, null_mut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -37,6 +38,14 @@ struct Ivars {
     shared: Arc<Shared>,
 }
 
+/// Sample buffers seen, for the self-test: video frames, audio buffers, audio buffers decoded.
+static COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+
+pub fn counts() -> (u64, u64, u64) {
+    let c = |i: usize| COUNTS[i].load(Ordering::Relaxed);
+    (c(0), c(1), c(2))
+}
+
 define_class!(
     // SAFETY: NSObject has no subclassing requirements and this class doesn't implement Drop.
     #[unsafe(super(NSObject))]
@@ -55,9 +64,13 @@ define_class!(
             kind: SCStreamOutputType,
         ) {
             // Video frames are delivered too (a stream needs a display); they're dropped here.
-            if kind == SCStreamOutputType::Audio
-                && let Some((samples, rate, channels)) = unsafe { interleaved_f32(buffer) }
-            {
+            if kind != SCStreamOutputType::Audio {
+                COUNTS[0].fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            COUNTS[1].fetch_add(1, Ordering::Relaxed);
+            if let Some((samples, rate, channels)) = unsafe { interleaved_f32(buffer) } {
+                COUNTS[2].fetch_add(1, Ordering::Relaxed);
                 push(&self.ivars().shared, &samples, rate, channels);
             }
         }

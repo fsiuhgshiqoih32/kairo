@@ -130,15 +130,25 @@ fn system_audio_check() {
     let shared = Shared::new(rewindr::config::Settings::default());
     match crate::platform::macos_audio::start(shared.clone()) {
         Ok(capture) => {
-            std::thread::sleep(Duration::from_secs(2));
+            // Something to hear: ScreenCaptureKit may send nothing while the Mac is silent.
+            let sound = std::process::Command::new("afplay")
+                .arg("/System/Library/Sounds/Glass.aiff")
+                .spawn();
+            std::thread::sleep(Duration::from_secs(3));
             drop(capture);
+            if let Ok(mut s) = sound {
+                let _ = s.wait();
+            }
             let held = shared
                 .desktop
                 .lock()
                 .unwrap()
                 .as_ref()
                 .map_or(0.0, |r| r.seconds());
-            println!("desktop audio: ScreenCaptureKit delivered {held:.1} s");
+            let (frames, buffers, decoded) = crate::platform::macos_audio::counts();
+            println!(
+                "desktop audio: ScreenCaptureKit delivered {held:.1} s ({frames} video frames, {buffers} audio buffers, {decoded} decoded)"
+            );
         }
         Err(e) => println!("desktop audio: not available here ({e})"),
     }
