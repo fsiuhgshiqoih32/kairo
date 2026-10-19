@@ -107,7 +107,8 @@ fn main() {
         None | Some(Cmd::Window { .. }) | Some(Cmd::Daemon) | Some(Cmd::Edit { .. })
     );
     let result = match cli.command {
-        None => daemon::ensure_running().and_then(|_| gui::run(None, false)),
+        // The window starts the background process itself.
+        None => gui::run(None, false),
         Some(Cmd::Daemon) => daemon::run(),
         Some(Cmd::Window { wait }) => gui::run(None, wait),
         Some(Cmd::Update) => update(),
