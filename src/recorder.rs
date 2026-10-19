@@ -131,6 +131,7 @@ impl Shared {
     }
 
     /// From when events are still worth keeping: the buffer's reach, or a session's start.
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn keep_since(&self, now: i64) -> i64 {
         let keep = self.settings().buffer_seconds() as i64 * 1_000_000;
         self.session
@@ -141,6 +142,7 @@ impl Shared {
     }
 
     /// A key or click for the overlay, kept only while recording.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn input(&self, at: i64, key: u8, down: bool) {
         let live = {
             let st = self.status.lock().unwrap();
