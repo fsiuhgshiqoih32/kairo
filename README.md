@@ -9,9 +9,10 @@ unless you ask for a share link.
 
 <p align="center">
   <img src="docs/media/kairo-demo.webp" width="100%"
-       alt="Kairo in action: F8 saves the last 30 seconds of a Minecraft session, the clip opens in the editor, and a share link comes with a QR code">
+       alt="Kairo in action: F8 saves the last 30 seconds of a Red Eclipse match, the clip opens in the editor, and a share link comes with a QR code">
 </p>
-<p align="center"><a href="https://github.com/fsiuhgshiqoih32/kairo/raw/main/docs/media/kairo-demo.mp4">Download the demo in full quality (MP4, 31 s, 6 MB)</a></p>
+<p align="center"><a href="https://github.com/fsiuhgshiqoih32/kairo/raw/main/docs/media/kairo-demo.mp4">Download the demo in full quality (MP4, 30 s, 7.4 MB)</a><br>
+<sub>Gameplay from CC BY 3.0 videos of Red Eclipse and SuperTuxKart (<a href="#license">credits</a>)</sub></p>
 
 - **Always ready, light on games.** The replay is captured and encoded on the GPU (NVIDIA
   NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox), with x264 as a
@@ -162,3 +163,12 @@ Kairo is MIT licensed. The bundled ffmpeg is FFmpeg with x264, under the GNU GPL
 typeface (SIL Open Font License) and Lucide icons (ISC); see `THIRD-PARTY-NOTICES.txt`.
 Voice clipping downloads Vosk (Apache 2.0) and its small English model (Apache 2.0) from their
 authors when you turn it on.
+
+The gameplay in the demo and screenshots is from
+[“Red Eclipse 1.5 Gameplay #1”](https://commons.wikimedia.org/wiki/File:Red_Eclipse_1,5_Gameplay_1.webm)
+by Premitre and
+[“SuperTuxKart 2.x GP with 24% handicap and road tracks”](https://commons.wikimedia.org/wiki/File:SuperTuxKart_2.x_GP_with_24%25_handicap_and_road_tracks_%28open_source_Mario_Kart-like_Linux_game%29.webm)
+by kimden, both [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) via Wikimedia Commons.
+Changes: cut to short excerpts, cropped, resized and re-encoded, placed in screenshots of Kairo,
+and captions drawn over the demo. The videos' authors and the games' makers aren't connected
+with Kairo and don't endorse it.
