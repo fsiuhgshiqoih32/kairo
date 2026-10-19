@@ -169,6 +169,13 @@ pub fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?
         },
         {
+            let s = shared.clone();
+            std::thread::Builder::new()
+                .name("webcam".into())
+                .spawn(move || crate::webcam::run(s))
+                .map_err(|e| e.to_string())?
+        },
+        {
             let (s, s2) = (shared.clone(), shared.clone());
             std::thread::Builder::new()
                 .name("voice".into())

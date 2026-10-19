@@ -218,7 +218,7 @@ pub fn strip_step(duration: f64) -> u32 {
 }
 
 /// Encoder options for an export at `bitrate`. `exact` holds the rate steady, for a size limit.
-fn export_video_opts(encoder: Encoder, bitrate: u64, fps: u32, exact: bool) -> Vec<String> {
+pub fn export_video_opts(encoder: Encoder, bitrate: u64, fps: u32, exact: bool) -> Vec<String> {
     let b = bitrate.to_string();
     let max = if exact {
         b.clone()

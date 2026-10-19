@@ -452,11 +452,55 @@ pub fn probe_args(encoder: Encoder, vaapi_device: Option<&str>) -> Vec<String> {
     a
 }
 
+/// The webcam laid over a clip as it's saved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CamOverlay<'a> {
+    /// The webcam's recording (MPEG-TS).
+    pub path: &'a Path,
+    /// When it starts, in seconds after the clip's start (negative: before).
+    pub offset: f64,
+    /// Its width in the clip, in pixels.
+    pub width: u32,
+    /// One of `config::WEBCAM_CORNERS`.
+    pub corner: &'a str,
+    /// The picture is encoded again, with this.
+    pub encoder: Encoder,
+    pub bitrate: u64,
+    pub fps: u32,
+}
+
+/// Where the overlay filter puts the webcam: a corner, inset by 2% of the width.
+fn corner_xy(corner: &str) -> (&'static str, &'static str) {
+    let x = if corner.ends_with("left") {
+        "W*2/100"
+    } else {
+        "W-w-W*2/100"
+    };
+    let y = if corner.starts_with("top") {
+        "W*2/100"
+    } else {
+        "H-h-W*2/100"
+    };
+    (x, y)
+}
+
 /// Joins the saved video with the sound tracks (each a WAV starting where the video starts, with a
 /// title) into an MP4. With several, the first track is their mix, which is what players and
 /// Discord play; each source follows as its own track for editing.
 /// `hevc`: the video is H.265, tagged so Apple's players and browsers open it.
 pub fn save_args(video: &Path, audio: &[(&Path, &str)], hevc: bool, out: &Path) -> Vec<String> {
+    save_with_cam_args(video, None, audio, hevc, out)
+}
+
+/// [`save_args`], with the webcam laid over a corner when there is one (which means encoding
+/// the picture again rather than copying it).
+pub fn save_with_cam_args(
+    video: &Path,
+    cam: Option<&CamOverlay>,
+    audio: &[(&Path, &str)],
+    hevc: bool,
+    out: &Path,
+) -> Vec<String> {
     let mut a = vec![
         s("-y"),
         s("-hide_banner"),
@@ -465,28 +509,65 @@ pub fn save_args(video: &Path, audio: &[(&Path, &str)], hevc: bool, out: &Path) 
         s("error"),
     ];
     a.extend([s("-i"), video.display().to_string()]);
+    if let Some(c) = cam {
+        if c.offset < 0.0 {
+            a.extend([s("-ss"), format!("{:.3}", -c.offset)]);
+        } else if c.offset > 0.0 {
+            a.extend([s("-itsoffset"), format!("{:.3}", c.offset)]);
+        }
+        a.extend([s("-i"), c.path.display().to_string()]);
+    }
+    let first_audio = 1 + usize::from(cam.is_some());
     for (p, _) in audio {
         a.extend([s("-i"), p.display().to_string()]);
     }
-    a.extend([s("-map"), s("0:v:0")]);
+    let mut graph: Vec<String> = Vec::new();
+    if let Some(c) = cam {
+        let (x, y) = corner_xy(c.corner);
+        graph.push(format!(
+            "[1:v]scale={}:-2[cam];[0:v][cam]overlay=x={x}:y={y}:eof_action=pass[v]",
+            c.width.max(2) & !1
+        ));
+    }
     let mut titles: Vec<&str> = Vec::new();
     if audio.len() > 1 {
         let n = audio.len();
-        let inputs: String = (1..=n).map(|i| format!("[{i}:a]")).collect();
-        a.extend([
-            s("-filter_complex"),
-            format!("{inputs}amix=inputs={n}:duration=longest:normalize=0[mix]"),
-            s("-map"),
-            s("[mix]"),
-        ]);
+        let inputs: String = (first_audio..first_audio + n)
+            .map(|i| format!("[{i}:a]"))
+            .collect();
+        graph.push(format!(
+            "{inputs}amix=inputs={n}:duration=longest:normalize=0[mix]"
+        ));
+    }
+    if !graph.is_empty() {
+        a.extend([s("-filter_complex"), graph.join(";")]);
+    }
+    a.extend([s("-map"), s(if cam.is_some() { "[v]" } else { "0:v:0" })]);
+    if audio.len() > 1 {
+        a.extend([s("-map"), s("[mix]")]);
         titles.push("Everything");
     }
     for (i, (_, title)) in audio.iter().enumerate() {
-        a.extend([s("-map"), format!("{}:a:0", i + 1)]);
+        a.extend([s("-map"), format!("{}:a:0", first_audio + i)]);
         titles.push(title);
     }
-    a.extend([s("-c:v"), s("copy")]);
-    if hevc {
+    let mut tag = hevc;
+    match cam {
+        Some(c) => {
+            let hevc_name = if hevc {
+                c.encoder.ffmpeg_name_for(VideoCodec::Hevc)
+            } else {
+                None
+            };
+            tag = hevc_name.is_some();
+            a.extend([s("-c:v"), s(hevc_name.unwrap_or(c.encoder.ffmpeg_name()))]);
+            a.extend(crate::media::export_video_opts(
+                c.encoder, c.bitrate, c.fps, false,
+            ));
+        }
+        None => a.extend([s("-c:v"), s("copy")]),
+    }
+    if tag {
         a.extend([s("-tag:v"), s("hvc1")]);
     }
     if !audio.is_empty() {
@@ -504,6 +585,151 @@ pub fn save_args(video: &Path, audio: &[(&Path, &str)], hevc: bool, out: &Path) 
         s("mp4"),
         out.display().to_string(),
     ]);
+    a
+}
+
+/// ffmpeg arguments that list the cameras (on stderr) where ffmpeg can: DirectShow on Windows,
+/// AVFoundation on macOS. Linux cameras are found in /sys instead.
+pub fn camera_list_args() -> Vec<String> {
+    let mut a = vec![s("-hide_banner"), s("-nostdin")];
+    if cfg!(target_os = "macos") {
+        a.extend([s("-f"), s("avfoundation"), s("-list_devices"), s("true")]);
+        a.extend([s("-i"), s("")]);
+    } else {
+        a.extend([s("-list_devices"), s("true"), s("-f"), s("dshow")]);
+        a.extend([s("-i"), s("dummy")]);
+    }
+    a
+}
+
+/// The cameras in ffmpeg's DirectShow device list. Newer ffmpeg marks each device "(video)" or
+/// "(audio)"; older ones list them under a heading instead.
+pub fn dshow_cameras(text: &str) -> Vec<String> {
+    let mut video_part = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.contains("DirectShow video devices") {
+            video_part = true;
+            continue;
+        }
+        if line.contains("DirectShow audio devices") {
+            video_part = false;
+            continue;
+        }
+        if line.contains("Alternative name") {
+            continue;
+        }
+        let Some(open) = line.find('"') else { continue };
+        let Some(len) = line[open + 1..].find('"') else {
+            continue;
+        };
+        let name = &line[open + 1..open + 1 + len];
+        let rest = line[open + 2 + len..].trim();
+        let is_video = match rest {
+            "(video)" => true,
+            "(audio)" | "(none)" => false,
+            _ => video_part && rest.is_empty(),
+        };
+        if is_video && !name.is_empty() && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The cameras in ffmpeg's AVFoundation device list (screens left out).
+pub fn avfoundation_cameras(text: &str) -> Vec<String> {
+    let mut video_part = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.contains("AVFoundation video devices") {
+            video_part = true;
+            continue;
+        }
+        if line.contains("AVFoundation audio devices") {
+            video_part = false;
+            continue;
+        }
+        if !video_part {
+            continue;
+        }
+        // "[AVFoundation indev @ 0x...] [0] FaceTime HD Camera"
+        let Some(at) = line.find("] [") else { continue };
+        let Some((_, name)) = line[at + 3..].split_once("] ") else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.starts_with("Capture screen") && !name.is_empty() {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// ffmpeg arguments that record the camera `device` (a DirectShow or AVFoundation name, or a
+/// /dev/video path) to MPEG-TS on stdout: small and cheap, 360p at 30 fps, stamped with the wall
+/// clock like the screen so the two line up.
+pub fn webcam_args(device: &str) -> Vec<String> {
+    let mut a = vec![
+        s("-hide_banner"),
+        s("-nostdin"),
+        s("-nostats"),
+        s("-loglevel"),
+        s("error"),
+        s("-thread_queue_size"),
+        s("64"),
+        s("-use_wallclock_as_timestamps"),
+        s("1"),
+    ];
+    if cfg!(windows) {
+        a.extend([s("-f"), s("dshow"), s("-rtbufsize"), s("64M")]);
+        a.extend([s("-i"), format!("video={device}")]);
+    } else if cfg!(target_os = "macos") {
+        a.extend([s("-f"), s("avfoundation"), s("-framerate"), s("30")]);
+        a.extend([s("-i"), format!("{device}:none")]);
+    } else {
+        a.extend([s("-f"), s("v4l2"), s("-i"), device.to_string()]);
+    }
+    a.extend(
+        [
+            "-vf",
+            "fps=30,scale=-2:360,format=yuv420p",
+            "-fps_mode",
+            "passthrough",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-b:v",
+            "1000k",
+            "-maxrate",
+            "1500k",
+            "-bufsize",
+            "2000k",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-bf",
+            "0",
+            "-bsf:v",
+            "dump_extra=freq=keyframe",
+            "-copyts",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mpegts",
+            "pipe:1",
+        ]
+        .map(s),
+    );
     a
 }
 
@@ -556,6 +782,95 @@ pub fn thumbnail_args(clip: &Path, out: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_cameras_in_device_lists() {
+        let new = "[dshow @ 0000] \"Integrated Camera\" (video)\n\
+                   [dshow @ 0000]   Alternative name \"@device_pnp_\\\\?\\usb#vid\"\n\
+                   [dshow @ 0000] \"OBS Virtual Camera\" (none)\n\
+                   [dshow @ 0000] \"Microphone (Realtek Audio)\" (audio)\n\
+                   [dshow @ 0000] \"Logi C920\" (video)\n";
+        assert_eq!(dshow_cameras(new), vec!["Integrated Camera", "Logi C920"]);
+        let old = "[dshow @ 0000] DirectShow video devices (some may be both video and audio devices)\n\
+                   [dshow @ 0000]  \"USB Camera\"\n\
+                   [dshow @ 0000] DirectShow audio devices\n\
+                   [dshow @ 0000]  \"Microphone\"\n";
+        assert_eq!(dshow_cameras(old), vec!["USB Camera"]);
+        let mac = "[AVFoundation indev @ 0x1] AVFoundation video devices:\n\
+                   [AVFoundation indev @ 0x1] [0] FaceTime HD Camera\n\
+                   [AVFoundation indev @ 0x1] [1] Capture screen 0\n\
+                   [AVFoundation indev @ 0x1] AVFoundation audio devices:\n\
+                   [AVFoundation indev @ 0x1] [0] MacBook Pro Microphone\n";
+        assert_eq!(avfoundation_cameras(mac), vec!["FaceTime HD Camera"]);
+    }
+
+    #[test]
+    fn the_webcam_goes_in_a_corner_of_the_saved_clip() {
+        let cam = CamOverlay {
+            path: Path::new("cam.ts"),
+            offset: -0.4,
+            width: 641,
+            corner: "top-left",
+            encoder: Encoder::Nvenc,
+            bitrate: 20_000_000,
+            fps: 60,
+        };
+        let audio = [
+            (Path::new("Game.wav"), "Game"),
+            (Path::new("Microphone.wav"), "Microphone"),
+        ];
+        let a = save_with_cam_args(
+            Path::new("video.ts"),
+            Some(&cam),
+            &audio,
+            false,
+            Path::new("out.mp4"),
+        )
+        .join(" ");
+        assert!(
+            a.contains("-i video.ts -ss 0.400 -i cam.ts -i Game.wav -i Microphone.wav"),
+            "{a}"
+        );
+        assert!(
+            a.contains("[1:v]scale=640:-2[cam];[0:v][cam]overlay=x=W*2/100:y=W*2/100:eof_action=pass[v];[2:a][3:a]amix=inputs=2"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-map [v] -map [mix] -map 2:a:0 -map 3:a:0 -c:v h264_nvenc"),
+            "{a}"
+        );
+        assert!(!a.contains("-tag:v"));
+
+        // Without a webcam it's the plain copy, and H.265 on the CPU falls back to H.264.
+        let plain = save_args(
+            Path::new("video.ts"),
+            &audio[..1],
+            true,
+            Path::new("out.mp4"),
+        );
+        assert!(
+            plain
+                .join(" ")
+                .contains("-map 0:v:0 -map 1:a:0 -c:v copy -tag:v hvc1")
+        );
+        let late = CamOverlay {
+            offset: 0.25,
+            corner: "bottom-right",
+            encoder: Encoder::X264,
+            ..cam
+        };
+        let a = save_with_cam_args(
+            Path::new("v.ts"),
+            Some(&late),
+            &[],
+            true,
+            Path::new("o.mp4"),
+        )
+        .join(" ");
+        assert!(a.contains("-itsoffset 0.250 -i cam.ts"), "{a}");
+        assert!(a.contains("overlay=x=W-w-W*2/100:y=H-h-W*2/100"), "{a}");
+        assert!(a.contains("-c:v libx264") && !a.contains("hvc1"), "{a}");
+    }
 
     fn plan(
         source: Source,
@@ -687,9 +1002,12 @@ mod tests {
             Path::new("out.mp4"),
         );
         let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], false, o));
-        assert!(a.contains("-i v.ts -i desktop.wav -i mic.wav -map 0:v:0 -filter_complex [1:a][2:a]amix=inputs=2"), "{a}");
         assert!(
-            a.contains("-map [mix] -map 1:a:0 -map 2:a:0 -c:v copy -c:a aac"),
+            a.contains("-i v.ts -i desktop.wav -i mic.wav -filter_complex [1:a][2:a]amix=inputs=2"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-map 0:v:0 -map [mix] -map 1:a:0 -map 2:a:0 -c:v copy -c:a aac"),
             "{a}"
         );
         assert!(

@@ -271,6 +271,14 @@ pub struct Settings {
     pub save_sound_file: String,
     /// Settings for particular games.
     pub game_rules: Vec<GameRule>,
+    /// Put the webcam in a corner of saved clips.
+    pub webcam: bool,
+    /// The camera, as `webcam::cameras` names it; empty for the first one found.
+    pub webcam_device: String,
+    /// One of `WEBCAM_CORNERS`.
+    pub webcam_corner: String,
+    /// The webcam's width, in percent of the clip's.
+    pub webcam_size: u32,
 }
 
 impl Default for Settings {
@@ -318,6 +326,10 @@ impl Default for Settings {
             save_sound_file: String::new(),
             game_rules: Vec::new(),
             input_overlay: false,
+            webcam: false,
+            webcam_device: String::new(),
+            webcam_corner: "bottom-right".into(),
+            webcam_size: 25,
         }
     }
 }
@@ -329,6 +341,7 @@ pub const MAX_CLIP_SECONDS: u32 = 1200;
 pub const MAX_POST_ROLL: u32 = 15;
 /// At most this many games with their own settings.
 pub const MAX_GAME_RULES: usize = 24;
+pub const WEBCAM_CORNERS: [&str; 4] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 
 impl Settings {
     /// Brings out-of-range values back into range.
@@ -376,6 +389,10 @@ impl Settings {
         if self.save_sound != "custom" && !SAVE_SOUNDS.iter().any(|(k, _)| *k == self.save_sound) {
             self.save_sound = "chime".into();
         }
+        if !WEBCAM_CORNERS.contains(&self.webcam_corner.as_str()) {
+            self.webcam_corner = "bottom-right".into();
+        }
+        self.webcam_size = self.webcam_size.clamp(10, 40);
         self.game_rules.truncate(MAX_GAME_RULES);
         for r in &mut self.game_rules {
             r.hotkey = r.hotkey.trim().to_string();

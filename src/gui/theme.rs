@@ -73,6 +73,7 @@ pub fn muted() -> Color {
 pub const ON_IMAGE: Color = color!(0xeceef1);
 pub const GOLD: Color = color!(0xffc53d);
 pub const GREEN: Color = color!(0x3dd68c);
+pub const RED: Color = color!(0xe5484d);
 pub const DISCORD: Color = color!(0x5865f2);
 
 pub const FONT: Font = Font::with_name("Inter");

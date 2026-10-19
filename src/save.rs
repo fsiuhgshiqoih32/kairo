@@ -292,6 +292,19 @@ pub fn save_inner(
         }
     }
 
+    // The webcam, from its keyframe at or before the clip's start.
+    let cam_file = work.join("cam.ts");
+    let cam_start = settings
+        .webcam
+        .then(|| shared.cam.lock().unwrap().snapshot(start))
+        .flatten()
+        .filter(|c| c.end_us() > start + 500_000)
+        .and_then(|c| {
+            let f = std::fs::File::create(&cam_file).ok()?;
+            c.write_to(BufWriter::new(f)).ok()?;
+            Some(c.start_us())
+        });
+
     let dir = settings.save_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -300,8 +313,42 @@ pub fn save_inner(
     let refs: Vec<(&Path, &str)> = audio.iter().map(|(p, t)| (p.as_path(), *t)).collect();
     // ffmpeg picks the format from the name; write to .part and rename, so a clip appears whole.
     let save_args = args::save_args(&video, &refs, hevc, &partial);
-    ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
-        .map_err(|e| format!("could not save the clip: {e}"))?;
+    let with_cam = cam_start.map(|cs| {
+        let st = shared.status.lock().unwrap().clone();
+        let encoder = st
+            .encoder
+            .as_deref()
+            .and_then(|l| args::Encoder::ALL.into_iter().find(|e| e.label() == l))
+            .map(kairo::media::export_encoder)
+            .unwrap_or(args::Encoder::X264);
+        let (w, h) = st.size.unwrap_or((1920, 1080));
+        let codec = if hevc {
+            kairo::config::VideoCodec::Hevc
+        } else {
+            kairo::config::VideoCodec::H264
+        };
+        let bitrate = settings.quality.bitrate(w as u64 * h as u64, settings.fps) as f64
+            * codec.bitrate_factor();
+        let overlay = args::CamOverlay {
+            path: &cam_file,
+            offset: (cs - start) as f64 / 1e6,
+            width: w * settings.webcam_size / 100,
+            corner: &settings.webcam_corner,
+            encoder,
+            bitrate: bitrate as u64,
+            fps: settings.fps,
+        };
+        args::save_with_cam_args(&video, Some(&overlay), &refs, hevc, &partial)
+    });
+    let saved = match with_cam {
+        // Encoding again can fail where copying can't (a busy encoder): keep the clip anyway.
+        Some(a) => ffmpeg::run(&ffmpeg, &a, Duration::from_secs(300)).or_else(|e| {
+            warning!("could not add the webcam: {e}");
+            ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
+        }),
+        None => ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120)),
+    };
+    saved.map_err(|e| format!("could not save the clip: {e}"))?;
     std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;
 
     let thumb = thumb_for(&out);

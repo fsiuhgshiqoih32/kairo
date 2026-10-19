@@ -41,6 +41,8 @@ impl std::fmt::Display for Choice {
 pub struct State {
     monitors: Vec<Monitor>,
     mics: Vec<String>,
+    /// The cameras, once listed.
+    cameras: Option<Vec<crate::webcam::Camera>>,
     encoders: Option<Vec<Encoder>>,
     launcher: Option<auto_launch::AutoLaunch>,
     autostart: bool,
@@ -140,6 +142,11 @@ pub enum Msg {
     DesktopAudio(bool),
     Microphone(bool),
     Mic(Choice),
+    Webcam(bool),
+    Cameras(Vec<crate::webcam::Camera>),
+    Camera(Choice),
+    WebcamCorner(&'static str),
+    WebcamSize(u32),
     PickFolder,
     Folder(Option<PathBuf>),
     DefaultFolder,
@@ -187,7 +194,15 @@ impl State {
             }),
             Msg::Encoders,
         );
-        let mut tasks = vec![encoders];
+        let cameras = Task::perform(
+            background(|| {
+                crate::ffmpeg::path()
+                    .map(|f| crate::webcam::cameras(&f))
+                    .unwrap_or_default()
+            }),
+            Msg::Cameras,
+        );
+        let mut tasks = vec![encoders, cameras];
         let mut update = Updates::default();
         if settings.check_updates && std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_none() {
             update.checking = true;
@@ -197,6 +212,7 @@ impl State {
             State {
                 monitors: platform::monitors(),
                 mics: crate::audio::microphones(),
+                cameras: None,
                 encoders: None,
                 launcher,
                 autostart,
@@ -816,6 +832,23 @@ impl State {
             }
             Msg::Mic(c) => {
                 s.microphone_device = c.value;
+                return changed;
+            }
+            Msg::Webcam(v) => {
+                s.webcam = v;
+                return changed;
+            }
+            Msg::Cameras(c) => self.cameras = Some(c),
+            Msg::Camera(c) => {
+                s.webcam_device = c.value;
+                return changed;
+            }
+            Msg::WebcamCorner(c) => {
+                s.webcam_corner = c.into();
+                return changed;
+            }
+            Msg::WebcamSize(v) => {
+                s.webcam_size = v;
                 return changed;
             }
             Msg::PickFolder => {
@@ -1663,6 +1696,98 @@ impl State {
             .chain(sound_rows)
             .collect(),
         ));
+
+        // Webcam.
+        let cam_line = report.filter(|_| s.webcam).and_then(|r| {
+            match (&r.status.webcam, &r.status.webcam_error) {
+                (_, Some(e)) => Some((e.clone(), theme::RED)),
+                (Some(name), None) => Some((format!("Recording {name}"), theme::GREEN)),
+                (None, None) => None,
+            }
+        });
+        let cam_switch: Element<'a, Msg> = match cam_line {
+            Some((line, color)) => column![
+                switch(s.webcam, Msg::Webcam),
+                text(line).size(12).color(color)
+            ]
+            .spacing(6)
+            .align_x(Alignment::End)
+            .into(),
+            None => switch(s.webcam, Msg::Webcam),
+        };
+        let mut cam_rows = vec![setting(
+            "Webcam in clips",
+            Some(
+                "Your camera goes in a corner of each clip you save. Its light stays on while \
+                 Kairo records, and goes off when you pause. Clips take a few seconds longer \
+                 to save."
+                    .into(),
+            ),
+            cam_switch,
+        )];
+        if s.webcam {
+            let mut cams = vec![Choice {
+                value: String::new(),
+                label: "First camera found".into(),
+            }];
+            for c in self.cameras.iter().flatten() {
+                cams.push(Choice {
+                    value: c.id.clone(),
+                    label: c.name.clone(),
+                });
+            }
+            let picked = cams.iter().find(|c| c.value == s.webcam_device).cloned();
+            let cam_pick: Element<'a, Msg> = if self.cameras.is_none() {
+                text("Looking for cameras...")
+                    .size(13)
+                    .color(theme::muted())
+                    .into()
+            } else {
+                pick_list(cams, picked, Msg::Camera)
+                    .text_size(13)
+                    .padding(Padding::from([7, 12]))
+                    .width(260)
+                    .style(theme::pick)
+                    .menu_style(theme::menu)
+                    .into()
+            };
+            cam_rows.push(setting("Camera", None, cam_pick));
+            cam_rows.push(setting(
+                "Corner",
+                None,
+                segmented(
+                    vec![
+                        ("top-left", "Top left".to_string()),
+                        ("top-right", "Top right".to_string()),
+                        ("bottom-left", "Bottom left".to_string()),
+                        ("bottom-right", "Bottom right".to_string()),
+                    ],
+                    kairo::config::WEBCAM_CORNERS
+                        .into_iter()
+                        .find(|c| *c == s.webcam_corner)
+                        .unwrap_or("bottom-right"),
+                    Msg::WebcamCorner,
+                ),
+            ));
+            let sizes = [18u32, 25, 32];
+            cam_rows.push(setting(
+                "Size",
+                None,
+                segmented(
+                    vec![
+                        (18, "Small".to_string()),
+                        (25, "Medium".to_string()),
+                        (32, "Large".to_string()),
+                    ],
+                    sizes
+                        .into_iter()
+                        .min_by_key(|v| v.abs_diff(s.webcam_size))
+                        .unwrap_or(25),
+                    Msg::WebcamSize,
+                ),
+            ));
+        }
+        sections = sections.push(section("Webcam", cam_rows));
 
         // Saving.
         let mut folder = row![

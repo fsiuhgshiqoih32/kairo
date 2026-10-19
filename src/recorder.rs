@@ -21,6 +21,8 @@ use crate::{ffmpeg, platform};
 
 /// Memory the video buffer may use at most, whatever the settings.
 const MAX_BUFFER_BYTES: usize = 1536 * 1024 * 1024;
+/// The webcam's buffer: about 1 Mbit/s, so this holds over half an hour.
+const MAX_CAM_BYTES: usize = 256 * 1024 * 1024;
 
 /// Disk space a buffer on disk may use at most.
 const MAX_SPILL_BYTES: u64 = 32 << 30;
@@ -72,6 +74,9 @@ pub struct Status {
     pub marks: usize,
     /// The session being recorded: how long so far, and how big.
     pub session: Option<SessionStatus>,
+    /// The camera being recorded for clips, while it is.
+    pub webcam: Option<String>,
+    pub webcam_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -85,6 +90,8 @@ pub struct SessionStatus {
 pub struct Shared {
     pub settings: Mutex<Settings>,
     pub ring: Mutex<Ring>,
+    /// The webcam's own replay buffer.
+    pub cam: Mutex<Ring>,
     pub desktop: Mutex<Option<PcmRing>>,
     pub mic: Mutex<Option<PcmRing>>,
     /// A voice-chat app's sound, when it has its own track.
@@ -96,6 +103,8 @@ pub struct Shared {
     pub video_generation: AtomicU64,
     /// Bumped when sound settings change.
     pub audio_generation: AtomicU64,
+    /// Bumped when webcam settings change.
+    pub cam_generation: AtomicU64,
     pub saving: AtomicBool,
     /// The microphone's sound also goes here while voice clipping listens.
     pub voice_tap: crate::voice::Tap,
@@ -115,6 +124,7 @@ impl Shared {
         Arc::new(Shared {
             settings: Mutex::new(settings),
             ring: Mutex::new(Ring::new(keep, MAX_BUFFER_BYTES)),
+            cam: Mutex::new(Ring::new(keep, MAX_CAM_BYTES)),
             desktop: Mutex::new(None),
             mic: Mutex::new(None),
             chat: Mutex::new(None),
@@ -123,6 +133,7 @@ impl Shared {
             paused: AtomicBool::new(false),
             video_generation: AtomicU64::new(0),
             audio_generation: AtomicU64::new(0),
+            cam_generation: AtomicU64::new(0),
             saving: AtomicBool::new(false),
             voice_tap: Default::default(),
             marks: Mutex::default(),
@@ -205,6 +216,7 @@ impl Shared {
         let old = std::mem::replace(&mut *self.settings.lock().unwrap(), new.clone());
         let keep = new.buffer_seconds() as i64 * 1_000_000;
         self.ring.lock().unwrap().set_keep_us(keep);
+        self.cam.lock().unwrap().set_keep_us(keep);
         for ring in [&self.desktop, &self.mic, &self.chat] {
             if let Some(r) = ring.lock().unwrap().as_mut() {
                 r.set_keep_us(keep);
@@ -247,6 +259,9 @@ impl Shared {
         );
         if audio {
             self.audio_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        if (old.webcam, &old.webcam_device) != (new.webcam, &new.webcam_device) {
+            self.cam_generation.fetch_add(1, Ordering::SeqCst);
         }
     }
 

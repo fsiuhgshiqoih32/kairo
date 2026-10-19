@@ -22,6 +22,7 @@ mod single_instance;
 mod tray;
 mod updater;
 mod voice;
+mod webcam;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;

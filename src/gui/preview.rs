@@ -237,7 +237,9 @@ fn preview() {
         },
     ];
     theme::set_light(false);
+    app.settings.webcam = true;
     shoot(app.view(), "iced-games", (1280.0, 3900.0));
+    app.settings.webcam = false;
     theme::set_light(true);
     app.settings.game_rules.clear();
     app.page = Page::Library;

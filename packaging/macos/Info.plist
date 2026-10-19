@@ -24,6 +24,8 @@
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>Kairo puts your webcam in a corner of your clips when you turn it on in Settings.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Kairo records your microphone into clips when you turn it on in Settings.</string>
   <key>NSScreenCaptureUsageDescription</key>
