@@ -100,11 +100,30 @@ pub fn game_of(name: &str) -> String {
     }
 }
 
-/// Clips the user starred, by file name. Stored in `clips.json` in the config folder.
+/// Clips the user starred and links they shared, by file name. Stored in `clips.json` in the
+/// config folder.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Library {
     pub favorites: BTreeSet<String>,
+    pub links: std::collections::BTreeMap<String, Link>,
+}
+
+/// A share link for a clip.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Link {
+    pub url: String,
+    /// When it was made, in Unix seconds.
+    pub created: u64,
+    /// When it stops working, in Unix seconds; `None` for links that last.
+    pub expires: Option<u64>,
+}
+
+impl Link {
+    pub fn expired(&self, now: u64) -> bool {
+        self.expires.is_some_and(|e| e <= now)
+    }
 }
 
 impl Library {
@@ -146,11 +165,37 @@ impl Library {
         }
     }
 
-    /// Keeps a favourite's star when the file is renamed.
+    /// The clip's share link, if it has one that still works.
+    pub fn link(&self, clip: &Path, now: u64) -> Option<&Link> {
+        let n = clip.file_name()?.to_string_lossy().to_string();
+        self.links.get(&n).filter(|l| !l.expired(now))
+    }
+
+    pub fn set_link(&mut self, clip: &Path, link: Option<Link>) {
+        let Some(n) = clip.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return;
+        };
+        match link {
+            Some(l) => {
+                self.links.insert(n, l);
+            }
+            None => {
+                self.links.remove(&n);
+            }
+        }
+    }
+
+    /// Keeps a favourite's star and a shared link when the file is renamed.
     pub fn renamed(&mut self, from: &Path, to: &Path) {
         if self.is_favorite(from) {
             self.set_favorite(from, false);
             self.set_favorite(to, true);
+        }
+        let key = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string());
+        if let (Some(f), Some(t)) = (key(from), key(to))
+            && let Some(l) = self.links.remove(&f)
+        {
+            self.links.insert(t, l);
         }
     }
 }
@@ -178,15 +223,20 @@ pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library) -> Vec<PathBuf> {
 
 /// A name for a new file next to `clip`: "<name> (<what>).mp4", numbered if taken.
 pub fn sibling(clip: &Path, what: &str) -> PathBuf {
+    sibling_with(clip, what, "mp4")
+}
+
+/// Like [`sibling`], with another file type ("gif").
+pub fn sibling_with(clip: &Path, what: &str, ext: &str) -> PathBuf {
     let dir = clip.parent().unwrap_or(Path::new("."));
     let stem = clip
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let mut p = dir.join(format!("{stem} ({what}).mp4"));
+    let mut p = dir.join(format!("{stem} ({what}).{ext}"));
     let mut n = 2;
     while p.exists() {
-        p = dir.join(format!("{stem} ({what} {n}).mp4"));
+        p = dir.join(format!("{stem} ({what} {n}).{ext}"));
         n += 1;
     }
     p
@@ -288,5 +338,31 @@ mod tests {
             rename_target(&clip, "Game 2026-10-18 16-54-03").unwrap(),
             clip
         );
+    }
+
+    #[test]
+    fn links_follow_renames_and_expire() {
+        let mut lib = Library::default();
+        let a = Path::new("/clips/a.mp4");
+        let b = Path::new("/clips/b.mp4");
+        lib.set_link(
+            a,
+            Some(Link {
+                url: "https://x/1.mp4".into(),
+                created: 10,
+                expires: Some(100),
+            }),
+        );
+        assert_eq!(
+            lib.link(a, 50).map(|l| l.url.as_str()),
+            Some("https://x/1.mp4")
+        );
+        assert!(lib.link(a, 100).is_none(), "expired");
+        lib.renamed(a, b);
+        assert!(lib.link(a, 50).is_none());
+        assert!(lib.link(b, 50).is_some());
+        // Files written before links existed still load.
+        let old: Library = serde_json::from_str(r#"{"favorites":["x.mp4"]}"#).unwrap();
+        assert!(old.links.is_empty());
     }
 }

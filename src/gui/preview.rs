@@ -71,6 +71,11 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                 favorite: *fav,
                 kind: *kind,
                 thumb: src.thumb.clone(),
+                link: (i == 3).then(|| rewindr::library::Link {
+                    url: "https://files.catbox.moe/k3x9qa.mp4".into(),
+                    created: 0,
+                    expires: None,
+                }),
             }
         })
         .collect()
@@ -91,8 +96,8 @@ fn report() -> Report {
             ..Default::default()
         },
         hotkey: Some("F8".into()),
-        hotkey_error: None,
         updated_ms: 0,
+        ..Default::default()
     }
 }
 
@@ -138,8 +143,37 @@ fn preview() {
     shoot(app.view(), "iced-filtered", size);
     app.filter = Filter::All;
 
+    // Shared links, the link dialog, screenshots.
+    app.filter = Filter::Shared;
+    shoot(app.view(), "iced-shared", size);
+    app.filter = Filter::All;
+    let link = app.clips[3].link.clone().expect("sample link");
+    let _ = app.show_link(&link);
+    shoot(app.view(), "iced-link", size);
+    app.dialog = None;
+    app.shots = app
+        .clips
+        .iter()
+        .take(5)
+        .enumerate()
+        .map(|(i, c)| super::ShotItem {
+            path: PathBuf::from(format!("shot-{i}.jpg")),
+            name: format!("{} 2026-10-18 2{i}-14-0{i}", c.game),
+            size: 900_000 + i as u64 * 40_000,
+            modified: c.modified,
+            picture: c.thumb.clone().expect("thumb"),
+            link: None,
+        })
+        .collect();
+    app.filter = Filter::Screenshots;
+    shoot(app.view(), "iced-screenshots", size);
+    app.filter = Filter::All;
+
     app.page = Page::Settings;
     shoot(app.view(), "iced-settings", size);
+    app.settings.voice_clip = true;
+    shoot(app.view(), "iced-settings-tall", (1280.0, 2400.0));
+    app.settings.voice_clip = false;
 
     // The editor, on the first real clip, with a trim.
     let clip = app.clips[0].path.clone();
@@ -158,6 +192,10 @@ fn preview() {
         seconds: 30.3,
     });
     shoot(t.view(), "iced-toast", (380.0, 112.0));
+    let t = toast::Toast::new(toast::Message::Screenshot(crate::save::thumb_for(
+        &sample(now)[0].path,
+    )));
+    shoot(t.view(), "iced-toast-shot", (380.0, 112.0));
     let t = toast::Toast::new(toast::Message::Failed(
         "No screen capture is running.".into(),
     ));

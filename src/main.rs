@@ -15,9 +15,11 @@ mod player;
 mod recorder;
 mod save;
 mod selftest;
+mod share;
 mod single_instance;
 mod tray;
 mod updater;
+mod voice;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -57,6 +59,8 @@ enum Cmd {
     Update,
     /// Save a clip now (asks the background process; bind this to a key on Wayland).
     Save,
+    /// Save a screenshot now (asks the background process).
+    Screenshot,
     /// Pause or resume recording.
     Pause,
     /// Stop the background process.
@@ -74,6 +78,15 @@ enum Cmd {
         seconds: f64,
         #[arg(long)]
         error: Option<String>,
+        #[arg(long)]
+        screenshot: Option<PathBuf>,
+    },
+    /// Check voice clipping on recordings: `voice-test "clip that" +said.wav -other.wav`.
+    #[command(hide = true)]
+    VoiceTest {
+        phrase: String,
+        #[arg(allow_hyphen_values = true)]
+        files: Vec<String>,
     },
     /// Record for a while without the tray, then save a clip (for testing).
     #[command(hide = true)]
@@ -113,6 +126,7 @@ fn main() {
         Some(Cmd::Window { wait }) => gui::run(None, wait),
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
+        Some(Cmd::Screenshot) => request(daemon::Request::Screenshot),
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
@@ -124,12 +138,15 @@ fn main() {
             clip,
             seconds,
             error,
-        }) => match (clip, error) {
-            (Some(clip), _) => gui::toast::run(gui::toast::Message::Saved { clip, seconds }),
-            (None, Some(e)) => gui::toast::run(gui::toast::Message::Failed(e)),
-            (None, None) => Err("notify needs --clip or --error".into()),
+            screenshot,
+        }) => match (clip, screenshot, error) {
+            (Some(clip), _, _) => gui::toast::run(gui::toast::Message::Saved { clip, seconds }),
+            (None, Some(path), _) => gui::toast::run(gui::toast::Message::Screenshot(path)),
+            (None, None, Some(e)) => gui::toast::run(gui::toast::Message::Failed(e)),
+            (None, None, None) => Err("notify needs --clip, --screenshot or --error".into()),
         },
         Some(Cmd::TestRecord { seconds, save }) => test_record(seconds, save),
+        Some(Cmd::VoiceTest { phrase, files }) => voice::test_files(&phrase, &files),
     };
     if let Err(e) = result {
         log::error!("{e}");

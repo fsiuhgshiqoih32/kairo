@@ -20,6 +20,11 @@ pub enum Kind {
     Trim,
     /// Fit under this many bytes.
     Share(u64),
+    Gif,
+    /// 9:16 for phones.
+    Vertical,
+    /// Slowed down this many times.
+    Slow(u32),
 }
 
 #[derive(Default)]
@@ -65,6 +70,9 @@ pub fn start(
         stage: match kind {
             Kind::Trim => "Saving the trimmed copy".into(),
             Kind::Share(_) => "Making a copy for Discord".into(),
+            Kind::Gif => "Making a GIF".into(),
+            Kind::Vertical => "Making a vertical copy".into(),
+            Kind::Slow(f) => format!("Slowing it down {f}x"),
         },
         ..Default::default()
     }));
@@ -133,8 +141,47 @@ fn run(
                 limit / 1_000_000
             ))
         }
+        Kind::Gif => {
+            if length > GIF_MAX_SECONDS + 0.05 {
+                return Err(format!(
+                    "GIFs get huge: trim it to {GIF_MAX_SECONDS:.0} seconds or less first."
+                ));
+            }
+            let out = library::sibling_with(clip, "GIF", "gif");
+            let part = out.with_extension("gif.part");
+            let a = media::gif_args(clip, start, end, 480, 15, &part);
+            encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+            std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
+            info!("exported {}", out.display());
+            Ok(out)
+        }
+        Kind::Vertical => {
+            let out = library::sibling(clip, "vertical");
+            let part = out.with_extension("mp4.part");
+            let a = media::vertical_args(clip, start, end, info, encoder, &part);
+            encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+            finish(ff, &part, &out)
+        }
+        Kind::Slow(factor) => {
+            let out = library::sibling(clip, &format!("slow {factor}x"));
+            let part = out.with_extension("mp4.part");
+            let a = media::slow_args(clip, start, end, factor, info, encoder, &part);
+            encode(
+                ff,
+                &a,
+                length * factor as f64,
+                &part,
+                status,
+                cancel,
+                (0.0, 1.0),
+            )?;
+            finish(ff, &part, &out)
+        }
     }
 }
+
+/// Longest stretch a GIF export takes.
+pub const GIF_MAX_SECONDS: f64 = 15.0;
 
 /// Moves the finished file into place and makes its gallery picture.
 fn finish(ff: &Path, part: &Path, out: &Path) -> Result<PathBuf, String> {

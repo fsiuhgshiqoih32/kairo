@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Share links, like Medal.** One click uploads a clip (or just the trimmed part) and copies a
+  link anyone can watch in their browser; Discord plays it right in the chat. A QR code opens it
+  on a phone. Links last forever (removed after two years without views) or 1 hour to 3 days, as
+  you choose. Shared clips get a badge and their own "Shared" list. The "Clip saved" card has a
+  Get link button too.
+- **Voice clipping.** Say "clip that" (or a phrase of your own) and Rewindr saves a clip,
+  hands-free. The speech is recognised offline on your computer with Vosk; nothing is sent
+  anywhere. It's off until you turn it on, and downloads its speech files (about 55 MB) once.
+- **Screenshots.** Press F9 (or the camera button) to save a full-size picture of the moment, with
+  their own Screenshots page.
+- **More formats** from the editor: a GIF, a vertical 9:16 copy for TikTok, Shorts and Reels (the
+  whole picture over a blurred background), and slow motion at half or quarter speed with the
+  sound slowed to match.
+- **Hover previews.** Moving the pointer across a clip's card plays through the clip.
 - **A new window.** Rewindr's window is rebuilt from scratch with iced: a sidebar with your games
   and what's being recorded, clip cards grouped by day with hover actions (copy, show, rename,
   delete), and a one-click "Save last 30 s" button.
@@ -10,7 +24,7 @@
   trimmed copy from a side panel. All the keyboard shortcuts still work.
 - **Redesigned settings**, grouped into Replay, Video, Sound, Saving and Rewindr, with toggles
   and choice buttons instead of drop-downs where it's quicker.
-- **A new "Clip saved" card** with the thumbnail and Open, Copy and Show buttons. On Windows it
+- **A new "Clip saved" card** with the thumbnail and Open, Get link and Copy buttons. On Windows it
   appears without taking focus from your game.
 - **macOS: desktop audio.** Clips now include game and app sound on macOS 13 and later, captured
   with ScreenCaptureKit (it uses the Screen Recording permission), like on Windows and Linux.

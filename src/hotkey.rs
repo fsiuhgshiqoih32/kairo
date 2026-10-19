@@ -1,4 +1,6 @@
-//! The global "save clip" shortcut.
+//! The global shortcuts: save a clip, take a screenshot.
+
+use std::rc::Rc;
 
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
@@ -6,7 +8,8 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use crate::log::warning;
 
 pub struct Hotkey {
-    manager: Option<GlobalHotKeyManager>,
+    /// Shared between the shortcuts (`sibling`): one manager per process.
+    manager: Option<Rc<GlobalHotKeyManager>>,
     current: Option<(HotKey, String)>,
     /// Why the shortcut isn't working, for the settings window.
     pub error: Option<String>,
@@ -23,7 +26,7 @@ impl Hotkey {
     pub fn new() -> Self {
         match GlobalHotKeyManager::new() {
             Ok(m) => Hotkey {
-                manager: Some(m),
+                manager: Some(Rc::new(m)),
                 current: None,
                 error: None,
             },
@@ -45,9 +48,20 @@ impl Hotkey {
         }
     }
 
-    /// Switches to `spec`, if it differs from the current shortcut.
+    /// Another shortcut on the same manager.
+    pub fn sibling(&self) -> Hotkey {
+        Hotkey {
+            manager: self.manager.clone(),
+            current: None,
+            error: None,
+        }
+    }
+
+    /// Switches to `spec`, if it differs from the current shortcut. An empty `spec` turns it off.
     pub fn set(&mut self, spec: &str) {
-        let Some(manager) = &self.manager else { return };
+        let Some(manager) = self.manager.clone() else {
+            return;
+        };
         if self.current.as_ref().is_some_and(|(_, s)| s == spec) {
             return;
         }
@@ -55,6 +69,9 @@ impl Hotkey {
             let _ = manager.unregister(hk);
         }
         self.error = None;
+        if spec.trim().is_empty() {
+            return;
+        }
         match parse(spec) {
             Ok(hk) => match manager.register(hk) {
                 Ok(()) => self.current = Some((hk, spec.to_string())),

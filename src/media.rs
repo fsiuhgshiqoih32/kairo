@@ -267,6 +267,134 @@ pub fn trim_args(
     a
 }
 
+/// The start of an export: overwrite, quiet, progress on stdout, `start..end` of the clip.
+fn export_head(clip: &Path, start: f64, end: f64) -> Vec<String> {
+    let mut a = vec![s("-y")];
+    a.extend(head());
+    a.extend([s("-progress"), s("pipe:1")]);
+    // Both on the input: the output can be longer than the part read (slow motion).
+    a.extend([
+        s("-ss"),
+        format!("{start:.3}"),
+        s("-t"),
+        format!("{:.3}", (end - start).max(0.05)),
+        s("-i"),
+        clip.display().to_string(),
+    ]);
+    a
+}
+
+fn mp4_tail(out: &Path) -> Vec<String> {
+    vec![
+        s("-c:a"),
+        s("aac"),
+        s("-b:a"),
+        s("160k"),
+        s("-movflags"),
+        s("+faststart"),
+        s("-f"),
+        s("mp4"),
+        out.display().to_string(),
+    ]
+}
+
+/// A GIF of `start..end`: `width` pixels wide at `fps`, with a palette made for this clip.
+pub fn gif_args(
+    clip: &Path,
+    start: f64,
+    end: f64,
+    width: u32,
+    fps: u32,
+    out: &Path,
+) -> Vec<String> {
+    let mut a = export_head(clip, start, end);
+    a.extend([
+        s("-an"),
+        s("-vf"),
+        format!(
+            "fps={fps},scale={width}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];\
+             [b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+        ),
+        s("-loop"),
+        s("0"),
+        s("-f"),
+        s("gif"),
+        out.display().to_string(),
+    ]);
+    a
+}
+
+/// Vertical 1080x1920 for TikTok, Shorts and Reels: the whole picture in the middle, over a
+/// blurred, zoomed copy of itself.
+pub fn vertical_args(
+    clip: &Path,
+    start: f64,
+    end: f64,
+    info: &Info,
+    encoder: Encoder,
+    out: &Path,
+) -> Vec<String> {
+    let encoder = export_encoder(encoder);
+    let fps = (info.fps.round() as u32).clamp(1, 60);
+    let bitrate = crate::config::Quality::High
+        .bitrate(1080 * 1920, fps)
+        .min(16_000_000);
+    let mut a = export_head(clip, start, end);
+    a.extend([
+        s("-filter_complex"),
+        format!(
+            "[0:v]fps={fps},split[bg][fg];\
+             [bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920[b];\
+             [fg]scale=1080:-2[f];[b][f]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
+        ),
+        s("-map"),
+        s("[v]"),
+        s("-map"),
+        s("0:a:0?"),
+        s("-c:v"),
+        s(encoder.ffmpeg_name()),
+    ]);
+    a.extend(export_video_opts(encoder, bitrate, fps, false));
+    a.extend(mp4_tail(out));
+    a
+}
+
+/// Slow motion: `start..end` at 1/`factor` speed (2 or 4), the sound slowed to match without
+/// changing its pitch.
+pub fn slow_args(
+    clip: &Path,
+    start: f64,
+    end: f64,
+    factor: u32,
+    info: &Info,
+    encoder: Encoder,
+    out: &Path,
+) -> Vec<String> {
+    let encoder = export_encoder(encoder);
+    let factor = factor.clamp(2, 4);
+    let fps = info.fps.round().max(1.0) as u32;
+    let bitrate = info.video_bps.unwrap_or_else(|| {
+        crate::config::Quality::High.bitrate(info.width as u64 * info.height as u64, fps)
+    });
+    let tempo = vec!["atempo=0.5"; if factor >= 4 { 2 } else { 1 }].join(",");
+    let mut a = export_head(clip, start, end);
+    a.extend([
+        s("-map"),
+        s("0:v:0"),
+        s("-map"),
+        s("0:a:0?"),
+        s("-vf"),
+        format!("setpts={factor}.0*PTS"),
+        s("-af"),
+        tempo,
+        s("-c:v"),
+        s(encoder.ffmpeg_name()),
+    ]);
+    a.extend(export_video_opts(encoder, bitrate, fps, false));
+    a.extend(mp4_tail(out));
+    a
+}
+
 /// How a clip is squeezed under a size limit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SharePlan {

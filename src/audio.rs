@@ -3,7 +3,10 @@
 //!
 //! - Windows: desktop audio through WASAPI loopback (cpal opens the output device for input).
 //! - Linux: desktop audio from the default sink's monitor through `parec` (or `pw-record`).
-//! - macOS: no desktop audio (it needs ScreenCaptureKit); the microphone works.
+//! - macOS: desktop audio through ScreenCaptureKit (macOS 13 and later).
+//!
+//! The microphone's sound also goes to voice clipping (`shared.voice_tap`) while it listens; it's
+//! only kept for clips when recording the microphone is on.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -79,6 +82,7 @@ fn open(
     shared: &Arc<Shared>,
     device: &cpal::Device,
     kind: Kind,
+    record: bool,
     failed: &Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, String> {
     let config = if kind == Kind::Desktop {
@@ -90,7 +94,7 @@ fn open(
     let rate = config.sample_rate();
     let channels = config.channels();
     let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-    *ring_of(shared, kind).lock().unwrap() = Some(PcmRing::new(rate, channels, keep));
+    *ring_of(shared, kind).lock().unwrap() = record.then(|| PcmRing::new(rate, channels, keep));
     let s2 = shared.clone();
     let f2 = failed.clone();
     let stream = device
@@ -98,9 +102,13 @@ fn open(
             config.config(),
             config.sample_format(),
             move |data: &cpal::Data, _: &cpal::InputCallbackInfo| {
-                if let Some(samples) = to_f32(data)
-                    && let Some(r) = ring_of(&s2, kind).lock().unwrap().as_mut()
+                let Some(samples) = to_f32(data) else { return };
+                if kind == Kind::Mic
+                    && let Some(tap) = s2.voice_tap.lock().unwrap().as_ref()
                 {
+                    let _ = tap.try_send((samples.clone(), rate, channels));
+                }
+                if let Some(r) = ring_of(&s2, kind).lock().unwrap().as_mut() {
                     r.push(&samples, now_us());
                 }
             },
@@ -228,7 +236,7 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
         match host.default_output_device() {
             Some(d) => {
                 open_now.output_id = d.id().ok().map(|i| format!("{i:?}"));
-                match open(shared, &d, Kind::Desktop, failed) {
+                match open(shared, &d, Kind::Desktop, true, failed) {
                     Ok(s) => {
                         desktop_name = Some(d.to_string());
                         open_now.streams.push(s);
@@ -255,7 +263,7 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
             Err(e) => errors.push(e),
         }
     }
-    if settings.microphone {
+    if settings.microphone || settings.voice_clip {
         let wanted = settings.microphone_device.trim();
         let device = if wanted.is_empty() {
             host.default_input_device()
@@ -268,9 +276,11 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
         match device {
             Some(d) => {
                 open_now.input_id = d.id().ok().map(|i| format!("{i:?}"));
-                match open(shared, &d, Kind::Mic, failed) {
+                match open(shared, &d, Kind::Mic, settings.microphone, failed) {
                     Ok(s) => {
-                        mic_name = Some(d.to_string());
+                        if settings.microphone {
+                            mic_name = Some(d.to_string());
+                        }
                         open_now.streams.push(s);
                     }
                     Err(e) => errors.push(format!("microphone: {e}")),
@@ -295,7 +305,7 @@ fn defaults_changed(open: &Open, settings: &Settings) -> bool {
     let host = cpal::default_host();
     let id = |d: Option<cpal::Device>| d.and_then(|d| d.id().ok()).map(|i| format!("{i:?}"));
     (cfg!(windows) && settings.desktop_audio && id(host.default_output_device()) != open.output_id)
-        || (settings.microphone
+        || ((settings.microphone || settings.voice_clip)
             && settings.microphone_device.trim().is_empty()
             && id(host.default_input_device()) != open.input_id)
 }

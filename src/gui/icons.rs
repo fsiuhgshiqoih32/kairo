@@ -30,6 +30,15 @@ pub enum Icon {
     Refresh,
     Film,
     Check,
+    Camera,
+    Link,
+    Qr,
+    Mic,
+    Image,
+    Phone,
+    Snail,
+    Share,
+    Globe,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -64,6 +73,15 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Refresh => file!("refresh-cw"),
         Icon::Film => file!("film"),
         Icon::Check => file!("check"),
+        Icon::Camera => file!("camera"),
+        Icon::Link => file!("link"),
+        Icon::Qr => file!("qr-code"),
+        Icon::Mic => file!("mic"),
+        Icon::Image => file!("image"),
+        Icon::Phone => file!("smartphone"),
+        Icon::Snail => file!("snail"),
+        Icon::Share => file!("share-2"),
+        Icon::Globe => file!("globe"),
     }
 }
 

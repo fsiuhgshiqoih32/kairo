@@ -51,6 +51,89 @@ pub fn clip_path(dir: &Path, title: Option<&str>) -> PathBuf {
     p
 }
 
+/// `<title> 2026-10-18 14-30-05.jpg` in `dir`, not overwriting anything.
+pub fn shot_path(dir: &Path, title: Option<&str>) -> PathBuf {
+    clip_path(dir, title).with_extension("jpg")
+}
+
+/// Saves the newest frame in the replay buffer as a full-size JPEG in the screenshots folder.
+pub fn screenshot(shared: &Shared, title: Option<&str>) -> Result<PathBuf, String> {
+    let settings = shared.settings();
+    if shared.paused.load(Ordering::SeqCst) {
+        return Err("Recording is paused. Resume it to take screenshots.".into());
+    }
+    let ffmpeg = ffmpeg::path()?;
+    // The newest keyframe and everything after it.
+    let snap = shared
+        .ring
+        .lock()
+        .unwrap()
+        .snapshot(now_us())
+        .ok_or("Nothing to capture: Rewindr isn't recording.")?;
+    let work = rewindr::config::config_dir().join("saving").join(format!(
+        "{}-shot-{}",
+        std::process::id(),
+        now_us()
+    ));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let cleanup = Cleanup(work.clone());
+    let video = work.join("video.ts");
+    let f = std::fs::File::create(&video).map_err(|e| e.to_string())?;
+    snap.write_to(BufWriter::new(f))
+        .map_err(|e| format!("could not write the video: {e}"))?;
+    drop(snap);
+    // Count the frames without decoding, then decode only up to the last one.
+    let out = ffmpeg::command(&ffmpeg)
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(&video)
+        .args(["-map", "0:v:0", "-c", "copy", "-f", "null", "-"])
+        .output()
+        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let frames = frame_count(&String::from_utf8_lossy(&out.stderr))
+        .unwrap_or(1)
+        .max(1);
+    let dir = settings.screenshot_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let path = shot_path(&dir, title);
+    let tmp = work.join("shot.jpg");
+    let shot_args: Vec<String> = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain([
+            video.display().to_string(),
+            "-vf".into(),
+            format!("select=eq(n\\,{})", frames - 1),
+            "-frames:v".into(),
+            "1".into(),
+            "-q:v".into(),
+            "2".into(),
+            "-update".into(),
+            "1".into(),
+            tmp.display().to_string(),
+        ])
+        .collect();
+    ffmpeg::run(&ffmpeg, &shot_args, Duration::from_secs(30))
+        .map_err(|e| format!("could not save the screenshot: {e}"))?;
+    std::fs::copy(&tmp, &path).map_err(|e| format!("could not save the screenshot: {e}"))?;
+    drop(cleanup);
+    info!("screenshot {}", path.display());
+    shared.status.lock().unwrap().last_screenshot = Some(path.display().to_string());
+    Ok(path)
+}
+
+/// The frame count from the last progress line of an ffmpeg run ("frame=  120 fps=...").
+fn frame_count(stderr: &str) -> Option<u64> {
+    stderr
+        .rsplit("frame=")
+        .next()
+        .filter(|_| stderr.contains("frame="))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Saves the last `seconds` (the settings' clip length if `None`). `title` names the file (the
 /// game or app in front).
 pub fn save(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Result<Clip, String> {
@@ -166,5 +249,15 @@ struct Cleanup(PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn frame_count_reads_the_last_progress_line() {
+        let text = "Input #0...\nframe=   12 fps=0.0 q=-1.0 size=N/A\rframe=  119 fps=0.0 q=-1.0 Lsize=N/A time=00:00:00.99\n";
+        assert_eq!(super::frame_count(text), Some(119));
+        assert_eq!(super::frame_count("no progress"), None);
     }
 }

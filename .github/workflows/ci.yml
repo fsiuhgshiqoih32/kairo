@@ -43,7 +43,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libxkbcommon-dev \
             libxcb1-dev libxcb-shm0 libxcb-xfixes0 libxrandr-dev libdbus-1-dev libasound2-dev libwayland-dev \
-            libegl1-mesa-dev libgbm-dev libxkbcommon-x11-0 mesa-vulkan-drivers libgl1-mesa-dri xvfb
+            libegl1-mesa-dev libgbm-dev libxkbcommon-x11-0 mesa-vulkan-drivers libgl1-mesa-dri xvfb espeak-ng
 
       - name: Format
         if: runner.os == 'Linux'
@@ -89,3 +89,33 @@ jobs:
       - name: Window self-test (Xvfb)
         if: env.REWINDR_FFMPEG != '' && runner.os == 'Linux'
         run: xvfb-run -a -s "-screen 0 1280x800x24" cargo run --locked -- --ui-self-test
+
+      # Voice clipping: the system's speech synthesiser says the phrase (and a few other
+      # things) into files; the recognizer (downloaded on first use) must hear only the phrase.
+      - name: Voice test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Speech
+          $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+          $say = @{ "said1" = "clip that"; "said2" = "that was insane, clip that"; "other1" = "we need to push now"; "other2" = "grab the flag" }
+          foreach ($k in $say.Keys) { $s.SetOutputToWaveFile("$PWD\$k.wav", $fmt); $s.Speak($say[$k]) }
+          $s.SetOutputToNull()
+          cargo run --locked -- voice-test "clip that" +said1.wav +said2.wav -other1.wav -other2.wav
+
+      - name: Voice test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          for p in "said1:clip that" "said2:that was insane, clip that" "other1:we need to push now" "other2:grab the flag"; do
+            say -o "${p%%:*}.wav" --file-format=WAVE --data-format=LEI16@16000 "${p#*:}"
+          done
+          cargo run --locked -- voice-test "clip that" +said1.wav +said2.wav -other1.wav -other2.wav
+
+      - name: Voice test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          for p in "said1:clip that" "said2:that was insane, clip that" "other1:we need to push now" "other2:grab the flag"; do
+            espeak-ng -s 150 -w "${p%%:*}.wav" "${p#*:}"
+          done
+          cargo run --locked -- voice-test "clip that" +said1.wav +said2.wav -other1.wav -other2.wav

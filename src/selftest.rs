@@ -74,6 +74,22 @@ pub fn run() -> Result<(), String> {
     if clip.thumbnail.is_none() {
         return Err("no thumbnail".into());
     }
+    // A screenshot: the newest frame of the buffer, full size.
+    let shot = save::screenshot(&shared, Some("Self test"))?;
+    let (w, h) = image::image_dimensions(&shot)
+        .map_err(|e| format!("the screenshot isn't a picture: {e}"))?;
+    println!("screenshot: {} ({w}x{h})", shot.display());
+    if (w, h) != (320, 240) {
+        return Err(format!("the screenshot is {w}x{h}, not 320x240"));
+    }
+    if std::env::var_os("REWINDR_SELFTEST_NO_SCREEN").is_some() {
+        let _ = std::fs::remove_dir_all(&home);
+        println!(
+            "self-test passed without the screen in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
 
     // 2. The real screen, briefly.
     let monitors = platform::monitors();

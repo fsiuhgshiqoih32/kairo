@@ -13,23 +13,26 @@ mod widgets;
 mod preview;
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use iced::alignment::Horizontal;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{
-    Space, button, column, container, image, row, scrollable, space, stack, text, text_input,
+    Space, button, column, container, image, qr_code, row, scrollable, space, stack, text,
+    text_input,
 };
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme, window};
 
 use rewindr::config::{self, Settings};
-use rewindr::library::{self as lib, Library};
+use rewindr::library::{self as lib, Library, Link};
 
 use crate::daemon::{self, Report, Request};
+use crate::share;
 use crate::single_instance::{self, InstanceLock};
 use icons::{Icon, icon};
-pub use library::{ClipItem, load_clips};
+pub use library::{ClipItem, ShotItem, load_clips, load_shots};
 use theme::{BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
 use widgets::dialog;
 
@@ -37,6 +40,8 @@ use widgets::dialog;
 pub enum Filter {
     All,
     Favorites,
+    Shared,
+    Screenshots,
     Game(String),
 }
 
@@ -77,6 +82,12 @@ enum Dialog {
         error: Option<String>,
     },
     Delete(PathBuf),
+    /// A share link, to copy or scan.
+    Link {
+        url: String,
+        expires: Option<u64>,
+        qr: Option<qr_code::Data>,
+    },
 }
 
 struct Notice {
@@ -91,7 +102,15 @@ pub struct App {
     pub search: String,
     pub sort: Sort,
     pub clips: Vec<ClipItem>,
+    pub shots: Vec<ShotItem>,
     pub loaded: bool,
+    /// The card the pointer is over, and where across it (0 to 1).
+    scrub: Option<(PathBuf, f32)>,
+    /// Keyframe pictures for hover previews, most recent last.
+    strips: HashMap<PathBuf, Vec<image::Handle>>,
+    strip_order: Vec<PathBuf>,
+    strip_loading: HashSet<PathBuf>,
+    uploads: Vec<share::Upload>,
     pub report: Option<Report>,
     pub settings: Settings,
     saved: Settings,
@@ -105,6 +124,9 @@ pub struct App {
     window: Option<window::Id>,
     ticks: u64,
     test: Option<SelfTest>,
+    /// Exports `--ui-self-test` still has to make, after the trimmed copy.
+    test_exports: Vec<editor::ExportKind>,
+    test_current: Option<editor::ExportKind>,
     _lock: Option<InstanceLock>,
 }
 
@@ -120,8 +142,21 @@ static TEST_RESULT: std::sync::Mutex<Option<Result<String, String>>> = std::sync
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
-    Report(Option<Report>),
+    Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
+    Shots(Vec<ShotItem>),
+    Scrub(PathBuf, f32),
+    ScrubEnd(PathBuf),
+    Strip(PathBuf, Vec<image::Handle>),
+    Share(PathBuf),
+    ShowLink(PathBuf),
+    CopyText(String),
+    OpenUrl(String),
+    UploadTick,
+    CancelUpload(PathBuf),
+    TakeScreenshot,
+    OpenShotsFolder,
+    OpenExternal(PathBuf),
     Filter(Filter),
     Search(String),
     Sort(Sort),
@@ -168,7 +203,13 @@ impl App {
                 search: String::new(),
                 sort: Sort::Newest,
                 clips: Vec::new(),
+                shots: Vec::new(),
                 loaded: false,
+                scrub: None,
+                strips: HashMap::new(),
+                strip_order: Vec::new(),
+                strip_loading: HashSet::new(),
+                uploads: Vec::new(),
                 report: None,
                 saved: settings.clone(),
                 settings,
@@ -181,6 +222,8 @@ impl App {
                 window: None,
                 ticks: 0,
                 test: None,
+                test_exports: Vec::new(),
+                test_current: None,
                 _lock: None,
             },
             tasks.map(Message::Settings),
@@ -203,7 +246,83 @@ impl App {
 
     fn reload(&self) -> Task<Message> {
         let dir = self.settings.save_dir();
-        Task::perform(background(move || load_clips(&dir)), Message::Clips)
+        let shots = self.settings.screenshot_dir();
+        Task::batch([
+            Task::perform(background(move || load_clips(&dir)), Message::Clips),
+            Task::perform(background(move || load_shots(&shots)), Message::Shots),
+        ])
+    }
+
+    /// How far along an upload of `path` is, while it runs.
+    fn upload_progress(&self, path: &Path) -> Option<f32> {
+        self.uploads
+            .iter()
+            .find(|u| u.clip == path)
+            .map(|u| u.progress())
+    }
+
+    /// The share link of a clip or screenshot, if it has one.
+    fn link_of(&self, path: &Path) -> Option<&Link> {
+        self.clips
+            .iter()
+            .find(|c| c.path == path)
+            .and_then(|c| c.link.as_ref())
+            .or_else(|| {
+                self.shots
+                    .iter()
+                    .find(|s| s.path == path)
+                    .and_then(|s| s.link.as_ref())
+            })
+    }
+
+    /// Uploads `file` and remembers the link for `clip`.
+    fn start_upload(&mut self, file: PathBuf, clip: PathBuf) {
+        if self.upload_progress(&clip).is_some() {
+            return;
+        }
+        self.uploads
+            .push(share::start(&file, &clip, &self.settings.share_expiry));
+    }
+
+    fn show_link(&mut self, link: &Link) -> Task<Message> {
+        self.dialog = Some(Dialog::Link {
+            url: link.url.clone(),
+            expires: link.expires,
+            qr: qr_code::Data::new(&link.url).ok(),
+        });
+        iced::clipboard::write(link.url.clone())
+    }
+
+    /// Finished uploads: show and copy the link, or say what went wrong.
+    fn poll_uploads(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        let mut i = 0;
+        while i < self.uploads.len() {
+            let Some(result) = self.uploads[i].take() else {
+                i += 1;
+                continue;
+            };
+            let up = self.uploads.remove(i);
+            match result {
+                Ok(link) => {
+                    for c in self.clips.iter_mut().filter(|c| c.path == up.clip) {
+                        c.link = Some(link.clone());
+                    }
+                    for s in self.shots.iter_mut().filter(|s| s.path == up.clip) {
+                        s.link = Some(link.clone());
+                    }
+                    self.note(
+                        "Link copied. Paste it anywhere: friends can watch it in their browser.",
+                        true,
+                    );
+                    tasks.push(self.show_link(&link));
+                    tasks.push(self.reload());
+                }
+                Err(e) if e == "Cancelled" => self.note("Upload cancelled.", true),
+                Err(e) => self.note(e, false),
+            }
+        }
+        Task::batch(tasks)
     }
 
     fn note(&mut self, text: impl Into<String>, ok: bool) {
@@ -223,7 +342,7 @@ impl App {
 
     fn open_editor(&mut self, path: PathBuf) -> Task<Message> {
         let closed = self.close_editor();
-        match editor::Editor::open(path, self.settings.discord_mb) {
+        match editor::Editor::open(path, &self.settings) {
             Ok((e, task)) => {
                 self.editor = Some(e);
                 self.page = Page::Editor;
@@ -251,7 +370,30 @@ impl App {
         if let Some(SelfTest::Exporting(_)) = &self.test {
             match &effect {
                 editor::Effect::Exported => {
-                    return self.finish_test(Ok("played and saved a trimmed copy".into()));
+                    let made = self
+                        .editor
+                        .as_ref()
+                        .and_then(|e| e.last_export())
+                        .map(Path::to_path_buf);
+                    if let (Some(kind), Some(path)) = (self.test_current, made)
+                        && let Err(e) = check_export(kind, &path)
+                    {
+                        return self.finish_test(Err(e));
+                    }
+                    let next = self.test_exports.pop();
+                    self.test_current = next;
+                    match (next, &mut self.editor) {
+                        (Some(k), Some(ed)) => {
+                            println!("ui self-test: exported; now {k:?}");
+                            let effect = ed.update(editor::Msg::Export(k));
+                            return self.editor_effect(effect);
+                        }
+                        _ => {
+                            return self.finish_test(Ok(
+                                "played, then saved a trimmed copy, a GIF, a vertical copy and slow motion".into(),
+                            ));
+                        }
+                    }
                 }
                 editor::Effect::Note(t, false) => {
                     return self.finish_test(Err(format!("export failed: {t}")));
@@ -273,6 +415,14 @@ impl App {
             editor::Effect::Favorite(p) => return self.update(Message::Favorite(p)),
             editor::Effect::AskDelete(p) => self.dialog = Some(Dialog::Delete(p)),
             editor::Effect::Back => return self.update(Message::Back),
+            editor::Effect::Share { file, clip } => {
+                self.start_upload(file, clip);
+                return self.reload();
+            }
+            editor::Effect::CancelUpload(p) => return self.update(Message::CancelUpload(p)),
+            editor::Effect::CopyText(t) => return self.update(Message::CopyText(t)),
+            editor::Effect::OpenUrl(u) => return self.update(Message::OpenUrl(u)),
+            editor::Effect::ShowLink(p) => return self.update(Message::ShowLink(p)),
         }
         Task::none()
     }
@@ -281,6 +431,7 @@ impl App {
         match message {
             Message::Tick => return self.tick(),
             Message::Report(r) => {
+                let r = r.map(|b| *b);
                 let new_clip = r.as_ref().and_then(|r| r.status.last_clip.clone());
                 let old_clip = self
                     .report
@@ -295,6 +446,61 @@ impl App {
                 self.clips = c;
                 self.loaded = true;
             }
+            Message::Shots(s) => self.shots = s,
+            Message::Scrub(p, f) => {
+                let start = !self.strips.contains_key(&p) && self.strip_loading.insert(p.clone());
+                self.scrub = Some((p.clone(), f));
+                if start {
+                    return Task::perform(
+                        background(move || (p.clone(), preview_strip(&p))),
+                        |(p, s)| Message::Strip(p, s),
+                    );
+                }
+            }
+            Message::ScrubEnd(p) => {
+                if self.scrub.as_ref().is_some_and(|(s, _)| *s == p) {
+                    self.scrub = None;
+                }
+            }
+            Message::Strip(p, frames) => {
+                self.strip_loading.remove(&p);
+                self.strip_order.retain(|q| *q != p);
+                self.strip_order.push(p.clone());
+                self.strips.insert(p, frames);
+                // Keep the pictures of the last few cards only.
+                while self.strip_order.len() > 8 {
+                    let old = self.strip_order.remove(0);
+                    self.strips.remove(&old);
+                }
+            }
+            Message::Share(p) => self.start_upload(p.clone(), p),
+            Message::ShowLink(p) => {
+                if let Some(link) = self.link_of(&p).cloned() {
+                    return self.show_link(&link);
+                }
+            }
+            Message::CopyText(t) => {
+                self.note("Copied.", true);
+                return iced::clipboard::write(t);
+            }
+            Message::OpenUrl(u) => crate::app::open(Path::new(&u)),
+            Message::UploadTick => return self.poll_uploads(),
+            Message::CancelUpload(p) => {
+                for u in self.uploads.iter().filter(|u| u.clip == p) {
+                    u.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            Message::TakeScreenshot => {
+                if let Err(e) = daemon::request(Request::Screenshot) {
+                    self.note(e, false);
+                }
+            }
+            Message::OpenShotsFolder => {
+                let dir = self.settings.screenshot_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                crate::app::open(&dir);
+            }
+            Message::OpenExternal(p) => crate::app::open(&p),
             Message::Filter(f) => {
                 self.filter = f;
                 self.page = Page::Library;
@@ -379,11 +585,16 @@ impl App {
                     Ok(()) => {
                         let _ = std::fs::remove_file(crate::save::thumb_for(&p));
                         let mut l = Library::load();
-                        if l.is_favorite(&p) {
+                        if l.is_favorite(&p)
+                            || l.links
+                                .contains_key(&*p.file_name().unwrap_or_default().to_string_lossy())
+                        {
                             l.set_favorite(&p, false);
+                            l.set_link(&p, None);
                             let _ = l.save();
                         }
                         self.clips.retain(|c| c.path != p);
+                        self.shots.retain(|s| s.path != p);
                         if self.editor.as_ref().is_some_and(|e| e.clip == p) {
                             self.editor = None;
                             self.page = Page::Library;
@@ -459,7 +670,7 @@ impl App {
         else {
             return Task::none();
         };
-        if self.setup.capturing_key {
+        if self.setup.capturing_key.is_some() {
             if let settings::Effect::Changed =
                 self.setup
                     .key(&mut self.settings, &key, &physical_key, modifiers)
@@ -481,6 +692,7 @@ impl App {
                 return self.update(match d {
                     Dialog::Rename { .. } => Message::RenameConfirm,
                     Dialog::Delete(_) => Message::DeleteConfirm,
+                    Dialog::Link { .. } => Message::CloseDialog,
                 });
             }
             return Task::none();
@@ -500,7 +712,7 @@ impl App {
         }
         self.ticks += 1;
         let mut tasks = vec![Task::perform(
-            background(daemon::read_report),
+            background(|| daemon::read_report().map(Box::new)),
             Message::Report,
         )];
         if self.ticks.is_multiple_of(6) {
@@ -589,10 +801,17 @@ impl App {
                 }
                 ed.trim = (0.5, 2.5);
                 self.test = Some(SelfTest::Exporting(Instant::now()));
+                // Made in this order after the trimmed copy (popped from the end).
+                self.test_exports = vec![
+                    editor::ExportKind::Slow(2),
+                    editor::ExportKind::Vertical,
+                    editor::ExportKind::Gif,
+                ];
+                self.test_current = Some(editor::ExportKind::Trim);
                 let effect = ed.update(editor::Msg::Export(editor::ExportKind::Trim));
                 return self.editor_effect(effect);
             }
-            SelfTest::Exporting(t) if t.elapsed() > Duration::from_secs(60) => {
+            SelfTest::Exporting(t) if t.elapsed() > Duration::from_secs(150) => {
                 return self.finish_test(Err("the export didn't finish".into()));
             }
             _ => {}
@@ -606,6 +825,9 @@ impl App {
             keyboard::listen().map(Message::Key),
             window::open_events().map(Message::Opened),
         ];
+        if !self.uploads.is_empty() {
+            subs.push(iced::time::every(Duration::from_millis(150)).map(|_| Message::UploadTick));
+        }
         if self.editor.as_ref().is_some_and(|e| e.busy()) {
             // A timer rather than the window's frames, so playback runs while it's hidden too.
             subs.push(
@@ -631,15 +853,23 @@ impl App {
         let page: Element<'_, Message> = match (self.page, &self.editor) {
             (Page::Editor, Some(e)) => {
                 let item = self.clips.iter().find(|c| c.path == e.clip);
-                column![Space::new().height(18), e.view(item).map(Message::Editor)].into()
+                let target = e.share_target();
+                let share = editor::ShareView {
+                    progress: self.upload_progress(&target),
+                    link: self.link_of(&target).cloned(),
+                };
+                column![
+                    Space::new().height(18),
+                    e.view(item, share).map(Message::Editor)
+                ]
+                .into()
             }
             (Page::Settings, _) => {
                 let used = self.clips.iter().map(|c| c.size).sum();
-                let err = self.report.as_ref().and_then(|r| r.hotkey_error.clone());
                 column![
                     self.top_bar(),
                     self.setup
-                        .view(&self.settings, err, used)
+                        .view(&self.settings, self.report.as_ref(), used)
                         .map(Message::Settings)
                 ]
                 .into()
@@ -713,8 +943,99 @@ impl App {
                     Message::CloseDialog,
                 )
             }
+            Dialog::Link { url, expires, qr } => {
+                let lasts = match expires {
+                    None => "It stays up while people keep watching it (removed after 2 years without views).".to_string(),
+                    Some(t) => {
+                        let hours = t.saturating_sub(share::now_secs()).div_ceil(3600);
+                        if hours > 36 {
+                            format!("It works for {} more days, then it's gone.", hours.div_ceil(24))
+                        } else {
+                            format!("It works for {hours} more hour{}, then it's gone.", if hours == 1 { "" } else { "s" })
+                        }
+                    }
+                };
+                let mut body = column![
+                    text("Copied. Paste it in Discord, a group chat or anywhere: anyone with the link can watch.")
+                        .size(14)
+                        .color(TEXT_2),
+                    row![
+                        container(text(url.clone()).size(14).font(MEDIUM).wrapping(text::Wrapping::None))
+                            .padding(Padding::from([9, 12]))
+                            .width(iced::Fill)
+                            .clip(true)
+                            .style(theme::well),
+                        button(row![icon(Icon::Copy, 15.0, iced::Color::WHITE), text("Copy").size(13).font(SEMIBOLD)].spacing(7).align_y(Alignment::Center))
+                            .padding(Padding::from([9, 14]))
+                            .style(theme::primary)
+                            .on_press(Message::CopyText(url.clone())),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(14);
+                if let Some(data) = qr {
+                    body = body.push(
+                        row![
+                            container(qr_code(data).cell_size(4).style(|_| {
+                                iced::widget::qr_code::Style {
+                                    cell: iced::Color::BLACK,
+                                    background: iced::Color::WHITE,
+                                }
+                            }))
+                            .padding(8)
+                            .style(|_| container::Style {
+                                background: Some(iced::Color::WHITE.into()),
+                                border: iced::Border {
+                                    radius: 8.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                            column![
+                                text("On your phone?").font(SEMIBOLD).size(14),
+                                text("Scan this to open the clip there.")
+                                    .size(13)
+                                    .color(TEXT_2),
+                                Space::new().height(6),
+                                text(lasts).size(12).color(MUTED),
+                            ]
+                            .spacing(4),
+                        ]
+                        .spacing(16)
+                        .align_y(Alignment::Center),
+                    );
+                }
+                dialog(
+                    "Your share link",
+                    body,
+                    row![
+                        button(
+                            row![
+                                icon(Icon::Globe, 15.0, TEXT_2),
+                                text("Open in browser").size(13).font(MEDIUM)
+                            ]
+                            .spacing(7)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding(Padding::from([8, 14]))
+                        .style(theme::ghost)
+                        .on_press(Message::OpenUrl(url.clone())),
+                        button(text("Done").size(13).font(SEMIBOLD))
+                            .padding(Padding::from([8, 14]))
+                            .style(theme::secondary)
+                            .on_press(Message::CloseDialog),
+                    ]
+                    .spacing(8),
+                    Message::CloseDialog,
+                )
+            }
             Dialog::Delete(p) => dialog(
-                "Delete this clip?",
+                if p.extension().is_some_and(|e| e != "mp4") {
+                    "Delete this screenshot?"
+                } else {
+                    "Delete this clip?"
+                },
                 text(format!(
                     "\"{}\" will be deleted from your clips folder. This can't be undone.",
                     stem(p)
@@ -775,6 +1096,20 @@ impl App {
                 in_library && self.filter == Filter::Favorites
             )
             .on_press(Message::Filter(Filter::Favorites)),
+            nav_item(
+                Icon::Link,
+                "Shared",
+                Some(self.clips.iter().filter(|c| c.link.is_some()).count()),
+                in_library && self.filter == Filter::Shared
+            )
+            .on_press(Message::Filter(Filter::Shared)),
+            nav_item(
+                Icon::Camera,
+                "Screenshots",
+                Some(self.shots.len()),
+                in_library && self.filter == Filter::Screenshots
+            )
+            .on_press(Message::Filter(Filter::Screenshots)),
         ]
         .spacing(2);
 
@@ -948,6 +1283,23 @@ impl App {
             text(detail).size(12).color(MUTED),
         ]
         .spacing(7);
+        if let Some(st) = s
+            && (st.voice.is_some() || st.voice_error.is_some())
+        {
+            let (color, line) = match (&st.voice, &st.voice_error) {
+                (Some(p), _) => (TEXT_2, format!("Listening for \"{p}\"")),
+                (None, Some(e)) => (theme::ACCENT, e.clone()),
+                _ => (MUTED, String::new()),
+            };
+            c = c.push(
+                row![
+                    icon(Icon::Mic, 13.0, color),
+                    text(line).size(12).color(color)
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+        }
         if live {
             c = c.push(bar).push(
                 text(if held >= clip_len {
@@ -978,6 +1330,8 @@ impl App {
             _ => match &self.filter {
                 Filter::All => "All clips".into(),
                 Filter::Favorites => "Favourites".into(),
+                Filter::Shared => "Shared".into(),
+                Filter::Screenshots => "Screenshots".into(),
                 Filter::Game(g) => g.clone(),
             },
         };
@@ -1036,6 +1390,23 @@ impl App {
                 }),
             );
         }
+        let shot_key = self
+            .report
+            .as_ref()
+            .and_then(|r| r.screenshot_hotkey.clone())
+            .unwrap_or_else(|| self.settings.screenshot_hotkey.clone());
+        let shot_tip: &'static str = if shot_key.is_empty() {
+            "Take a screenshot"
+        } else {
+            "Take a screenshot (the screenshot shortcut works in games)"
+        };
+        r = r.push(library::tip(
+            button(container(icon(Icon::Camera, 17.0, TEXT)).center(iced::Length::Fixed(20.0)))
+                .padding(9)
+                .style(theme::secondary)
+                .on_press_maybe(live.then_some(Message::TakeScreenshot)),
+            shot_tip,
+        ));
         r = r.push(save);
         container(r)
             .padding(Padding {
@@ -1076,6 +1447,19 @@ fn nav_item<'a>(
         .padding(Padding::from([8, 12]))
         .width(Fill)
         .style(theme::nav(active))
+}
+
+/// Small keyframe pictures of a clip, for the hover preview.
+fn preview_strip(clip: &Path) -> Vec<image::Handle> {
+    let Ok(ff) = crate::ffmpeg::path() else {
+        return Vec::new();
+    };
+    let Ok(info) = crate::ffmpeg::probe_clip(&ff, clip) else {
+        return Vec::new();
+    };
+    let h = 180u32;
+    let w = ((h as f64 * info.width as f64 / info.height.max(1) as f64).round() as u32).max(2) & !1;
+    editor::filmstrip(&ff, clip, (w, h))
 }
 
 fn stem(p: &Path) -> String {
@@ -1148,6 +1532,44 @@ fn take_open_request() -> Option<String> {
     let text = std::fs::read_to_string(&p).ok()?;
     let _ = std::fs::remove_file(&p);
     Some(text.trim().to_string())
+}
+
+/// `--ui-self-test`: checks what an export made (the test trims 0.5 to 2.5 s of a 640x360 clip).
+fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
+    let what = format!("{kind:?} export {}", path.display());
+    if kind == editor::ExportKind::Gif {
+        let head = std::fs::read(path).map_err(|e| format!("{what}: {e}"))?;
+        return if head.starts_with(b"GIF89a") && head.len() > 10_000 {
+            println!("ui self-test: GIF, {} bytes", head.len());
+            Ok(())
+        } else {
+            Err(format!("{what} isn't a GIF"))
+        };
+    }
+    let ff = crate::ffmpeg::path()?;
+    let info = crate::ffmpeg::probe_clip(&ff, path)?;
+    let (want_size, want_secs) = match kind {
+        editor::ExportKind::Vertical => (Some((1080, 1920)), 2.0),
+        editor::ExportKind::Slow(f) => (Some((640, 360)), 2.0 * f as f64),
+        _ => (None, 2.0),
+    };
+    println!(
+        "ui self-test: {kind:?} is {}x{}, {:.2} s",
+        info.width, info.height, info.duration
+    );
+    if want_size.is_some_and(|s| s != (info.width, info.height)) {
+        return Err(format!(
+            "{what} is {}x{}, not {want_size:?}",
+            info.width, info.height
+        ));
+    }
+    if (info.duration - want_secs).abs() > 0.35 {
+        return Err(format!(
+            "{what} lasts {:.2} s, not about {want_secs} s",
+            info.duration
+        ));
+    }
+    Ok(())
 }
 
 /// `--ui-self-test`: the real window, hidden, on a short generated clip in a temporary folder.

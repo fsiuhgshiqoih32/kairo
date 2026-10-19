@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive"] }
 cpal = "0.18"
 dirs = "6"
 global-hotkey = "0.9"
-iced = { version = "0.14", features = ["image", "svg", "canvas", "advanced", "tokio"] }
+iced = { version = "0.14", features = ["image", "svg", "canvas", "advanced", "tokio", "qr_code"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
 opener = { version = "0.9", features = ["reveal"] }
@@ -31,6 +31,7 @@ auto-launch = "0.6"
 ureq = { version = "3", features = ["json"] }
 self-replace = "1.5"
 sha2 = "0.11"
+libloading = "0.8"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"

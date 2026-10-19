@@ -106,6 +106,13 @@ pub struct Settings {
     pub max_storage_gb: u32,
     /// Size limit for "Share for Discord", in MB (10 for free accounts).
     pub discord_mb: u32,
+    /// Saves a screenshot: "F9" and so on; empty turns it off.
+    pub screenshot_hotkey: String,
+    /// How long share links work: "forever", or "72h", "24h", "12h", "1h".
+    pub share_expiry: String,
+    /// Save a clip when the microphone hears `voice_phrase`.
+    pub voice_clip: bool,
+    pub voice_phrase: String,
 }
 
 impl Default for Settings {
@@ -127,11 +134,17 @@ impl Default for Settings {
             check_updates: true,
             max_storage_gb: 0,
             discord_mb: 10,
+            screenshot_hotkey: "F9".into(),
+            share_expiry: "forever".into(),
+            voice_clip: false,
+            voice_phrase: DEFAULT_VOICE_PHRASE.into(),
         }
     }
 }
 
 pub const MIN_CLIP_SECONDS: u32 = 5;
+pub const DEFAULT_VOICE_PHRASE: &str = "clip that";
+pub const SHARE_EXPIRIES: [&str; 4] = ["forever", "72h", "24h", "1h"];
 pub const MAX_CLIP_SECONDS: u32 = 300;
 
 impl Settings {
@@ -150,6 +163,19 @@ impl Settings {
         if self.monitor.trim().is_empty() {
             self.monitor = "primary".into();
         }
+        if !SHARE_EXPIRIES.contains(&self.share_expiry.as_str()) {
+            self.share_expiry = "forever".into();
+        }
+        self.voice_phrase = normalize_phrase(&self.voice_phrase);
+        if self.voice_phrase.is_empty() {
+            self.voice_phrase = DEFAULT_VOICE_PHRASE.into();
+        }
+        self.screenshot_hotkey = self.screenshot_hotkey.trim().to_string();
+    }
+
+    /// Where screenshots go: a folder inside the clips folder.
+    pub fn screenshot_dir(&self) -> PathBuf {
+        self.save_dir().join("Screenshots")
     }
 
     pub fn save_dir(&self) -> PathBuf {
@@ -234,6 +260,22 @@ pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// A voice phrase as it's matched: lowercase words, no punctuation, single spaces.
+pub fn normalize_phrase(p: &str) -> String {
+    p.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +321,29 @@ mod tests {
         assert!(Quality::High.bitrate(p1080, 60) > m);
         assert!(Quality::Low.bitrate(p1080, 60) < m);
         assert_eq!(Quality::Low.bitrate(100, 10), 1_000_000);
+    }
+
+    #[test]
+    fn voice_phrases_are_normalized() {
+        assert_eq!(normalize_phrase("  Clip   THAT! "), "clip that");
+        assert_eq!(normalize_phrase("Rewindr, clip it."), "rewindr clip it");
+        assert_eq!(normalize_phrase("that's it"), "that's it");
+        let mut s = Settings {
+            voice_phrase: "!!!".into(),
+            share_expiry: "week".into(),
+            ..Default::default()
+        };
+        s.sanitize();
+        assert_eq!(s.voice_phrase, DEFAULT_VOICE_PHRASE);
+        assert_eq!(s.share_expiry, "forever");
+    }
+
+    #[test]
+    fn old_settings_files_get_the_new_defaults() {
+        let s: Settings = toml::from_str("hotkey = \"F10\"\nclip_seconds = 45\n").unwrap();
+        assert_eq!(s.hotkey, "F10");
+        assert_eq!(s.screenshot_hotkey, "F9");
+        assert!(!s.voice_clip);
+        assert_eq!(s.share_expiry, "forever");
     }
 }

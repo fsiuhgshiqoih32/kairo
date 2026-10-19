@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::keyboard::{self, Key, key};
 use iced::widget::{
@@ -10,13 +11,16 @@ use iced::widget::{
 use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
 use rewindr::args::{self, Encoder};
-use rewindr::config::{MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, Settings};
+use rewindr::config::{
+    MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings,
+    normalize_phrase,
+};
 
 use super::icons::{Icon, icon};
 use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
 use super::widgets::{divider, icon_button, keycap, label, segmented};
 use super::{background, human_size, seconds_label};
-use crate::daemon::{self, Request};
+use crate::daemon::{self, Report, Request};
 use crate::platform::{self, Monitor};
 use crate::{autostart, hotkey, updater};
 
@@ -39,11 +43,23 @@ pub struct State {
     encoders: Option<Vec<Encoder>>,
     launcher: Option<auto_launch::AutoLaunch>,
     autostart: bool,
-    pub capturing_key: bool,
-    hotkey_problem: Option<String>,
+    /// Which shortcut the next key press sets.
+    pub capturing_key: Option<Target>,
+    hotkey_problem: Option<(Target, String)>,
     clip_text: String,
     gb_text: String,
+    phrase_text: String,
+    /// Bytes done and total while the speech files download.
+    voice_install: Option<Arc<[AtomicU64; 2]>>,
+    voice_problem: Option<String>,
     pub update: Updates,
+}
+
+/// A shortcut in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Save,
+    Screenshot,
 }
 
 #[derive(Default)]
@@ -56,7 +72,12 @@ pub struct Updates {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Capture,
+    Capture(Target),
+    ScreenshotOff,
+    Voice(bool),
+    VoiceInstalled(Result<(), String>),
+    Phrase(String),
+    ShareExpiry(&'static str),
     ClipSeconds(u32),
     ClipText(String),
     Monitor(Choice),
@@ -120,10 +141,13 @@ impl State {
                 encoders: None,
                 launcher,
                 autostart,
-                capturing_key: false,
+                capturing_key: None,
                 hotkey_problem: None,
                 clip_text: settings.clip_seconds.to_string(),
                 gb_text: settings.max_storage_gb.max(1).to_string(),
+                phrase_text: settings.voice_phrase.clone(),
+                voice_install: None,
+                voice_problem: None,
                 update,
             },
             Task::batch(tasks),
@@ -138,8 +162,11 @@ impl State {
         physical: &key::Physical,
         m: keyboard::Modifiers,
     ) -> Effect {
+        let Some(target) = self.capturing_key else {
+            return Effect::None;
+        };
         if matches!(k.as_ref(), Key::Named(key::Named::Escape)) {
-            self.capturing_key = false;
+            self.capturing_key = None;
             return Effect::None;
         }
         if matches!(
@@ -174,15 +201,27 @@ impl State {
         }
         parts.push(name);
         let spec = parts.join("+");
-        self.capturing_key = false;
+        self.capturing_key = None;
+        let other = match target {
+            Target::Save => &s.screenshot_hotkey,
+            Target::Screenshot => &s.hotkey,
+        };
+        if other.eq_ignore_ascii_case(&spec) {
+            self.hotkey_problem = Some((target, format!("{spec} is already the other shortcut.")));
+            return Effect::None;
+        }
         match hotkey::parse(&spec) {
             Ok(_) => {
-                s.hotkey = spec;
+                match target {
+                    Target::Save => s.hotkey = spec,
+                    Target::Screenshot => s.screenshot_hotkey = spec,
+                }
                 self.hotkey_problem = None;
                 Effect::Changed
             }
             Err(_) => {
-                self.hotkey_problem = Some(format!("{spec} can't be used as a shortcut."));
+                self.hotkey_problem =
+                    Some((target, format!("{spec} can't be used as a shortcut.")));
                 Effect::None
             }
         }
@@ -191,7 +230,72 @@ impl State {
     pub fn update(&mut self, s: &mut Settings, msg: Msg) -> (Task<Msg>, Effect) {
         let changed = (Task::none(), Effect::Changed);
         match msg {
-            Msg::Capture => self.capturing_key = !self.capturing_key,
+            Msg::Capture(t) => {
+                self.capturing_key = if self.capturing_key == Some(t) {
+                    None
+                } else {
+                    Some(t)
+                };
+            }
+            Msg::ScreenshotOff => {
+                s.screenshot_hotkey.clear();
+                self.capturing_key = None;
+                return changed;
+            }
+            Msg::Voice(false) => {
+                s.voice_clip = false;
+                self.voice_problem = None;
+                return changed;
+            }
+            Msg::Voice(true) => {
+                self.voice_problem = None;
+                if crate::voice::installed() {
+                    s.voice_clip = true;
+                    return changed;
+                }
+                if !crate::voice::available() {
+                    self.voice_problem =
+                        Some("Voice clipping isn't available on this kind of computer yet.".into());
+                } else if self.voice_install.is_none() {
+                    let progress: Arc<[AtomicU64; 2]> =
+                        Arc::new([AtomicU64::new(0), AtomicU64::new(1)]);
+                    self.voice_install = Some(progress.clone());
+                    return (
+                        Task::perform(
+                            background(move || {
+                                crate::voice::install(&|done, total| {
+                                    progress[0].store(done, Ordering::Relaxed);
+                                    progress[1].store(total, Ordering::Relaxed);
+                                })
+                            }),
+                            Msg::VoiceInstalled,
+                        ),
+                        Effect::None,
+                    );
+                }
+            }
+            Msg::VoiceInstalled(r) => {
+                self.voice_install = None;
+                match r {
+                    Ok(()) => {
+                        s.voice_clip = true;
+                        return changed;
+                    }
+                    Err(e) => self.voice_problem = Some(e),
+                }
+            }
+            Msg::Phrase(t) => {
+                let n = normalize_phrase(&t);
+                self.phrase_text = t;
+                if !n.is_empty() && n != s.voice_phrase {
+                    s.voice_phrase = n;
+                    return changed;
+                }
+            }
+            Msg::ShareExpiry(e) => {
+                s.share_expiry = e.to_string();
+                return changed;
+            }
             Msg::ClipSeconds(v) => {
                 s.clip_seconds = v;
                 self.clip_text = v.to_string();
@@ -363,54 +467,77 @@ impl State {
         )
     }
 
-    pub fn view<'a>(
+    /// The button that shows a shortcut and, when clicked, waits for a new one.
+    fn key_capture<'a>(
         &'a self,
-        s: &'a Settings,
-        hotkey_error: Option<String>,
-        used: u64,
+        target: Target,
+        spec: &'a str,
+        error: Option<String>,
     ) -> Element<'a, Msg> {
-        let mut sections = column![].spacing(26).max_width(780);
-
-        // Replay.
-        let key_button = button(
-            if self.capturing_key {
-                row![
-                    text("Press a key")
-                        .font(SEMIBOLD)
-                        .size(14)
-                        .color(theme::ACCENT)
-                ]
-            } else {
-                s.hotkey
-                    .split('+')
-                    .fold(row![].spacing(4), |r, k| r.push(keycap(k)))
-            }
-            .align_y(Alignment::Center),
-        )
-        .padding(Padding::from([8, 14]))
-        .style({
-            let capturing = self.capturing_key;
-            move |t, st| {
+        let capturing = self.capturing_key == Some(target);
+        let label = if capturing {
+            row![
+                text("Press a key")
+                    .font(SEMIBOLD)
+                    .size(14)
+                    .color(theme::ACCENT)
+            ]
+        } else if spec.is_empty() {
+            row![text("Off").font(SEMIBOLD).size(14).color(MUTED)]
+        } else {
+            spec.split('+')
+                .fold(row![].spacing(4), |r, k| r.push(keycap(k)))
+        };
+        let key_button = button(label.align_y(Alignment::Center))
+            .padding(Padding::from([8, 14]))
+            .style(move |t, st| {
                 if capturing {
                     theme::segment(true)(t, st)
                 } else {
                     theme::secondary(t, st)
                 }
-            }
-        })
-        .on_press(Msg::Capture);
-        let key_note = if self.capturing_key {
+            })
+            .on_press(Msg::Capture(target));
+        let note = if capturing {
             Some("Add Ctrl, Alt or Shift if you like. Esc cancels.".to_string())
         } else {
-            self.hotkey_problem.clone().or(hotkey_error)
+            self.hotkey_problem
+                .as_ref()
+                .filter(|(t, _)| *t == target)
+                .map(|(_, p)| p.clone())
+                .or(error)
         };
-        let mut key_col = column![key_button].spacing(6).align_x(Alignment::End);
-        if let Some(n) = key_note {
-            let bad = !self.capturing_key;
-            key_col = key_col.push(
+        let mut col = column![key_button].spacing(6).align_x(Alignment::End);
+        if let Some(n) = note {
+            col = col.push(
                 text(n)
                     .size(12)
-                    .color(if bad { theme::ACCENT } else { MUTED }),
+                    .color(if capturing { MUTED } else { theme::ACCENT }),
+            );
+        }
+        col.into()
+    }
+
+    pub fn view<'a>(
+        &'a self,
+        s: &'a Settings,
+        report: Option<&'a Report>,
+        used: u64,
+    ) -> Element<'a, Msg> {
+        let mut sections = column![].spacing(26).max_width(780);
+        let save_error = report.and_then(|r| r.hotkey_error.clone());
+        let shot_error = report.and_then(|r| r.screenshot_hotkey_error.clone());
+        let key_col = self.key_capture(Target::Save, &s.hotkey, save_error);
+        let mut shot_row =
+            row![self.key_capture(Target::Screenshot, &s.screenshot_hotkey, shot_error)]
+                .spacing(8)
+                .align_y(Alignment::Start);
+        if !s.screenshot_hotkey.is_empty() {
+            shot_row = shot_row.push(
+                button(text("Turn off").size(13).font(MEDIUM))
+                    .padding(Padding::from([9, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::ScreenshotOff),
             );
         }
         sections = sections.push(section(
@@ -420,6 +547,11 @@ impl State {
                     "Save shortcut",
                     Some("Works everywhere, even in full-screen games.".into()),
                     key_col,
+                ),
+                setting(
+                    "Screenshot shortcut",
+                    Some("Saves a full-size picture of the moment to Screenshots.".into()),
+                    shot_row,
                 ),
                 setting(
                     "Clip length",
@@ -449,6 +581,81 @@ impl State {
                 ),
             ],
         ));
+
+        // Voice clipping.
+        let voice_control: Element<'a, Msg> = match &self.voice_install {
+            Some(p) => {
+                let (done, total) = (
+                    p[0].load(Ordering::Relaxed),
+                    p[1].load(Ordering::Relaxed).max(1),
+                );
+                column![
+                    text(format!(
+                        "Downloading the speech files: {} of {}",
+                        human_size(done),
+                        human_size(total)
+                    ))
+                    .size(12)
+                    .color(TEXT_2),
+                    iced::widget::progress_bar(0.0..=1.0, done as f32 / total as f32)
+                        .girth(5)
+                        .length(220)
+                        .style(theme::progress),
+                ]
+                .spacing(6)
+                .align_x(Alignment::End)
+                .into()
+            }
+            None => switch(s.voice_clip, Msg::Voice),
+        };
+        let listening = report.map(|r| (&r.status.voice, &r.status.voice_error));
+        let status = match (&self.voice_problem, listening) {
+            (Some(p), _) => Some((theme::ACCENT, p.clone())),
+            (None, Some((_, Some(e)))) if s.voice_clip => Some((theme::ACCENT, e.clone())),
+            (None, Some((Some(phrase), _))) if s.voice_clip => {
+                Some((theme::GREEN, format!("Listening for \"{phrase}\" now.")))
+            }
+            (None, None) if s.voice_clip => {
+                Some((MUTED, "Starts listening when Rewindr runs.".into()))
+            }
+            _ => None,
+        };
+        let mut voice_rows = vec![setting(
+            "Voice clipping",
+            Some(
+                "Say a phrase and Rewindr saves a clip, hands-free. The speech is recognised on this computer: \
+                 nothing is sent anywhere. The first time, it downloads the speech files (about 55 MB)."
+                    .into(),
+            ),
+            voice_control,
+        )];
+        if s.voice_clip {
+            let mut phrase_col = column![
+                text_input("clip that", &self.phrase_text)
+                    .on_input(Msg::Phrase)
+                    .width(220)
+                    .padding(Padding::from([8, 10]))
+                    .size(14)
+                    .style(theme::input),
+            ]
+            .spacing(6)
+            .align_x(Alignment::End);
+            if let Some((color, line)) = status {
+                phrase_col = phrase_col.push(text(line).size(12).color(color));
+            }
+            voice_rows.push(setting(
+                "Phrase",
+                Some(
+                    "Common English words work best. A phrase you don't say while chatting (\"rewind that\") \
+                     avoids saving clips by accident."
+                        .into(),
+                ),
+                phrase_col,
+            ));
+        } else if let Some((color, line)) = status {
+            voice_rows.push(setting("", None, text(line).size(12).color(color)));
+        }
+        sections = sections.push(section("Voice clipping", voice_rows));
 
         // Video.
         let mut screens = vec![Choice {
@@ -678,6 +885,33 @@ impl State {
             ),
             (None, None) => format!("You have Rewindr {}.", updater::current_version()),
         };
+        let expiry = SHARE_EXPIRIES
+            .iter()
+            .copied()
+            .find(|e| *e == s.share_expiry)
+            .unwrap_or("forever");
+        sections = sections.push(section(
+            "Sharing",
+            vec![setting(
+                "Links last",
+                Some(
+                    "Share links upload the clip to catbox.moe (forever) or litterbox.catbox.moe (for a while). \
+                     Anyone with a link can watch. Forever links are removed after two years without views."
+                        .into(),
+                ),
+                segmented(
+                    vec![
+                        ("forever", "Forever".to_string()),
+                        ("72h", "3 days".to_string()),
+                        ("24h", "1 day".to_string()),
+                        ("1h", "1 hour".to_string()),
+                    ],
+                    expiry,
+                    Msg::ShareExpiry,
+                ),
+            )],
+        ));
+
         sections = sections.push(section(
             "Rewindr",
             vec![

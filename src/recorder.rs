@@ -30,6 +30,7 @@ pub fn now_us() -> i64 {
 
 /// What the background process shows in the tray and the settings window.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Status {
     pub recording: bool,
     pub paused: bool,
@@ -44,6 +45,10 @@ pub struct Status {
     pub error: Option<String>,
     pub audio_error: Option<String>,
     pub last_clip: Option<String>,
+    /// The phrase voice clipping listens for, while it does.
+    pub voice: Option<String>,
+    pub voice_error: Option<String>,
+    pub last_screenshot: Option<String>,
 }
 
 /// Everything the recorder, audio capture, saving and the tray share.
@@ -60,6 +65,8 @@ pub struct Shared {
     /// Bumped when sound settings change.
     pub audio_generation: AtomicU64,
     pub saving: AtomicBool,
+    /// The microphone's sound also goes here while voice clipping listens.
+    pub voice_tap: crate::voice::Tap,
 }
 
 impl Shared {
@@ -76,6 +83,7 @@ impl Shared {
             video_generation: AtomicU64::new(0),
             audio_generation: AtomicU64::new(0),
             saving: AtomicBool::new(false),
+            voice_tap: Default::default(),
         })
     }
 
@@ -109,8 +117,17 @@ impl Shared {
         if video {
             self.video_generation.fetch_add(1, Ordering::SeqCst);
         }
-        let audio = (old.desktop_audio, old.microphone, &old.microphone_device)
-            != (new.desktop_audio, new.microphone, &new.microphone_device);
+        let audio = (
+            old.desktop_audio,
+            old.microphone,
+            old.voice_clip,
+            &old.microphone_device,
+        ) != (
+            new.desktop_audio,
+            new.microphone,
+            new.voice_clip,
+            &new.microphone_device,
+        );
         if audio {
             self.audio_generation.fetch_add(1, Ordering::SeqCst);
         }

@@ -86,23 +86,50 @@ pub enum Msg {
     Favorite,
     AskDelete,
     Back,
+    GetLink,
+    ShareExport,
+    CancelLink,
+    CopyLink(String),
+    OpenLink(String),
+    ShowQr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportKind {
     Trim,
     Share,
+    Gif,
+    Vertical,
+    Slow(u32),
+}
+
+/// The window's view of the clip's share link, for the Share panel.
+pub struct ShareView {
+    pub progress: Option<f32>,
+    pub link: Option<rewindr::library::Link>,
 }
 
 /// What the editor asks of the window after a message.
 pub enum Effect {
     None,
     Note(String, bool),
-    Renamed { from: PathBuf, to: PathBuf },
+    Renamed {
+        from: PathBuf,
+        to: PathBuf,
+    },
     Exported,
     Favorite(PathBuf),
     AskDelete(PathBuf),
     Back,
+    /// Upload `file` and remember its link for `clip`.
+    Share {
+        file: PathBuf,
+        clip: PathBuf,
+    },
+    CancelUpload(PathBuf),
+    CopyText(String),
+    OpenUrl(String),
+    ShowLink(PathBuf),
 }
 
 pub struct Editor {
@@ -122,10 +149,19 @@ pub struct Editor {
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
     last_export: Option<(PathBuf, bool)>,
     discord_mb: u32,
+    share_expiry: String,
+    /// Upload the trimmed copy once it's made.
+    share_after_export: bool,
+    /// The file the Share panel is about: the clip, or a trimmed copy made for sharing.
+    shared_file: Option<PathBuf>,
 }
 
 impl Editor {
-    pub fn open(clip: PathBuf, discord_mb: u32) -> Result<(Editor, Task<Msg>), String> {
+    pub fn open(
+        clip: PathBuf,
+        settings: &rewindr::config::Settings,
+    ) -> Result<(Editor, Task<Msg>), String> {
+        let discord_mb = settings.discord_mb;
         let ff = ffmpeg::path()?;
         if !clip.is_file() {
             return Err(format!("{} doesn't exist any more.", clip.display()));
@@ -168,6 +204,9 @@ impl Editor {
                 encoders,
                 last_export: None,
                 discord_mb,
+                share_expiry: settings.share_expiry.clone(),
+                share_after_export: false,
+                shared_file: None,
             },
             strip,
         ))
@@ -348,6 +387,34 @@ impl Editor {
             Msg::Favorite => return Effect::Favorite(self.clip.clone()),
             Msg::AskDelete => return Effect::AskDelete(self.clip.clone()),
             Msg::Back => return Effect::Back,
+            Msg::GetLink => {
+                // A trimmed clip shares just the trimmed part: make that first.
+                if self.trimmed() {
+                    let e = self.start_export(ExportKind::Trim);
+                    if self.job.is_some() {
+                        self.share_after_export = true;
+                    }
+                    return e;
+                }
+                self.shared_file = None;
+                return Effect::Share {
+                    file: self.clip.clone(),
+                    clip: self.clip.clone(),
+                };
+            }
+            Msg::ShareExport => {
+                if let Some((p, _)) = &self.last_export {
+                    self.shared_file = Some(p.clone());
+                    return Effect::Share {
+                        file: p.clone(),
+                        clip: p.clone(),
+                    };
+                }
+            }
+            Msg::CancelLink => return Effect::CancelUpload(self.share_target()),
+            Msg::CopyLink(u) => return Effect::CopyText(u),
+            Msg::OpenLink(u) => return Effect::OpenUrl(u),
+            Msg::ShowQr => return Effect::ShowLink(self.share_target()),
         }
         Effect::None
     }
@@ -418,9 +485,13 @@ impl Editor {
         let kind = match k {
             ExportKind::Trim => Kind::Trim,
             ExportKind::Share => Kind::Share(self.discord_mb as u64 * 1_000_000),
+            ExportKind::Gif => Kind::Gif,
+            ExportKind::Vertical => Kind::Vertical,
+            ExportKind::Slow(f) => Kind::Slow(f),
         };
-        // An exact copy of the whole clip is just the clip.
-        let range = if kind == Kind::Trim || self.trimmed() {
+        self.share_after_export = false;
+        // The trimmed part; untrimmed, that's the whole clip.
+        let range = if self.trimmed() {
             self.trim
         } else {
             (0.0, self.player.duration())
@@ -429,6 +500,15 @@ impl Editor {
             && let Err(e) = media::share_plan(limit, range.1 - range.0, &self.player.info, 1.0)
         {
             return Effect::Note(e, false);
+        }
+        if kind == Kind::Gif && range.1 - range.0 > export::GIF_MAX_SECONDS + 0.05 {
+            return Effect::Note(
+                format!(
+                    "Trim it to {:.0} seconds or less to make a GIF.",
+                    export::GIF_MAX_SECONDS
+                ),
+                false,
+            );
         }
         self.last_export = None;
         self.job = Some(export::start(
@@ -456,10 +536,20 @@ impl Editor {
             Some(Ok(path)) => {
                 let copied = matches!(kind, Kind::Share(_))
                     && platform::copy_files(std::slice::from_ref(&path)).is_ok();
-                self.last_export = Some((path, copied));
+                self.last_export = Some((path.clone(), copied));
+                if std::mem::take(&mut self.share_after_export) {
+                    self.shared_file = Some(path.clone());
+                    return Effect::Share {
+                        file: path.clone(),
+                        clip: path,
+                    };
+                }
                 Effect::Exported
             }
-            Some(Err(e)) if e == "Cancelled" => Effect::Note("Export cancelled.".into(), true),
+            Some(Err(e)) if e == "Cancelled" => {
+                self.share_after_export = false;
+                Effect::Note("Export cancelled.".into(), true)
+            }
             Some(Err(e)) => Effect::Note(e, false),
             None => Effect::None,
         }
@@ -467,7 +557,19 @@ impl Editor {
 
     // --- View -------------------------------------------------------------------------------
 
-    pub fn view<'a>(&'a self, item: Option<&'a ClipItem>) -> Element<'a, Msg> {
+    /// The file the last export made.
+    pub fn last_export(&self) -> Option<&Path> {
+        self.last_export.as_ref().map(|(p, _)| p.as_path())
+    }
+
+    /// The file the Share panel shows: a trimmed copy made for sharing, or the clip.
+    pub fn share_target(&self) -> PathBuf {
+        self.shared_file
+            .clone()
+            .unwrap_or_else(|| self.clip.clone())
+    }
+
+    pub fn view<'a>(&'a self, item: Option<&'a ClipItem>, share: ShareView) -> Element<'a, Msg> {
         let favorite = item.is_some_and(|c| c.favorite);
         let star = if favorite {
             icon_filled(Icon::Star, 16.0, theme::GOLD)
@@ -618,7 +720,13 @@ impl Editor {
         .width(Fill);
 
         let side = scrollable(
-            column![self.trim_panel(), self.export_panel(), self.details_panel()].spacing(12),
+            column![
+                self.share_panel(share),
+                self.trim_panel(),
+                self.export_panel(),
+                self.details_panel()
+            ]
+            .spacing(12),
         )
         .width(310)
         .style(theme::scroll);
@@ -799,6 +907,117 @@ impl Editor {
         panel("Trim", body)
     }
 
+    fn share_panel<'a>(&'a self, share: ShareView) -> Element<'a, Msg> {
+        let preparing = self.share_after_export && self.job.is_some();
+        let body: Element<'a, Msg> = if let Some(p) = share.progress {
+            column![
+                row![
+                    text("Uploading").size(13).font(MEDIUM),
+                    space::horizontal(),
+                    text(format!("{:.0}%", p * 100.0)).size(13).color(TEXT_2)
+                ],
+                progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
+                button(text("Cancel").size(12).font(MEDIUM))
+                    .padding(Padding::from([6, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::CancelLink),
+            ]
+            .spacing(10)
+            .into()
+        } else if preparing {
+            text("Making the trimmed part to share...")
+                .size(13)
+                .color(TEXT_2)
+                .into()
+        } else if let Some(link) = share.link {
+            let url = link.url.clone();
+            column![
+                container(
+                    text(link.url.clone())
+                        .size(13)
+                        .font(MEDIUM)
+                        .wrapping(text::Wrapping::None)
+                )
+                .padding(Padding::from([8, 10]))
+                .width(Fill)
+                .clip(true)
+                .style(theme::well),
+                row![
+                    button(
+                        row![
+                            icon(Icon::Copy, 15.0, Color::WHITE),
+                            text("Copy link").size(13).font(SEMIBOLD)
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
+                    )
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::primary)
+                    .on_press(Msg::CopyLink(url.clone())),
+                    tip(
+                        icon_only(Icon::Qr, TEXT_2)
+                            .style(theme::secondary)
+                            .on_press(Msg::ShowQr),
+                        "QR code"
+                    ),
+                    tip(
+                        icon_only(Icon::Globe, TEXT_2)
+                            .style(theme::secondary)
+                            .on_press(Msg::OpenLink(url)),
+                        "Open in browser"
+                    ),
+                ]
+                .spacing(6),
+                text(match link.expires {
+                    None => "Anyone with the link can watch.".to_string(),
+                    Some(t) => format!(
+                        "Anyone with the link can watch, for {} more.",
+                        human_hours(t.saturating_sub(crate::share::now_secs()))
+                    ),
+                })
+                .size(12)
+                .color(MUTED),
+            ]
+            .spacing(10)
+            .into()
+        } else {
+            let lasts = match self.share_expiry.as_str() {
+                "forever" => "It stays up while people watch it.",
+                "72h" => "It works for 3 days.",
+                "24h" => "It works for a day.",
+                "12h" => "It works for 12 hours.",
+                _ => "It works for an hour.",
+            };
+            column![
+                button(
+                    row![
+                        icon(Icon::Share, 16.0, Color::WHITE),
+                        text("Get a share link").font(SEMIBOLD).size(14)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                )
+                .width(Fill)
+                .padding(Padding::from([10, 12]))
+                .style(theme::primary)
+                .on_press_maybe(self.job.is_none().then_some(Msg::GetLink)),
+                text(format!(
+                    "Uploads {} and copies a link anyone can watch in their browser. {lasts}",
+                    if self.trimmed() {
+                        "the trimmed part"
+                    } else {
+                        "the clip"
+                    }
+                ))
+                .size(12)
+                .color(MUTED),
+            ]
+            .spacing(8)
+            .into()
+        };
+        panel("Share", body)
+    }
+
     fn export_panel(&self) -> Element<'_, Msg> {
         let body: Element<'_, Msg> = if let Some(job) = &self.job {
             let (p, stage) = {
@@ -872,6 +1091,35 @@ impl Editor {
                 })
                 .size(12)
                 .color(MUTED),
+                Space::new().height(4),
+                text("More formats").size(12).font(SEMIBOLD).color(TEXT_2),
+                row![
+                    format_button(
+                        Icon::Image,
+                        "GIF",
+                        "A looping GIF, 480 px wide (15 s at most)",
+                        Msg::Export(ExportKind::Gif)
+                    ),
+                    format_button(
+                        Icon::Phone,
+                        "9:16",
+                        "Vertical for TikTok, Shorts and Reels",
+                        Msg::Export(ExportKind::Vertical)
+                    ),
+                    format_button(
+                        Icon::Snail,
+                        "0.5x",
+                        "Slow motion, half speed",
+                        Msg::Export(ExportKind::Slow(2))
+                    ),
+                    format_button(
+                        Icon::Snail,
+                        "0.25x",
+                        "Slow motion, quarter speed",
+                        Msg::Export(ExportKind::Slow(4))
+                    ),
+                ]
+                .spacing(6),
             ]
             .spacing(8);
             if let Some((path, copied)) = &self.last_export {
@@ -895,6 +1143,12 @@ impl Editor {
                             ]
                             .spacing(2)
                             .width(Fill),
+                            tip(
+                                icon_only(Icon::Share, TEXT_2)
+                                    .style(theme::ghost)
+                                    .on_press(Msg::ShareExport),
+                                "Get a share link"
+                            ),
                             button(text("Show").size(12).font(MEDIUM))
                                 .padding(Padding::from([5, 9]))
                                 .style(theme::ghost)
@@ -971,7 +1225,32 @@ fn stem(p: &Path) -> String {
 }
 
 /// The keyframe pictures (one a second in Rewindr's clips) for the timeline.
-fn filmstrip(ff: &Path, clip: &Path, size: (u32, u32)) -> Vec<image::Handle> {
+/// "3 days", "5 hours".
+fn human_hours(secs: u64) -> String {
+    let h = secs.div_ceil(3600);
+    if h > 36 {
+        format!("{} days", h.div_ceil(24))
+    } else {
+        format!("{h} hour{}", if h == 1 { "" } else { "s" })
+    }
+}
+
+/// A small button for one export format, with an explanation on hover.
+fn format_button<'a>(i: Icon, label: &'a str, explain: &'a str, m: Msg) -> Element<'a, Msg> {
+    tip(
+        button(
+            row![icon(i, 14.0, TEXT_2), text(label).size(12).font(SEMIBOLD)]
+                .spacing(5)
+                .align_y(Alignment::Center),
+        )
+        .padding(Padding::from([6, 8]))
+        .style(theme::secondary)
+        .on_press(m),
+        explain,
+    )
+}
+
+pub(super) fn filmstrip(ff: &Path, clip: &Path, size: (u32, u32)) -> Vec<image::Handle> {
     let Ok(mut child) = ffmpeg::command(ff)
         .args(media::filmstrip_args(clip, size))
         .stdout(Stdio::piped())

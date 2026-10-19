@@ -2,7 +2,8 @@
 
 Instant replay for Windows, macOS and Linux. Rewindr keeps the last moments of your screen and
 sound in memory. Press **F8** and the last 30 seconds are saved as an MP4, like Medal or
-ShadowPlay. It's free and open source (MIT), with no account, no uploads and no ads.
+ShadowPlay. It's free and open source (MIT), with no account and no ads. Nothing is uploaded
+unless you ask for a share link.
 
 - **Always ready, light on games.** The replay lives in RAM and is captured and encoded on the
   GPU (NVIDIA NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox),
@@ -11,8 +12,12 @@ ShadowPlay. It's free and open source (MIT), with no account, no uploads and no 
   second and named after the game in front.
 - **Editor.** Play a clip with sound, scrub its filmstrip, drag the handles to trim, and save an
   exact trimmed copy.
+- **Share links.** One click uploads a clip and copies a link friends can watch in their browser
+  (Discord plays it inline), with a QR code for phones. Links last forever or 1 hour to 3 days.
 - **Share for Discord.** One click makes a copy under 10 MB (or 50/500 MB for Nitro) and puts it
   on the clipboard: paste it into Discord.
+- **Voice clipping.** Say "clip that" and it saves a clip. Speech is recognised offline (Vosk).
+- **Screenshots** with F9, and **more formats**: GIF, vertical 9:16, slow motion.
 - **Gallery.** Filter by game, search, star favourites, rename, and optionally keep the clips
   folder under a size limit (oldest go first, favourites stay).
 - **Sound.** Desktop audio and your microphone are mixed on the first track, and each is also
@@ -40,10 +45,13 @@ Run Rewindr. A tray icon appears and the window opens. Then:
 | Key or command | What it does |
 | --- | --- |
 | **F8** | Save the last 30 seconds (change the key and length in Settings) |
+| **F9** | Save a screenshot |
+| "clip that" | Save a clip by voice (turn it on in Settings > Voice clipping) |
 | Click a clip | Open it in the editor: play, trim, share |
 | Space, Left/Right, `,` `.`, I/O | In the editor: play, jump a second, step a frame, set start/end |
 | Tray > Pause recording | Stop keeping a replay until you resume |
 | `rewindr save` | Save a clip from a script or desktop shortcut (needed on Wayland) |
+| `rewindr screenshot` | Save a screenshot the same way |
 | `rewindr edit <clip>` | Open a clip in the editor |
 | `rewindr pause`, `rewindr quit` | Pause or resume; stop the background process |
 | `rewindr devices` | List screens, microphones and the encoders that work |
@@ -95,3 +103,5 @@ first frame and the filmstrip, play, and save a trimmed copy (CI runs it on all 
 Rewindr is MIT licensed. The bundled ffmpeg is FFmpeg with x264, under the GNU GPL (see
 `FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` in each package). The window uses the Inter
 typeface (SIL Open Font License) and Lucide icons (ISC); see `THIRD-PARTY-NOTICES.txt`.
+Voice clipping downloads Vosk (Apache 2.0) and its small English model (Apache 2.0) from their
+authors when you turn it on.
