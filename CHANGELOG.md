@@ -7,6 +7,9 @@
   on a phone. Links last forever (removed after two years without views) or 1 hour to 3 days, as
   you choose. Shared clips get a badge and their own "Shared" list. The "Clip saved" card has a
   Get link button too.
+  Big or high-frame-rate clips are shared as a 1080p60 copy made for browsers (so they fit the
+  host and play smoothly); if the host for lasting links is down, you get a 3-day link instead.
+  `rewindr share <clip>` does the same from a terminal.
 - **Voice clipping.** Say "clip that" (or a phrase of your own) and Rewindr saves a clip,
   hands-free. The speech is recognised offline on your computer with Vosk; nothing is sent
   anywhere. It's off until you turn it on, and downloads its speech files (about 55 MB) once.

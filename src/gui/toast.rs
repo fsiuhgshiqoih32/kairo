@@ -217,7 +217,7 @@ impl Toast {
                 {
                     let (settings, _) =
                         rewindr::config::load_or_create(&rewindr::config::default_path());
-                    self.upload = Some(share::start(f, f, &settings.share_expiry));
+                    self.upload = Some(share::start(f, f, &settings.share_expiry, None));
                     self.status = None;
                 }
             }
@@ -319,9 +319,7 @@ impl Toast {
                 .interaction(iced::mouse::Interaction::Pointer);
                 let bottom: Element<'_, Msg> = if let Some(up) = &self.upload {
                     column![
-                        text(format!("Uploading {:.0}%", up.progress() * 100.0))
-                            .size(12)
-                            .color(TEXT_2),
+                        text(up.label()).size(12).color(TEXT_2),
                         progress_bar(0.0..=1.0, up.progress())
                             .girth(5)
                             .style(theme::progress),

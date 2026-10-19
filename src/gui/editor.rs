@@ -63,6 +63,8 @@ impl std::fmt::Display for Track {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Frame,
+    /// A frame is on the GPU and can be shown without a blank frame first.
+    Uploaded(image::Handle, Option<image::Allocation>),
     Strip(Vec<image::Handle>),
     TogglePlay,
     Seek(f64),
@@ -105,7 +107,7 @@ pub enum ExportKind {
 
 /// The window's view of the clip's share link, for the Share panel.
 pub struct ShareView {
-    pub progress: Option<f32>,
+    pub progress: Option<(String, f32)>,
     pub link: Option<rewindr::library::Link>,
 }
 
@@ -121,10 +123,11 @@ pub enum Effect {
     Favorite(PathBuf),
     AskDelete(PathBuf),
     Back,
-    /// Upload `file` and remember its link for `clip`.
+    /// Upload `file` (or its `range`) and remember its link for `clip`.
     Share {
         file: PathBuf,
         clip: PathBuf,
+        range: Option<(f64, f64)>,
     },
     CancelUpload(PathBuf),
     CopyText(String),
@@ -137,7 +140,14 @@ pub struct Editor {
     pub name: String,
     ff: PathBuf,
     player: Player,
+    /// The frame on screen, and what keeps it on the GPU.
     frame: Option<image::Handle>,
+    frame_alloc: Option<image::Allocation>,
+    /// The newest decoded frame, waiting for its upload; and whether one is uploading.
+    incoming: Option<image::Handle>,
+    uploading: bool,
+    /// Frames put on screen so far (for the self-test).
+    pub frames_shown: u64,
     strip: Vec<image::Handle>,
     strip_loading: bool,
     pub trim: (f64, f64),
@@ -193,6 +203,10 @@ impl Editor {
                 clip,
                 name,
                 frame: None,
+                frame_alloc: None,
+                incoming: None,
+                uploading: false,
+                frames_shown: 0,
                 strip: Vec::new(),
                 strip_loading: true,
                 trim: (0.0, duration),
@@ -232,6 +246,22 @@ impl Editor {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         self.update(Msg::Frame);
+        // No renderer here to upload it: show it as it is.
+        if let Some(h) = self.incoming.take() {
+            self.frame = Some(h);
+        }
+    }
+
+    /// The next frame to upload to the GPU, if one is waiting and none is on its way.
+    /// iced uploads big pictures (a 720p frame is 3.7 MB) a frame late, which made playback
+    /// flicker; the window shows a frame only once it's uploaded (`Msg::Uploaded`).
+    pub fn next_upload(&mut self) -> Option<image::Handle> {
+        if self.uploading {
+            return None;
+        }
+        let h = self.incoming.take()?;
+        self.uploading = true;
+        Some(h)
     }
 
     /// The first frame and the filmstrip are in.
@@ -316,7 +346,8 @@ impl Editor {
                 self.player.tick(end);
                 if let Some(f) = self.player.frame.take() {
                     let (w, h) = self.player.size;
-                    self.frame = Some(image::Handle::from_rgba(w, h, f.rgba));
+                    // A newer frame replaces one still waiting: never fall behind.
+                    self.incoming = Some(image::Handle::from_rgba(w, h, f.rgba));
                 }
                 if was_playing && !self.player.is_playing() && self.looping && self.grab.is_none() {
                     self.player.position = self.trim.0;
@@ -326,6 +357,12 @@ impl Editor {
                     return Effect::Note(e, false);
                 }
                 return self.poll_job();
+            }
+            Msg::Uploaded(h, alloc) => {
+                self.uploading = false;
+                self.frame = Some(h);
+                self.frame_alloc = alloc;
+                self.frames_shown += 1;
             }
             Msg::Strip(s) => {
                 self.strip = s;
@@ -388,18 +425,12 @@ impl Editor {
             Msg::AskDelete => return Effect::AskDelete(self.clip.clone()),
             Msg::Back => return Effect::Back,
             Msg::GetLink => {
-                // A trimmed clip shares just the trimmed part: make that first.
-                if self.trimmed() {
-                    let e = self.start_export(ExportKind::Trim);
-                    if self.job.is_some() {
-                        self.share_after_export = true;
-                    }
-                    return e;
-                }
+                // A trimmed clip shares just the trimmed part (the link copy is cut from it).
                 self.shared_file = None;
                 return Effect::Share {
                     file: self.clip.clone(),
                     clip: self.clip.clone(),
+                    range: self.trimmed().then_some(self.trim),
                 };
             }
             Msg::ShareExport => {
@@ -408,6 +439,7 @@ impl Editor {
                     return Effect::Share {
                         file: p.clone(),
                         clip: p.clone(),
+                        range: None,
                     };
                 }
             }
@@ -542,6 +574,7 @@ impl Editor {
                     return Effect::Share {
                         file: path.clone(),
                         clip: path,
+                        range: None,
                     };
                 }
                 Effect::Exported
@@ -909,12 +942,18 @@ impl Editor {
 
     fn share_panel<'a>(&'a self, share: ShareView) -> Element<'a, Msg> {
         let preparing = self.share_after_export && self.job.is_some();
-        let body: Element<'a, Msg> = if let Some(p) = share.progress {
+        let body: Element<'a, Msg> = if let Some((label, p)) = share.progress {
             column![
                 row![
-                    text("Uploading").size(13).font(MEDIUM),
+                    text(label).size(13).font(MEDIUM),
                     space::horizontal(),
-                    text(format!("{:.0}%", p * 100.0)).size(13).color(TEXT_2)
+                    text(if p < 0.34 {
+                        "Making a copy for the link"
+                    } else {
+                        "Sending"
+                    })
+                    .size(12)
+                    .color(MUTED)
                 ],
                 progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
                 button(text("Cancel").size(12).font(MEDIUM))

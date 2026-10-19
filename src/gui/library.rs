@@ -311,7 +311,7 @@ impl App {
                 .padding(8),
         ];
         if let Some(p) = self.upload_progress(&c.path) {
-            layers = layers.push(uploading(p));
+            layers = layers.push(uploading(p.0, p.1));
         }
         let star = if c.favorite {
             icon_filled(Icon::Star, 15.0, theme::GOLD)
@@ -476,7 +476,7 @@ impl App {
                     );
                 }
                 if let Some(p) = self.upload_progress(&s.path) {
-                    layers = layers.push(uploading(p));
+                    layers = layers.push(uploading(p.0, p.1));
                 }
                 let content = column![
                     container(layers).height(Fill).padding(Padding {
@@ -616,15 +616,13 @@ fn nothing<'a>(i: Icon, what: String) -> Element<'a, Message> {
 }
 
 /// "Uploading 42%" over a card's picture.
-fn uploading<'a>(p: f32) -> Element<'a, Message> {
+fn uploading<'a>(label: String, p: f32) -> Element<'a, Message> {
     container(
         container(
             column![
                 row![
                     icon(Icon::Share, 13.0, TEXT),
-                    text(format!("Uploading {:.0}%", p * 100.0))
-                        .size(12)
-                        .font(SEMIBOLD)
+                    text(label).size(12).font(SEMIBOLD)
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),

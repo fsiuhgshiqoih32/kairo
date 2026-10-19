@@ -61,6 +61,13 @@ enum Cmd {
     Save,
     /// Save a screenshot now (asks the background process).
     Screenshot,
+    /// Upload a clip and print a link anyone can watch it with.
+    Share {
+        clip: PathBuf,
+        /// How long the link lasts: forever, 72h, 24h or 1h (default: as in Settings).
+        #[arg(long)]
+        lasts: Option<String>,
+    },
     /// Pause or resume recording.
     Pause,
     /// Stop the background process.
@@ -127,6 +134,7 @@ fn main() {
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Screenshot) => request(daemon::Request::Screenshot),
+        Some(Cmd::Share { clip, lasts }) => share_clip(&clip, lasts),
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
@@ -154,6 +162,26 @@ fn main() {
             platform::show_error(&e);
         }
         std::process::exit(1);
+    }
+}
+
+fn share_clip(clip: &std::path::Path, lasts: Option<String>) -> Result<(), String> {
+    let (settings, _) = rewindr::config::load_or_create(&rewindr::config::default_path());
+    let lasts = lasts.unwrap_or(settings.share_expiry);
+    let up = share::start(clip, clip, &lasts, None);
+    let mut shown = String::new();
+    loop {
+        if let Some(r) = up.take() {
+            let link = r?;
+            println!("{}", link.url);
+            return Ok(());
+        }
+        let label = up.label();
+        if label != shown {
+            eprintln!("{label}");
+            shown = label;
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

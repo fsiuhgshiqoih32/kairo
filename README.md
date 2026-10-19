@@ -52,6 +52,7 @@ Run Rewindr. A tray icon appears and the window opens. Then:
 | Tray > Pause recording | Stop keeping a replay until you resume |
 | `rewindr save` | Save a clip from a script or desktop shortcut (needed on Wayland) |
 | `rewindr screenshot` | Save a screenshot the same way |
+| `rewindr share <clip>` | Upload a clip and print its share link |
 | `rewindr edit <clip>` | Open a clip in the editor |
 | `rewindr pause`, `rewindr quit` | Pause or resume; stop the background process |
 | `rewindr devices` | List screens, microphones and the encoders that work |

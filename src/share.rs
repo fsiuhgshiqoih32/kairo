@@ -50,18 +50,48 @@ impl Expiry {
     }
 }
 
-/// A running upload.
+/// A running share: maybe making a copy for the link, then uploading.
 pub struct Upload {
     pub clip: PathBuf,
-    pub sent: Arc<AtomicU64>,
-    pub total: u64,
+    /// Thousandths done of the copy being made; `DONE` once uploading.
+    preparing: Arc<AtomicU64>,
+    sent: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
     pub cancel: Arc<AtomicBool>,
-    pub result: Arc<Mutex<Option<Result<Link, String>>>>,
+    result: Arc<Mutex<Option<Result<Link, String>>>>,
 }
 
+const DONE: u64 = u64::MAX;
+
 impl Upload {
+    /// How far along the whole thing is, 0 to 1 (making the copy is the first third).
     pub fn progress(&self) -> f32 {
-        (self.sent.load(Ordering::Relaxed) as f64 / self.total.max(1) as f64).min(1.0) as f32
+        let (stage, f) = self.stage();
+        if stage == "Preparing" {
+            f / 3.0
+        } else {
+            1.0 / 3.0 + f * 2.0 / 3.0
+        }
+    }
+
+    /// "Preparing" or "Uploading", and how far along that is.
+    pub fn stage(&self) -> (&'static str, f32) {
+        match self.preparing.load(Ordering::Relaxed) {
+            DONE => {
+                let sent = self.sent.load(Ordering::Relaxed) as f64;
+                (
+                    "Uploading",
+                    (sent / self.total.load(Ordering::Relaxed).max(1) as f64).min(1.0) as f32,
+                )
+            }
+            p => ("Preparing", (p as f32 / 1000.0).min(1.0)),
+        }
+    }
+
+    /// "Uploading 42%".
+    pub fn label(&self) -> String {
+        let (stage, f) = self.stage();
+        format!("{stage} {:.0}%", f * 100.0)
     }
 
     /// The finished result, once.
@@ -70,22 +100,47 @@ impl Upload {
     }
 }
 
-/// Starts uploading `file` on a thread. When it works, the link is remembered for `clip` (the
-/// clip the file was made from, often the file itself).
-pub fn start(file: &Path, clip: &Path, setting: &str) -> Upload {
-    let total = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+/// Copies bigger than this are made for links (or anything over 1080p or 60 fps).
+const DIRECT_MAX: u64 = 60_000_000;
+/// The size a link copy aims under: catbox takes 200 MB.
+const COPY_TARGET: u64 = 190_000_000;
+
+/// Starts sharing `file` (or its `range`, in seconds) on a thread. When it works, the link is
+/// remembered for `clip` (the clip the file was made from, usually the file itself).
+pub fn start(file: &Path, clip: &Path, setting: &str, range: Option<(f64, f64)>) -> Upload {
     let up = Upload {
         clip: clip.to_path_buf(),
+        preparing: Arc::new(AtomicU64::new(0)),
         sent: Arc::default(),
-        total,
+        total: Arc::new(AtomicU64::new(1)),
         cancel: Arc::default(),
         result: Arc::default(),
     };
     let (file, clip) = (file.to_path_buf(), clip.to_path_buf());
-    let (sent, cancel, result) = (up.sent.clone(), up.cancel.clone(), up.result.clone());
+    let (preparing, sent, total, cancel, result) = (
+        up.preparing.clone(),
+        up.sent.clone(),
+        up.total.clone(),
+        up.cancel.clone(),
+        up.result.clone(),
+    );
     let expiry = Expiry::from_setting(setting);
     std::thread::spawn(move || {
-        let r = upload(&file, expiry, &sent, &cancel).inspect(|link| {
+        let copy = prepare(&file, range, &preparing, &cancel);
+        preparing.store(DONE, Ordering::Relaxed);
+        let r = copy.and_then(|c| {
+            let send = c.as_deref().unwrap_or(&file);
+            total.store(
+                std::fs::metadata(send).map(|m| m.len()).unwrap_or(1).max(1),
+                Ordering::Relaxed,
+            );
+            let r = upload(send, expiry, &sent, &cancel);
+            if let Some(c) = &c {
+                let _ = std::fs::remove_file(c);
+            }
+            r
+        });
+        let r = r.inspect(|link| {
             let mut lib = Library::load();
             lib.set_link(&clip, Some(link.clone()));
             if let Err(e) = lib.save() {
@@ -95,11 +150,49 @@ pub fn start(file: &Path, clip: &Path, setting: &str) -> Upload {
         if let Err(e) = &r
             && e != "Cancelled"
         {
-            warning!("upload failed: {e}");
+            warning!("sharing {} failed: {e}", file.display());
         }
         *result.lock().unwrap() = Some(r);
     });
     up
+}
+
+/// Makes the copy a link gets when the file is big, high-resolution or high frame rate, or when
+/// only part of it is shared. `None` when the file can go as it is.
+fn prepare(
+    file: &Path,
+    range: Option<(f64, f64)>,
+    preparing: &AtomicU64,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Option<PathBuf>, String> {
+    let video = file
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+    if !video {
+        return Ok(None);
+    }
+    let ff = crate::ffmpeg::path()?;
+    let info = crate::ffmpeg::probe_clip(&ff, file)?;
+    let size = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
+    let fine = size <= DIRECT_MAX && info.height <= 1080 && info.fps <= 61.0;
+    if range.is_none() && fine {
+        return Ok(None);
+    }
+    let (start, end) = range.unwrap_or((0.0, info.duration));
+    let plan = rewindr::media::web_plan(COPY_TARGET, end - start, &info)?;
+    let dir = rewindr::config::config_dir().join("sharing");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(format!("{}-{}.mp4", std::process::id(), now_secs()));
+    let encoder = crate::export::best_encoder(&ff, &Mutex::new(None));
+    let args = rewindr::media::share_args(file, start, end, &plan, encoder, &out);
+    info!(
+        "making a {}p copy to share ({plan:?})",
+        plan.height.unwrap_or(info.height)
+    );
+    crate::export::encode_with(&ff, &args, end - start, &out, cancel, &|f| {
+        preparing.store((f * 1000.0) as u64, Ordering::Relaxed)
+    })?;
+    Ok(Some(out))
 }
 
 pub fn now_secs() -> u64 {
@@ -108,7 +201,19 @@ pub fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Uploads `file` and returns its link.
+/// Why an upload didn't work.
+#[derive(Debug, PartialEq)]
+enum Failure {
+    /// The site is down or broke (a 5xx, an error page, no connection): another may work.
+    Unavailable(String),
+    /// The site said no to this file.
+    Refused(String),
+    Cancelled,
+}
+
+/// Uploads `file` and returns its link. A link meant to last goes to catbox; if catbox is
+/// down, a 3-day link from litterbox is better than none. An expiring link never becomes a
+/// lasting one.
 pub fn upload(
     file: &Path,
     expiry: Expiry,
@@ -121,25 +226,93 @@ pub fn upload(
     let gif = file
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
-    let expiry = expiry.for_file(size, gif)?;
-    let (url, fields): (&str, Vec<(&str, String)>) = match expiry {
-        Expiry::Forever => (CATBOX, vec![("reqtype", "fileupload".into())]),
-        Expiry::Hours(h) => (
-            LITTERBOX,
-            vec![("reqtype", "fileupload".into()), ("time", format!("{h}h"))],
-        ),
+    let first = expiry.for_file(size, gif)?;
+    let mut tries = vec![(host(first), first)];
+    if first == Expiry::Forever {
+        tries.push((LITTERBOX, Expiry::Hours(72)));
+    }
+    try_hosts(&tries, file, sent, cancel)
+}
+
+fn host(e: Expiry) -> &'static str {
+    match e {
+        Expiry::Forever => CATBOX,
+        Expiry::Hours(_) => LITTERBOX,
+    }
+}
+
+/// Tries each site in turn until one takes the file.
+fn try_hosts(
+    tries: &[(&str, Expiry)],
+    file: &Path,
+    sent: &Arc<AtomicU64>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Link, String> {
+    let mut last = String::new();
+    for &(url, e) in tries {
+        sent.store(0, Ordering::Relaxed);
+        let fields: Vec<(&str, String)> = match e {
+            Expiry::Forever => vec![("reqtype", "fileupload".into())],
+            Expiry::Hours(h) => vec![("reqtype", "fileupload".into()), ("time", format!("{h}h"))],
+        };
+        match post_file(url, &fields, file, sent, cancel) {
+            Ok(link_url) => {
+                let created = now_secs();
+                info!("shared {} as {link_url}", file.display());
+                return Ok(Link {
+                    url: link_url,
+                    created,
+                    expires: match e {
+                        Expiry::Forever => None,
+                        Expiry::Hours(h) => Some(created + h as u64 * 3600),
+                    },
+                });
+            }
+            Err(Failure::Cancelled) => return Err("Cancelled".into()),
+            Err(Failure::Refused(why)) => return Err(why),
+            Err(Failure::Unavailable(why)) => {
+                warning!("{url}: {why}");
+                last = why;
+            }
+        }
+    }
+    Err(format!("{last} Try again in a few minutes."))
+}
+
+/// What a site's answer means, from its status and text.
+fn judge(site: &str, status: u16, text: &str) -> Result<String, Failure> {
+    let text = text.trim();
+    if (200..300).contains(&status)
+        && text.starts_with("https://")
+        && !text.contains(char::is_whitespace)
+    {
+        return Ok(text.to_string());
+    }
+    // An error page: say what it was called, not its HTML.
+    let html = text.starts_with('<') || text.to_ascii_lowercase().contains("<html");
+    let what = if html {
+        let lower = text.to_ascii_lowercase();
+        lower
+            .find("<title>")
+            .and_then(|i| {
+                let rest = &text[i + 7..];
+                rest.find('<')
+                    .map(|j| rest[..j].trim().replace(" | ", " ").to_string())
+            })
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| format!("error {status}"))
+    } else if text.is_empty() {
+        format!("error {status}")
+    } else {
+        text.chars().take(160).collect()
     };
-    let link_url = post_file(url, &fields, file, sent, cancel)?;
-    let created = now_secs();
-    info!("shared {} as {link_url}", file.display());
-    Ok(Link {
-        url: link_url,
-        created,
-        expires: match expiry {
-            Expiry::Forever => None,
-            Expiry::Hours(h) => Some(created + h as u64 * 3600),
-        },
-    })
+    if status >= 500 || html || status == 0 {
+        Err(Failure::Unavailable(format!(
+            "{site} isn't working right now ({what})."
+        )))
+    } else {
+        Err(Failure::Refused(format!("{site} wouldn't take it: {what}")))
+    }
 }
 
 fn content_type(file: &Path) -> &'static str {
@@ -207,7 +380,8 @@ fn post_file(
     file: &Path,
     sent: &Arc<AtomicU64>,
     cancel: &Arc<AtomicBool>,
-) -> Result<String, String> {
+) -> Result<String, Failure> {
+    let site = url.split('/').nth(2).unwrap_or(url).to_string();
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -220,8 +394,12 @@ fn post_file(
             .map_or(0, |d| d.as_nanos())
     );
     let (head, tail) = multipart(&boundary, fields, &name, content_type(file));
-    let f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let size = f.metadata().map_err(|e| e.to_string())?.len();
+    let f = std::fs::File::open(file)
+        .map_err(|e| Failure::Refused(format!("{}: {e}", file.display())))?;
+    let size = f
+        .metadata()
+        .map_err(|e| Failure::Refused(e.to_string()))?
+        .len();
     let length = head.len() as u64 + size + tail.len() as u64;
     let body = Counting {
         inner: Cursor::new(head).chain(f).chain(Cursor::new(tail)),
@@ -248,25 +426,13 @@ fn post_file(
         .header("Content-Length", length.to_string())
         .send(ureq::SendBody::from_owned_reader(body));
     if cancel.load(Ordering::Relaxed) {
-        return Err("Cancelled".into());
+        return Err(Failure::Cancelled);
     }
-    let mut response = response.map_err(|e| format!("Couldn't upload: {e}"))?;
-    let status = response.status();
-    let text = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
-    let text = text.trim();
-    if status.is_success() && text.starts_with("https://") && !text.contains(char::is_whitespace) {
-        Ok(text.to_string())
-    } else {
-        let why = if text.is_empty() {
-            status.to_string()
-        } else {
-            text.chars().take(200).collect()
-        };
-        Err(format!("The upload site said: {why}"))
-    }
+    let mut response =
+        response.map_err(|e| Failure::Unavailable(format!("Couldn't reach {site} ({e}).")))?;
+    let status = response.status().as_u16();
+    let text = response.body_mut().read_to_string().unwrap_or_default();
+    judge(&site, status, &text)
 }
 
 #[cfg(test)]
@@ -386,7 +552,47 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let (url, server) = serve_once("File type not allowed.");
         let e = post_file(&url, &[], &file, &Arc::default(), &Arc::default()).unwrap_err();
-        assert!(e.contains("File type not allowed"), "{e}");
+        assert!(
+            matches!(&e, Failure::Refused(m) if m.contains("File type not allowed")),
+            "{e:?}"
+        );
         let _ = server.join();
+    }
+
+    #[test]
+    fn error_pages_read_as_sentences() {
+        let page = "<!doctype html><html lang=\"en\"><meta charset=\"UTF-8\"><title>500 | Internal Server Error</title><style>x{}</style>";
+        assert_eq!(
+            judge("litterbox.catbox.moe", 500, page),
+            Err(Failure::Unavailable(
+                "litterbox.catbox.moe isn't working right now (500 Internal Server Error).".into()
+            ))
+        );
+        assert!(matches!(
+            judge("catbox.moe", 502, ""),
+            Err(Failure::Unavailable(_))
+        ));
+        assert!(matches!(
+            judge("catbox.moe", 200, "Too big"),
+            Err(Failure::Refused(_))
+        ));
+        assert_eq!(
+            judge("catbox.moe", 200, "https://files.catbox.moe/a.mp4\n"),
+            Ok("https://files.catbox.moe/a.mp4".into())
+        );
+    }
+
+    #[test]
+    fn a_lasting_link_falls_back_to_a_three_day_one() {
+        // Both sites "down": the message comes from the last one tried, and says to retry.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let tries = [
+            ("http://127.0.0.1:9/a", Expiry::Forever),
+            ("http://127.0.0.1:9/b", Expiry::Hours(72)),
+        ];
+        let e = try_hosts(&tries, &file, &Arc::default(), &Arc::default()).unwrap_err();
+        assert!(e.contains("Try again"), "{e}");
     }
 }

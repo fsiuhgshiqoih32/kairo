@@ -207,6 +207,20 @@ fn encode(
     cancel: &AtomicBool,
     span: (f32, f32),
 ) -> Result<(), String> {
+    encode_with(ff, a, length, part, cancel, &|f| {
+        status.lock().unwrap().progress = span.0 + (span.1 - span.0) * f;
+    })
+}
+
+/// Runs one ffmpeg encode, reporting how far along it is (0 to 1) from its `-progress` lines.
+pub fn encode_with(
+    ff: &Path,
+    a: &[String],
+    length: f64,
+    part: &Path,
+    cancel: &AtomicBool,
+    progress: &dyn Fn(f32),
+) -> Result<(), String> {
     let mut child = ffmpeg::command(ff)
         .args(a)
         .stdout(Stdio::piped())
@@ -229,8 +243,7 @@ fn encode(
         }
         let Ok(line) = line else { break };
         if let Some(t) = media::progress_secs(&line) {
-            let f = (t / length.max(0.01)).clamp(0.0, 1.0) as f32;
-            status.lock().unwrap().progress = span.0 + (span.1 - span.0) * f;
+            progress((t / length.max(0.01)).clamp(0.0, 1.0) as f32);
         }
     }
     let st = child.wait().map_err(|e| e.to_string())?;

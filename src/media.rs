@@ -450,6 +450,20 @@ pub fn share_plan(
     })
 }
 
+/// A copy for a share link: at most 1080p and 60 fps, at most 12 Mbit/s (plenty for a browser),
+/// small enough for `limit_bytes`.
+pub fn web_plan(limit_bytes: u64, duration: f64, src: &Info) -> Result<SharePlan, String> {
+    let mut p = share_plan(limit_bytes, duration, src, 1.0)?;
+    p.video_bps = p.video_bps.min(12_000_000);
+    if src.height > 1080 {
+        p.height = Some(p.height.map_or(1080, |h| h.min(1080)));
+    }
+    if src.fps > 61.0 {
+        p.fps = Some(p.fps.map_or(60, |f| f.min(60)));
+    }
+    Ok(p)
+}
+
 /// Encodes `start..end` of the clip by `plan`, sound track 1 only (what Discord plays).
 pub fn share_args(
     clip: &Path,

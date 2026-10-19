@@ -253,12 +253,12 @@ impl App {
         ])
     }
 
-    /// How far along an upload of `path` is, while it runs.
-    fn upload_progress(&self, path: &Path) -> Option<f32> {
+    /// How far along sharing `path` is, while it runs: "Uploading 42%" and 0 to 1.
+    fn upload_progress(&self, path: &Path) -> Option<(String, f32)> {
         self.uploads
             .iter()
             .find(|u| u.clip == path)
-            .map(|u| u.progress())
+            .map(|u| (u.label(), u.progress()))
     }
 
     /// The share link of a clip or screenshot, if it has one.
@@ -276,12 +276,16 @@ impl App {
     }
 
     /// Uploads `file` and remembers the link for `clip`.
-    fn start_upload(&mut self, file: PathBuf, clip: PathBuf) {
+    fn start_upload(&mut self, file: PathBuf, clip: PathBuf, range: Option<(f64, f64)>) {
         if self.upload_progress(&clip).is_some() {
             return;
         }
-        self.uploads
-            .push(share::start(&file, &clip, &self.settings.share_expiry));
+        self.uploads.push(share::start(
+            &file,
+            &clip,
+            &self.settings.share_expiry,
+            range,
+        ));
     }
 
     fn show_link(&mut self, link: &Link) -> Task<Message> {
@@ -415,8 +419,8 @@ impl App {
             editor::Effect::Favorite(p) => return self.update(Message::Favorite(p)),
             editor::Effect::AskDelete(p) => self.dialog = Some(Dialog::Delete(p)),
             editor::Effect::Back => return self.update(Message::Back),
-            editor::Effect::Share { file, clip } => {
-                self.start_upload(file, clip);
+            editor::Effect::Share { file, clip, range } => {
+                self.start_upload(file, clip, range);
                 return self.reload();
             }
             editor::Effect::CancelUpload(p) => return self.update(Message::CancelUpload(p)),
@@ -473,7 +477,7 @@ impl App {
                     self.strips.remove(&old);
                 }
             }
-            Message::Share(p) => self.start_upload(p.clone(), p),
+            Message::Share(p) => self.start_upload(p.clone(), p, None),
             Message::ShowLink(p) => {
                 if let Some(link) = self.link_of(&p).cloned() {
                     return self.show_link(&link);
@@ -632,7 +636,13 @@ impl App {
             Message::Editor(m) => {
                 if let Some(e) = &mut self.editor {
                     let effect = e.update(m);
-                    return self.editor_effect(effect);
+                    let upload = match e.next_upload() {
+                        Some(h) => image::allocate(h.clone()).map(move |r| {
+                            Message::Editor(editor::Msg::Uploaded(h.clone(), r.ok()))
+                        }),
+                        None => Task::none(),
+                    };
+                    return Task::batch([upload, self.editor_effect(effect)]);
                 }
             }
             Message::Settings(m) => {
@@ -780,6 +790,7 @@ impl App {
                 // Silent: the sound still runs (it's the playback clock), just at zero volume.
                 ed.update(editor::Msg::Volume(0.0));
                 ed.update(editor::Msg::TogglePlay);
+                ed.frames_shown = 0;
                 self.test = Some(SelfTest::Playing(Instant::now()));
             }
             SelfTest::Loading(t) if t.elapsed() > Duration::from_secs(40) => {
@@ -792,6 +803,13 @@ impl App {
                     "ui self-test: played to {pos:.2} s in {:.1} s",
                     t.elapsed().as_secs_f64()
                 );
+                let shown = ed.frames_shown;
+                println!("ui self-test: {shown} frames shown while playing");
+                if shown < 20 {
+                    return self.finish_test(Err(format!(
+                        "only {shown} frames reached the screen in 2 s"
+                    )));
+                }
                 if pos < 0.8 {
                     return self
                         .finish_test(Err(format!("playback didn't advance (at {pos:.2} s)")));
@@ -1534,7 +1552,7 @@ fn take_open_request() -> Option<String> {
     Some(text.trim().to_string())
 }
 
-/// `--ui-self-test`: checks what an export made (the test trims 0.5 to 2.5 s of a 640x360 clip).
+/// `--ui-self-test`: checks what an export made (the test trims 0.5 to 2.5 s of a 1280x720 clip).
 fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
     let what = format!("{kind:?} export {}", path.display());
     if kind == editor::ExportKind::Gif {
@@ -1550,7 +1568,7 @@ fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
     let info = crate::ffmpeg::probe_clip(&ff, path)?;
     let (want_size, want_secs) = match kind {
         editor::ExportKind::Vertical => (Some((1080, 1920)), 2.0),
-        editor::ExportKind::Slow(f) => (Some((640, 360)), 2.0 * f as f64),
+        editor::ExportKind::Slow(f) => (Some((1280, 720)), 2.0 * f as f64),
         _ => (None, 2.0),
     };
     println!(
@@ -1595,7 +1613,7 @@ pub fn self_test() -> Result<(), String> {
         "-f",
         "lavfi",
         "-i",
-        "testsrc2=size=640x360:rate=30",
+        "testsrc2=size=1280x720:rate=30",
         "-f",
         "lavfi",
         "-i",
