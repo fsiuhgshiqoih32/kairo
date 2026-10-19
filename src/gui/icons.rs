@@ -50,6 +50,10 @@ pub enum Icon {
     Record,
     Tag,
     Undo,
+    Trophy,
+    Flame,
+    Lock,
+    Clock,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -104,6 +108,10 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Record => file!("circle-dot"),
         Icon::Tag => file!("tag"),
         Icon::Undo => file!("undo-2"),
+        Icon::Trophy => file!("trophy"),
+        Icon::Flame => file!("flame"),
+        Icon::Lock => file!("lock"),
+        Icon::Clock => file!("clock"),
     }
 }
 

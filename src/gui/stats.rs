@@ -32,6 +32,14 @@ pub struct Stats {
     pub streak: usize,
     /// The day with the most clips.
     pub best_day: Option<(NaiveDate, usize)>,
+    /// The most days in a row with a clip, ever.
+    pub longest_streak: usize,
+    /// Recorded sessions (counted only here).
+    pub sessions: usize,
+    /// Trims and other exported edits.
+    pub edits: usize,
+    /// Clips with a tag or in a folder.
+    pub sorted: usize,
 }
 
 pub fn summarize(clips: &[ClipItem], now: SystemTime, days: usize) -> Stats {
@@ -43,7 +51,13 @@ pub fn summarize(clips: &[ClipItem], now: SystemTime, days: usize) -> Stats {
     };
     let mut games: HashMap<&str, (usize, f64)> = HashMap::new();
     let mut per_day: HashMap<NaiveDate, usize> = HashMap::new();
-    for c in clips.iter().filter(|c| c.kind != ClipKind::Session) {
+    for c in clips {
+        if c.kind == ClipKind::Session {
+            st.sessions += 1;
+            continue;
+        }
+        st.edits += usize::from(c.kind != ClipKind::Clip);
+        st.sorted += usize::from(!c.tags.is_empty() || c.folder.is_some());
         let secs = c.duration.unwrap_or(0.0).max(0.0);
         st.clips += 1;
         st.seconds += secs;
@@ -78,6 +92,16 @@ pub fn summarize(clips: &[ClipItem], now: SystemTime, days: usize) -> Stats {
             Some(d) => day = d,
             None => break,
         }
+    }
+    let mut dates: Vec<NaiveDate> = per_day.keys().copied().collect();
+    dates.sort_unstable();
+    let mut run = 0;
+    for (i, d) in dates.iter().enumerate() {
+        run = match i.checked_sub(1).map(|j| dates[j]) {
+            Some(prev) if prev.succ_opt() == Some(*d) => run + 1,
+            _ => 1,
+        };
+        st.longest_streak = st.longest_streak.max(run);
     }
     st.best_day = per_day
         .into_iter()
@@ -284,6 +308,10 @@ impl App {
             streak,
             container(games).padding(16).width(Fill).style(theme::well),
             container(days).padding(16).width(Fill).style(theme::well),
+            container(super::achievements::panel(&st, &self.earned))
+                .padding(16)
+                .width(Fill)
+                .style(theme::well),
         ]
         .spacing(16)
         .max_width(980);
@@ -338,7 +366,9 @@ mod tests {
         assert_eq!(st.games[1], ("SuperTuxKart".to_string(), 2, 35.0));
         assert_eq!(st.days, vec![0, 1, 0, 0, 1, 2, 1]);
         assert_eq!(st.streak, 3);
+        assert_eq!(st.longest_streak, 3);
         assert_eq!(st.best_day.map(|(_, n)| n), Some(2));
+        assert_eq!((st.sessions, st.edits, st.sorted), (1, 1, 0));
     }
 
     #[test]
@@ -350,6 +380,12 @@ mod tests {
             clip("A", 4, 10.0, ClipKind::Clip, now),
         ];
         assert_eq!(summarize(&clips, now, 14).streak, 2);
+        let mut older = clips.clone();
+        for d in 6..10 {
+            older.push(clip("A", d, 10.0, ClipKind::Clip, now));
+        }
+        let st = summarize(&older, now, 14);
+        assert_eq!((st.streak, st.longest_streak), (2, 4));
         assert_eq!(
             summarize(&[], now, 14),
             Stats {

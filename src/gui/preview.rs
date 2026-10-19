@@ -329,6 +329,9 @@ fn preview() {
 
     app.filter = Filter::Stats;
     shoot(app.view(), "iced-stats", size);
+    let st = super::stats::summarize(&app.clips, now, 1);
+    super::achievements::award(&mut app.earned, &st, now);
+    shoot(app.view(), "iced-achievements", (1280.0, 1900.0));
     app.filter = Filter::All;
 
     let notes = crate::updater::changelog_section(crate::updater::CHANGELOG, "0.3.0")

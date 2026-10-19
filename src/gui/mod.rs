@@ -1,6 +1,7 @@
 //! Kairo's window, built with iced: the clip library, the editor and the settings. The
 //! "clip saved" card is its own small window (`toast`).
 
+mod achievements;
 mod editor;
 pub mod icons;
 mod library;
@@ -133,6 +134,8 @@ pub struct App {
     scrub_moved: Option<Instant>,
     /// The first-start setup's step, while it's showing.
     welcome: Option<usize>,
+    /// Achievements earned, with when.
+    earned: achievements::Earned,
     /// Keyframe pictures for hover previews, most recent last.
     strips: HashMap<PathBuf, Vec<image::Handle>>,
     strip_order: Vec<PathBuf>,
@@ -310,6 +313,7 @@ impl App {
                 scrub: None,
                 scrub_moved: None,
                 welcome: None,
+                earned: achievements::load(),
                 strips: HashMap::new(),
                 strip_order: Vec::new(),
                 strip_loading: HashSet::new(),
@@ -674,6 +678,22 @@ impl App {
         self.reload()
     }
 
+    /// Awards the badges the library has reached and says which are new.
+    fn check_achievements(&mut self) {
+        let now = SystemTime::now();
+        let st = stats::summarize(&self.clips, now, 1);
+        let new = achievements::award(&mut self.earned, &st, now);
+        match new.as_slice() {
+            [] => return,
+            [one] => self.note(format!("Achievement earned: {one}"), true),
+            many => self.note(
+                format!("{} achievements earned. See them in Stats.", many.len()),
+                true,
+            ),
+        }
+        achievements::save(&self.earned);
+    }
+
     fn note(&mut self, text: impl Into<String>, ok: bool) {
         self.notice = Some(Notice {
             text: text.into(),
@@ -865,6 +885,7 @@ impl App {
                 self.clips = c;
                 self.index_clips();
                 self.loaded = true;
+                self.check_achievements();
                 return self.ensure_hero();
             }
             Message::Hero(p, h) => {
