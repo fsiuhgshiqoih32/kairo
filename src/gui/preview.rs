@@ -360,6 +360,23 @@ fn preview() {
     let clip = app.clips[0].path.clone();
     let _ = app.open_editor(clip);
     let ed = app.editor.as_mut().expect("editor opened");
+    // Undo: a slider's run of changes is one step; redo puts it back.
+    {
+        use super::editor::Msg;
+        assert!(!ed.can_undo());
+        ed.update(Msg::Fade(true));
+        ed.update(Msg::GameVolume(0.5));
+        ed.update(Msg::GameVolume(0.4));
+        assert_eq!(ed.effects.game_volume, 0.4);
+        ed.update(Msg::Undo);
+        assert_eq!((ed.effects.game_volume, ed.effects.fade), (1.0, true));
+        ed.update(Msg::Undo);
+        assert!(!ed.effects.fade && !ed.can_undo() && ed.can_redo());
+        ed.update(Msg::Redo);
+        assert!(ed.effects.fade);
+        ed.update(Msg::Fade(false));
+        assert!(!ed.can_redo(), "a new edit drops what was undone");
+    }
     ed.settle((2.5, 9.0), 5.5);
     ed.show_marks(vec![3.4, 7.1, 11.0]);
     shoot(app.view(), "iced-editor", size);

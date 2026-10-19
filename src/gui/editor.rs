@@ -160,6 +160,42 @@ pub enum Msg {
     StampStart,
     StampEnd,
     DeleteStamp(usize),
+    Undo,
+    Redo,
+}
+
+/// Everything an edit can change, kept whole for undo: the cut, the marks, the style, captions,
+/// text and what copies include.
+#[derive(Clone, PartialEq)]
+struct Doc {
+    trim: (f64, f64),
+    markers: Vec<f64>,
+    effects: media::Effects,
+    captions: Vec<kairo::captions::Caption>,
+    burn_captions: bool,
+    show_keys: bool,
+    stamps: Vec<Item>,
+}
+
+/// Steps of undo kept.
+const UNDO_STEPS: usize = 200;
+/// Edits of the same thing closer together than this undo as one (a drag, a slider).
+const MERGE_WITHIN: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// What a continuous edit is changing, so its many messages undo as one step.
+fn merge_key(msg: &Msg) -> Option<String> {
+    Some(match msg {
+        Msg::Grab(..) | Msg::Drag(_) => "trim".into(),
+        Msg::GameVolume(_) => "game".into(),
+        Msg::MicVolume(_) => "mic".into(),
+        Msg::ChatVolume(_) => "chat".into(),
+        Msg::MusicVolume(_) => "music".into(),
+        Msg::CaptionText(i, _) => format!("caption {i}"),
+        Msg::StampWords(_) => "words".into(),
+        Msg::StampSize(_) => "size".into(),
+        Msg::MoveStamp(i, ..) => format!("move {i}"),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +315,10 @@ pub struct Editor {
     stamp_text: String,
     /// Their pictures on the monitor, by what they look like.
     stamp_pictures: StampPictures,
+    /// Earlier and undone states, newest last, and the last edit's kind and time.
+    undo: Vec<Doc>,
+    redo: Vec<Doc>,
+    last_edit: Option<(String, std::time::Instant)>,
 }
 
 /// Text pictures for the monitor, by what they look like, with their sizes.
@@ -359,6 +399,9 @@ impl Editor {
                 stamp_picked: None,
                 stamp_text: String::new(),
                 stamp_pictures: Default::default(),
+                undo: Vec::new(),
+                redo: Vec::new(),
+                last_edit: None,
             },
             strip,
         ))
@@ -588,8 +631,27 @@ impl Editor {
     pub fn key(&mut self, key: &Key, modifiers: keyboard::Modifiers) -> bool {
         let jump = if modifiers.shift() { 5.0 } else { 1.0 };
         let pos = self.player.position;
+        if modifiers.command() {
+            match key.as_ref() {
+                Key::Character("z") | Key::Character("Z") if modifiers.shift() => {
+                    self.update(Msg::Redo);
+                }
+                Key::Character("z") | Key::Character("Z") => {
+                    self.update(Msg::Undo);
+                }
+                Key::Character("y") | Key::Character("Y") => {
+                    self.update(Msg::Redo);
+                }
+                _ => return false,
+            }
+            return true;
+        }
         match key.as_ref() {
-            Key::Named(Named::Space) => self.toggle_play(),
+            Key::Named(Named::Space) | Key::Character("k") | Key::Character("K") => {
+                self.toggle_play()
+            }
+            Key::Character("j") | Key::Character("J") => self.player.seek(pos - jump),
+            Key::Character("l") | Key::Character("L") => self.player.seek(pos + jump),
             Key::Named(Named::ArrowLeft) => self.player.seek(pos - jump),
             Key::Named(Named::ArrowRight) => self.player.seek(pos + jump),
             Key::Named(Named::Home) => self.player.seek(self.trim.0),
@@ -600,9 +662,21 @@ impl Editor {
                 let back = matches!(key.as_ref(), Key::Character(","));
                 self.player.seek(if back { pos - step } else { pos + step });
             }
-            Key::Character("i") | Key::Character("I") => self.set_in(pos),
-            Key::Character("o") | Key::Character("O") => self.set_out(pos),
-            Key::Character("m") | Key::Character("M") => self.toggle_mark(),
+            Key::Character("i")
+            | Key::Character("I")
+            | Key::Character("q")
+            | Key::Character("Q") => {
+                self.update(Msg::SetIn);
+            }
+            Key::Character("o")
+            | Key::Character("O")
+            | Key::Character("w")
+            | Key::Character("W") => {
+                self.update(Msg::SetOut);
+            }
+            Key::Character("m") | Key::Character("M") => {
+                self.update(Msg::Mark);
+            }
             Key::Character("n") | Key::Character("N") => self.jump_mark(!modifiers.shift()),
             _ => return false,
         }
@@ -652,8 +726,97 @@ impl Editor {
             .min_by(|a, b| (a - pos).abs().total_cmp(&(b - pos).abs()))
     }
 
+    /// The editable state as it is now.
+    fn doc(&self) -> Doc {
+        Doc {
+            trim: self.trim,
+            markers: self.markers.clone(),
+            effects: self.effects.clone(),
+            captions: self.captions.clone(),
+            burn_captions: self.burn_captions,
+            show_keys: self.show_keys,
+            stamps: self.stamps.clone(),
+        }
+    }
+
+    /// Puts back an earlier state, saving what's kept beside the clip.
+    fn restore(&mut self, d: Doc) {
+        if d.markers != self.markers {
+            self.set_marks(d.markers.clone());
+        }
+        let captions_changed = d.captions != self.captions;
+        let stamps_changed = d.stamps != self.stamps;
+        self.trim = d.trim;
+        self.effects = d.effects;
+        self.captions = d.captions;
+        self.burn_captions = d.burn_captions;
+        self.show_keys = d.show_keys;
+        self.stamps = d.stamps;
+        if captions_changed {
+            self.save_captions();
+        }
+        if stamps_changed {
+            self.save_stamps();
+        }
+        if self.stamp_picked.is_some_and(|i| i >= self.stamps.len()) {
+            self.stamp_picked = None;
+        }
+        self.last_edit = None;
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Handles a message, keeping what it changed for undo.
     pub fn update(&mut self, msg: Msg) -> Effect {
         match msg {
+            // Playback and loading change nothing undoable, and come often.
+            Msg::Frame | Msg::Strip(_) => return self.handle(msg),
+            Msg::Undo => {
+                if let Some(d) = self.undo.pop() {
+                    self.redo.push(self.doc());
+                    self.restore(d);
+                }
+                return Effect::None;
+            }
+            Msg::Redo => {
+                if let Some(d) = self.redo.pop() {
+                    self.undo.push(self.doc());
+                    self.restore(d);
+                }
+                return Effect::None;
+            }
+            _ => {}
+        }
+        let key = merge_key(&msg);
+        let before = self.doc();
+        let effect = self.handle(msg);
+        if self.doc() != before {
+            let now = std::time::Instant::now();
+            let merge = matches!(
+                (&key, &self.last_edit),
+                (Some(k), Some((last, at))) if k == last && now.duration_since(*at) < MERGE_WITHIN
+            );
+            if !merge {
+                self.undo.push(before);
+                if self.undo.len() > UNDO_STEPS {
+                    self.undo.remove(0);
+                }
+            }
+            self.redo.clear();
+            self.last_edit = key.map(|k| (k, now));
+        }
+        effect
+    }
+
+    fn handle(&mut self, msg: Msg) -> Effect {
+        match msg {
+            Msg::Undo | Msg::Redo => {}
             Msg::Frame => {
                 let end = self.trim.1;
                 let was_playing = self.player.is_playing();
@@ -1148,6 +1311,18 @@ impl Editor {
                 } else {
                     "Favourite: never cleaned up"
                 },
+            ),
+            tip(
+                icon_only(Icon::Undo, theme::ink_2())
+                    .style(theme::ghost)
+                    .on_press_maybe(self.can_undo().then_some(Msg::Undo)),
+                "Undo (Ctrl+Z)",
+            ),
+            tip(
+                icon_only(Icon::Redo, theme::ink_2())
+                    .style(theme::ghost)
+                    .on_press_maybe(self.can_redo().then_some(Msg::Redo)),
+                "Redo (Ctrl+Shift+Z)",
             ),
             icon_button(Icon::Copy, "Copy", theme::ink_2())
                 .style(theme::ghost)
