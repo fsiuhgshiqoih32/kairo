@@ -394,6 +394,15 @@ fn preview() {
     app.editor
         .as_mut()
         .expect("editor")
+        .show_cuts(vec![4.2, 5.6, 7.4], vec![(4.2, 5.6)]);
+    shoot(app.view(), "iced-editor-cuts", (1280.0, 1100.0));
+    app.editor
+        .as_mut()
+        .expect("editor")
+        .show_cuts(Vec::new(), Vec::new());
+    app.editor
+        .as_mut()
+        .expect("editor")
         .show_stamps(Vec::new(), None);
     app.settings.discord_channel = "Kairo".into();
     shoot(app.view(), "iced-editor-channel", (1280.0, 1400.0));

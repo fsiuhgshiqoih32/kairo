@@ -73,6 +73,7 @@ pub fn start(
     eff: Effects,
     caps: Vec<kairo::captions::Caption>,
     keys: Vec<kairo::keys::KeyEvent>,
+    cuts: Vec<(f64, f64)>,
 ) -> Job {
     let status = Arc::new(Mutex::new(Status {
         stage: match kind {
@@ -95,6 +96,7 @@ pub fn start(
                 kind,
                 ff: &ff,
                 clip: &clip,
+                named: &clip,
                 info: &info,
                 range,
                 caps: &caps,
@@ -104,8 +106,13 @@ pub fn start(
                     std::process::id(),
                     crate::recorder::now_us()
                 )),
+                progress: (0.0, 1.0),
             };
-            let result = run(&job, &encoders, &eff, &status, &cancel);
+            let result = if kairo::cuts::cuts_into(range, &cuts) {
+                run_cut(&job, &cuts, &encoders, &eff, &status, &cancel)
+            } else {
+                run(&job, &encoders, &eff, &status, &cancel)
+            };
             let _ = std::fs::remove_dir_all(&job.burns_dir);
             if let Err(e) = &result {
                 warning!("export failed: {e}");
@@ -124,7 +131,10 @@ pub fn start(
 struct Export<'a> {
     kind: Kind,
     ff: &'a Path,
+    /// What's read: the clip, or its kept parts joined.
     clip: &'a Path,
+    /// The clip copies are named after.
+    named: &'a Path,
     info: &'a Info,
     range: (f64, f64),
     caps: &'a [kairo::captions::Caption],
@@ -132,6 +142,8 @@ struct Export<'a> {
     keys: &'a [kairo::keys::KeyEvent],
     /// Where caption pictures and overlay frames go while it runs.
     burns_dir: PathBuf,
+    /// The share of the progress bar this pass fills.
+    progress: (f32, f32),
 }
 
 impl Export<'_> {
@@ -190,14 +202,14 @@ fn run(
         Kind::Trim => {
             let eff = job.with_captions(eff, size)?;
             let what = if eff.is_plain() { "trim" } else { "edit" };
-            let out = library::sibling(clip, what);
+            let out = library::sibling(job.named, what);
             let part = out.with_extension("mp4.part");
             let a = media::trim_args(clip, start, end, info, &eff, encoder, &part);
-            encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+            encode(ff, &a, length, &part, status, cancel, job.progress)?;
             finish(ff, &part, &out)
         }
         Kind::Share(limit) => {
-            let out = library::sibling(clip, "Discord");
+            let out = library::sibling(job.named, "Discord");
             let part = out.with_extension("mp4.part");
             // Encoders overshoot now and then: if the copy comes out too big, go again smaller.
             for (attempt, scale) in [1.0, 0.85, 0.7].into_iter().enumerate() {
@@ -214,7 +226,7 @@ fn run(
                 };
                 let eff = job.with_captions(eff, shown)?;
                 let a = media::share_args(clip, start, end, info, &eff, &plan, encoder, &part);
-                encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+                encode(ff, &a, length, &part, status, cancel, job.progress)?;
                 let size = std::fs::metadata(&part)
                     .map(|m| m.len())
                     .unwrap_or(u64::MAX);
@@ -235,10 +247,10 @@ fn run(
                     "GIFs get huge: trim it to {GIF_MAX_SECONDS:.0} seconds or less first."
                 ));
             }
-            let out = library::sibling_with(clip, "GIF", "gif");
+            let out = library::sibling_with(job.named, "GIF", "gif");
             let part = out.with_extension("gif.part");
             let a = media::gif_args(clip, start, end, info, eff, 480, 15, &part);
-            encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+            encode(ff, &a, length, &part, status, cancel, job.progress)?;
             std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
             info!("exported {}", out.display());
             Ok(out)
@@ -250,14 +262,14 @@ fn run(
                 _ => ("4x5", (1080, 1350)),
             };
             let eff = job.with_captions(eff, frame)?;
-            let out = library::sibling(clip, what);
+            let out = library::sibling(job.named, what);
             let part = out.with_extension("mp4.part");
             let a = media::framed_args(clip, start, end, info, &eff, frame, encoder, &part);
-            encode(ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+            encode(ff, &a, length, &part, status, cancel, job.progress)?;
             finish(ff, &part, &out)
         }
         Kind::Slow(factor) => {
-            let out = library::sibling(clip, &format!("slow {factor}x"));
+            let out = library::sibling(job.named, &format!("slow {factor}x"));
             let part = out.with_extension("mp4.part");
             let slow = job.with_captions(&eff.at_speed(eff.speed / factor.max(1) as f64), size)?;
             let a = media::trim_args(clip, start, end, info, &slow, encoder, &part);
@@ -268,11 +280,92 @@ fn run(
                 &part,
                 status,
                 cancel,
-                (0.0, 1.0),
+                job.progress,
             )?;
             finish(ff, &part, &out)
         }
     }
+}
+
+/// A copy without the parts cut out: the kept parts are joined first (or, for a plain trimmed
+/// copy, that join is the copy), then the export runs on the joined file, with captions, text and
+/// keys moved to their new times.
+fn run_cut(
+    job: &Export,
+    cuts: &[(f64, f64)],
+    encoders: &Mutex<Option<Vec<Encoder>>>,
+    eff: &Effects,
+    status: &Mutex<Status>,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, String> {
+    let parts = kairo::cuts::kept(job.range, cuts);
+    let length: f64 = parts.iter().map(|(a, b)| b - a).sum();
+    let encoder = best_encoder(job.ff, encoders);
+    let plain = eff.is_plain() && job.caps.is_empty() && job.keys.is_empty();
+    if job.kind == Kind::Trim && plain {
+        let out = library::sibling(job.named, "edit");
+        let part = out.with_extension("mp4.part");
+        let a = media::join_args(job.clip, &parts, job.info, encoder, true, &part);
+        encode(job.ff, &a, length, &part, status, cancel, (0.0, 1.0))?;
+        return finish(job.ff, &part, &out);
+    }
+    status.lock().unwrap().stage = "Joining the parts".into();
+    std::fs::create_dir_all(&job.burns_dir).map_err(|e| e.to_string())?;
+    let joined = job.burns_dir.join("joined.mkv");
+    let a = media::join_args(job.clip, &parts, job.info, encoder, false, &joined);
+    encode(job.ff, &a, length, &joined, status, cancel, (0.0, 0.35))?;
+    let mut info = ffmpeg::probe_clip(job.ff, &joined)?;
+    // The finished copy keeps the clip's quality, not the joined file's higher bitrate.
+    info.video_bps = job.info.video_bps;
+    let window = |a: f64, b: f64| kairo::cuts::window(job.range, cuts, a, b);
+    let caps: Vec<kairo::captions::Caption> = job
+        .caps
+        .iter()
+        .filter_map(|c| {
+            window(c.start, c.end).map(|(start, end)| kairo::captions::Caption {
+                start,
+                end,
+                text: c.text.clone(),
+            })
+        })
+        .collect();
+    let keys: Vec<kairo::keys::KeyEvent> = job
+        .keys
+        .iter()
+        .filter_map(|k| {
+            kairo::cuts::to_copy(job.range, cuts, k.t).map(|t| kairo::keys::KeyEvent { t, ..*k })
+        })
+        .collect();
+    let mut eff = eff.clone();
+    eff.stamps = eff
+        .stamps
+        .iter()
+        .filter_map(|s| {
+            window(s.start, s.end).map(|(start, end)| kairo::overlays::Item {
+                start,
+                end,
+                ..s.clone()
+            })
+        })
+        .collect();
+    status.lock().unwrap().stage = match job.kind {
+        Kind::Share(_) => "Making a copy for Discord".into(),
+        Kind::Gif => "Making a GIF".into(),
+        _ => "Saving the edited copy".into(),
+    };
+    let next = Export {
+        kind: job.kind,
+        ff: job.ff,
+        clip: &joined,
+        named: job.named,
+        info: &info,
+        range: (0.0, length),
+        caps: &caps,
+        keys: &keys,
+        burns_dir: job.burns_dir.clone(),
+        progress: (0.35, 1.0),
+    };
+    run(&next, encoders, &eff, status, cancel)
 }
 
 /// A montage being made from several clips.
@@ -694,5 +787,81 @@ mod tests {
             ffmpeg::run(&ff, &grab, Duration::from_secs(30)).expect("frame");
         }
         let _ = std::fs::remove_dir_all(&burns_dir);
+    }
+
+    /// Cuts a part out of a made-up clip, as a plain copy and with text, and checks the copies
+    /// are as long as what was kept: `cargo test -- --ignored export::tests::cut`. Needs ffmpeg.
+    #[test]
+    #[ignore]
+    fn cut_parts_close_up() {
+        let dir = std::env::temp_dir().join(format!("kairo-cut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let clip = dir.join("source.mp4");
+        let make = [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330",
+            "-t",
+            "6",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([clip.display().to_string()])
+        .collect::<Vec<_>>();
+        ffmpeg::run(&ff, &make, Duration::from_secs(60)).expect("source clip");
+        let info = ffmpeg::probe_clip(&ff, &clip).expect("probe");
+        let cuts = [(1.5, 3.0)];
+        let encoders = Mutex::new(Some(vec![Encoder::X264]));
+        for with_text in [false, true] {
+            let mut eff = Effects::default();
+            if with_text {
+                eff.stamps = vec![kairo::overlays::Item::text("After the cut", 3.2, 5.0)];
+            }
+            let named = dir.join(format!("clip-{with_text}.mp4"));
+            let job = Export {
+                kind: Kind::Trim,
+                ff: &ff,
+                clip: &clip,
+                named: &named,
+                info: &info,
+                range: (0.0, 6.0),
+                caps: &[],
+                keys: &[],
+                burns_dir: dir.join(format!("work-{with_text}")),
+                progress: (0.0, 1.0),
+            };
+            let status = Mutex::new(Status::default());
+            let out = run_cut(
+                &job,
+                &cuts,
+                &encoders,
+                &eff,
+                &status,
+                &AtomicBool::new(false),
+            )
+            .expect("export");
+            let got = ffmpeg::probe_clip(&ff, &out).expect("probe copy");
+            assert!(
+                (got.duration - 4.5).abs() < 0.2,
+                "{with_text}: {}",
+                got.duration
+            );
+            assert!(!got.audio_tracks.is_empty(), "the sound is kept");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

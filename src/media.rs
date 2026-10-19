@@ -684,6 +684,69 @@ pub fn trim_args(
     a
 }
 
+/// One clip's kept `parts` (seconds of the clip, in order) joined back to back, picture and every
+/// sound track. `last`: this is the finished copy (MP4, AAC); otherwise it's for the rest of an
+/// export to work on (Matroska, the picture at a higher bitrate, the sound exact).
+pub fn join_args(
+    clip: &Path,
+    parts: &[(f64, f64)],
+    info: &Info,
+    encoder: Encoder,
+    last: bool,
+    out: &Path,
+) -> Vec<String> {
+    let encoder = export_encoder(encoder);
+    let fps = info.fps.round().max(1.0) as u32;
+    let bitrate = info.video_bps.unwrap_or_else(|| {
+        crate::config::Quality::High.bitrate(info.width as u64 * info.height as u64, fps)
+    });
+    let bitrate = if last { bitrate } else { bitrate * 3 / 2 };
+    let start = parts.first().map_or(0.0, |p| p.0);
+    let end = parts.last().map_or(start, |p| p.1);
+    let (n, tracks) = (parts.len().max(1), info.audio_tracks.len());
+    let mut g = Vec::new();
+    let outs = |label: &str| -> String { (0..n).map(|i| format!("[{label}{i}]")).collect() };
+    g.push(format!("[0:v]split={n}{}", outs("v")));
+    for t in 0..tracks {
+        g.push(format!("[0:a:{t}]asplit={n}{}", outs(&format!("a{t}_"))));
+    }
+    let mut cat = String::new();
+    for (i, (a, b)) in parts.iter().enumerate() {
+        let (a, b) = (a - start, b - start);
+        g.push(format!(
+            "[v{i}]trim=start={a:.3}:end={b:.3},setpts=PTS-STARTPTS[pv{i}]"
+        ));
+        cat.push_str(&format!("[pv{i}]"));
+        for t in 0..tracks {
+            g.push(format!(
+                "[a{t}_{i}]atrim=start={a:.3}:end={b:.3},asetpts=PTS-STARTPTS[pa{t}_{i}]"
+            ));
+            cat.push_str(&format!("[pa{t}_{i}]"));
+        }
+    }
+    let joined: String = (0..tracks).map(|t| format!("[a{t}]")).collect();
+    g.push(format!("{cat}concat=n={n}:v=1:a={tracks}[v]{joined}"));
+    let mut a = export_head(clip, start, end);
+    a.extend([s("-filter_complex"), g.join(";"), s("-map"), s("[v]")]);
+    for t in 0..tracks {
+        a.extend([s("-map"), format!("[a{t}]")]);
+    }
+    a.extend([s("-c:v"), s(encoder.ffmpeg_name())]);
+    a.extend(export_video_opts(encoder, bitrate, fps, false));
+    for (t, title) in info.audio_tracks.iter().enumerate() {
+        a.extend([format!("-metadata:s:a:{t}"), format!("title={title}")]);
+    }
+    if last {
+        a.extend(mp4_tail(out));
+    } else {
+        if tracks > 0 {
+            a.extend([s("-c:a"), s("pcm_s16le")]);
+        }
+        a.extend([s("-f"), s("matroska"), out.display().to_string()]);
+    }
+    a
+}
+
 /// The start of an export: overwrite, quiet, progress on stdout, `start..end` of the clip.
 fn export_head(clip: &Path, start: f64, end: f64) -> Vec<String> {
     let mut a = vec![s("-y")];
@@ -1418,6 +1481,66 @@ At least one output file must be specified";
         assert_eq!(burn_window(5.0, 7.0, (4.0, 10.0), 2.0), Some((0.5, 1.5)));
         assert_eq!(burn_window(1.0, 3.0, (4.0, 10.0), 1.0), None);
         assert_eq!(burn_window(3.5, 4.5, (4.0, 10.0), 1.0), Some((0.0, 0.5)));
+    }
+
+    #[test]
+    fn joins_the_kept_parts() {
+        let info = Info {
+            duration: 20.0,
+            width: 1920,
+            height: 1080,
+            fps: 60.0,
+            video_bps: Some(20_000_000),
+            audio_tracks: vec!["Everything".into(), "Game".into(), "Microphone".into()],
+            video_codec: "h264".into(),
+        };
+        let a = join_args(
+            Path::new("c.mp4"),
+            &[(2.0, 4.0), (7.0, 12.0)],
+            &info,
+            Encoder::Nvenc,
+            false,
+            Path::new("j.mkv"),
+        )
+        .join(" ");
+        assert!(a.contains("-ss 2.000 -t 10.000 -i c.mp4"), "{a}");
+        assert!(
+            a.contains("[0:v]split=2[v0][v1];[0:a:0]asplit=2[a0_0][a0_1]"),
+            "{a}"
+        );
+        assert!(
+            a.contains("[v1]trim=start=5.000:end=10.000,setpts=PTS-STARTPTS[pv1]"),
+            "{a}"
+        );
+        assert!(
+            a.contains("[pv0][pa0_0][pa1_0][pa2_0][pv1][pa0_1][pa1_1][pa2_1]concat=n=2:v=1:a=3[v][a0][a1][a2]"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-map [v] -map [a0] -map [a1] -map [a2] -c:v h264_nvenc"),
+            "{a}"
+        );
+        assert!(
+            a.contains("-b:v 30000000"),
+            "a higher bitrate for the next pass: {a}"
+        );
+        assert!(
+            a.contains("-metadata:s:a:2 title=Microphone -c:a pcm_s16le -f matroska j.mkv"),
+            "{a}"
+        );
+        let last = join_args(
+            Path::new("c.mp4"),
+            &[(2.0, 4.0)],
+            &info,
+            Encoder::X264,
+            true,
+            Path::new("o.mp4"),
+        )
+        .join(" ");
+        assert!(
+            last.contains("-b:v 20000000") && last.ends_with("-f mp4 o.mp4"),
+            "{last}"
+        );
     }
 
     #[test]

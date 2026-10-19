@@ -162,6 +162,10 @@ pub enum Msg {
     DeleteStamp(usize),
     Undo,
     Redo,
+    /// Splits the clip at the playhead.
+    Split,
+    /// Cuts out the part (between splits) under the playhead; the rest closes up.
+    CutPart,
 }
 
 /// Everything an edit can change, kept whole for undo: the cut, the marks, the style, captions,
@@ -169,6 +173,8 @@ pub enum Msg {
 #[derive(Clone, PartialEq)]
 struct Doc {
     trim: (f64, f64),
+    splits: Vec<f64>,
+    removed: Vec<(f64, f64)>,
     markers: Vec<f64>,
     effects: media::Effects,
     captions: Vec<kairo::captions::Caption>,
@@ -319,6 +325,9 @@ pub struct Editor {
     undo: Vec<Doc>,
     redo: Vec<Doc>,
     last_edit: Option<(String, std::time::Instant)>,
+    /// Where the clip is split, and the parts cut out (seconds of the clip).
+    splits: Vec<f64>,
+    removed: Vec<(f64, f64)>,
 }
 
 /// Text pictures for the monitor, by what they look like, with their sizes.
@@ -402,6 +411,8 @@ impl Editor {
                 undo: Vec::new(),
                 redo: Vec::new(),
                 last_edit: None,
+                splits: Vec::new(),
+                removed: Vec::new(),
             },
             strip,
         ))
@@ -433,6 +444,13 @@ impl Editor {
     #[cfg(test)]
     pub fn show_marks(&mut self, marks: Vec<f64>) {
         self.markers = marks;
+    }
+
+    /// Shows these splits and cut-out parts (for previews).
+    #[cfg(test)]
+    pub fn show_cuts(&mut self, splits: Vec<f64>, removed: Vec<(f64, f64)>) {
+        self.splits = splits;
+        self.removed = removed;
     }
 
     /// Shows this text, one item picked (for previews; not saved with the clip).
@@ -469,9 +487,11 @@ impl Editor {
         self.show_keys = true;
     }
 
-    /// Copies get something beyond a plain cut: a style, captions, text or the keys overlay.
+    /// Copies get something beyond a plain trim: parts cut out, a style, captions, text or the
+    /// keys overlay.
     fn styled(&self) -> bool {
-        !self.effects.is_plain()
+        self.has_cuts()
+            || !self.effects.is_plain()
             || (self.burn_captions && !self.captions.is_empty())
             || (self.show_keys && !self.keys.is_empty())
             || !self.stamps.is_empty()
@@ -594,6 +614,16 @@ impl Editor {
             .map(|c| c.text.as_str())
     }
 
+    /// Parts inside the trim are cut out.
+    fn has_cuts(&self) -> bool {
+        kairo::cuts::cuts_into(self.trim, &self.removed)
+    }
+
+    /// How long a copy runs before any speed change.
+    fn kept_length(&self) -> f64 {
+        kairo::cuts::kept_length(self.trim, &self.removed)
+    }
+
     fn trimmed(&self) -> bool {
         self.trim.0 > 0.01 || self.trim.1 < self.player.duration() - 0.01
     }
@@ -642,6 +672,12 @@ impl Editor {
                 Key::Character("y") | Key::Character("Y") => {
                     self.update(Msg::Redo);
                 }
+                Key::Character("b")
+                | Key::Character("B")
+                | Key::Character("k")
+                | Key::Character("K") => {
+                    self.update(Msg::Split);
+                }
                 _ => return false,
             }
             return true;
@@ -676,6 +712,18 @@ impl Editor {
             }
             Key::Character("m") | Key::Character("M") => {
                 self.update(Msg::Mark);
+            }
+            Key::Character("s") | Key::Character("S") => {
+                self.update(Msg::Split);
+            }
+            Key::Named(Named::Delete)
+            | Key::Named(Named::Backspace)
+            | Key::Character("x")
+            | Key::Character("X") => {
+                let effect = self.update(Msg::CutPart);
+                if let Effect::Note(..) = effect {
+                    return true;
+                }
             }
             Key::Character("n") | Key::Character("N") => self.jump_mark(!modifiers.shift()),
             _ => return false,
@@ -730,6 +778,8 @@ impl Editor {
     fn doc(&self) -> Doc {
         Doc {
             trim: self.trim,
+            splits: self.splits.clone(),
+            removed: self.removed.clone(),
             markers: self.markers.clone(),
             effects: self.effects.clone(),
             captions: self.captions.clone(),
@@ -747,6 +797,8 @@ impl Editor {
         let captions_changed = d.captions != self.captions;
         let stamps_changed = d.stamps != self.stamps;
         self.trim = d.trim;
+        self.splits = d.splits;
+        self.removed = d.removed;
         self.effects = d.effects;
         self.captions = d.captions;
         self.burn_captions = d.burn_captions;
@@ -817,10 +869,45 @@ impl Editor {
     fn handle(&mut self, msg: Msg) -> Effect {
         match msg {
             Msg::Undo | Msg::Redo => {}
+            Msg::Split => {
+                let t = self.player.position;
+                if t > self.trim.0 + 0.05 && t < self.trim.1 - 0.05 {
+                    kairo::cuts::split(&mut self.splits, t);
+                }
+            }
+            Msg::CutPart => {
+                let part = kairo::cuts::part_at(self.trim, &self.splits, self.player.position);
+                if kairo::cuts::kept_length(self.trim, &self.removed)
+                    - kairo::cuts::kept_length(part, &self.removed)
+                    < 0.3
+                {
+                    return Effect::Note("That would leave nothing to keep.".into(), false);
+                }
+                kairo::cuts::remove(&mut self.removed, part);
+                // On to what's left after it.
+                let next = kairo::cuts::kept(self.trim, &self.removed)
+                    .into_iter()
+                    .find(|(a, _)| *a >= part.1 - 0.001)
+                    .or_else(|| kairo::cuts::kept(self.trim, &self.removed).last().copied());
+                if let Some((a, _)) = next {
+                    self.player.seek(a);
+                }
+            }
             Msg::Frame => {
                 let end = self.trim.1;
                 let was_playing = self.player.is_playing();
                 self.player.tick(end);
+                // Playback skips the parts cut out.
+                if self.player.is_playing()
+                    && let Some((_, b)) =
+                        kairo::cuts::removed_at(&self.removed, self.player.position)
+                {
+                    if b >= end - 0.01 {
+                        self.player.pause();
+                    } else {
+                        self.player.seek(b);
+                    }
+                }
                 if let Some(f) = self.player.frame.take() {
                     self.frame = Some(Picture::new(self.player.size, &f.rgba));
                     self.frames_shown += 1;
@@ -903,7 +990,11 @@ impl Editor {
                 let p = self.player.position;
                 self.set_out(p);
             }
-            Msg::ResetTrim => self.trim = (0.0, self.player.duration()),
+            Msg::ResetTrim => {
+                self.trim = (0.0, self.player.duration());
+                self.splits.clear();
+                self.removed.clear();
+            }
             Msg::Mark => self.toggle_mark(),
             Msg::ClearMarks => self.set_marks(Vec::new()),
             Msg::TrimAroundMark => {
@@ -1168,7 +1259,9 @@ impl Editor {
         } else {
             (0.0, self.player.duration())
         };
-        let length = self.effects.length(range.0, range.1);
+        let length = self
+            .effects
+            .length(0.0, kairo::cuts::kept_length(range, &self.removed));
         if let Kind::Share(limit) = kind
             && let Err(e) = media::share_plan(limit, length, &self.player.info, 1.0)
         {
@@ -1197,6 +1290,7 @@ impl Editor {
             },
             self.captions_for_copies(),
             self.keys_for_copies(),
+            self.removed.clone(),
         ));
         Effect::None
     }
@@ -1474,6 +1568,8 @@ impl Editor {
                     position: self.player.position,
                     grab: self.grab,
                     markers: self.markers.clone(),
+                    splits: self.splits.clone(),
+                    removed: self.removed.clone(),
                 })
                 .width(Fill)
                 .height(TIMELINE_H),
@@ -1493,8 +1589,11 @@ impl Editor {
                 hint_key("M"),
                 text("mark").size(12).color(theme::muted()),
                 Space::new().width(6),
-                hint_key("Shift"),
-                text("+ arrows: 5 s").size(12).color(theme::muted()),
+                hint_key("S"),
+                text("split").size(12).color(theme::muted()),
+                Space::new().width(6),
+                hint_key("Ctrl+Z"),
+                text("undo").size(12).color(theme::muted()),
             ]
             .spacing(5)
             .align_y(Alignment::Center),
@@ -1653,7 +1752,8 @@ impl Editor {
                 })
                 .on_press_maybe(on)
         };
-        let len = self.trim.1 - self.trim.0;
+        let len = self.kept_length();
+        let cut_out = self.trim.1 - self.trim.0 - len;
         let body = column![
             row![
                 readout(
@@ -1691,9 +1791,44 @@ impl Editor {
                 button(text("Reset").size(12).font(MEDIUM))
                     .padding(Padding::from([6, 9]))
                     .style(theme::ghost)
-                    .on_press_maybe(self.trimmed().then_some(Msg::ResetTrim)),
+                    .on_press_maybe(
+                        (self.trimmed() || !self.splits.is_empty()).then_some(Msg::ResetTrim)
+                    ),
             ]
             .spacing(6),
+            row![
+                button(
+                    row![
+                        icon(Icon::Scissors, 13.0, theme::ink_2()),
+                        text("Split").size(12).font(MEDIUM),
+                        hint_key("S")
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                )
+                .padding(Padding::from([6, 9]))
+                .style(theme::secondary)
+                .on_press(Msg::Split),
+                button(
+                    row![text("Cut this part").size(12).font(MEDIUM), hint_key("Del")]
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                )
+                .padding(Padding::from([6, 9]))
+                .style(theme::secondary)
+                .on_press_maybe((!self.splits.is_empty()).then_some(Msg::CutPart)),
+            ]
+            .spacing(6),
+            text(if cut_out > 0.05 {
+                format!(
+                    "{} cut out from the middle. Ctrl+Z brings it back.",
+                    seconds_text(cut_out)
+                )
+            } else {
+                "Split at the playhead, then cut out the part you don't want.".to_string()
+            })
+            .size(11)
+            .color(theme::muted()),
         ]
         .spacing(10);
         panel("Trim", body)
@@ -2475,11 +2610,7 @@ impl Editor {
             .spacing(10)
             .into()
         } else {
-            let span = if self.trimmed() {
-                self.trim.1 - self.trim.0
-            } else {
-                self.player.duration()
-            };
+            let span = self.kept_length();
             let limit = self.discord_mb as u64 * 1_000_000;
             let fits = media::share_plan(limit, span, &self.player.info, 1.0);
             let share_hint = match &fits {
@@ -2743,6 +2874,15 @@ impl Picture {
             container(col).center(Fill).into()
         })
         .into()
+    }
+}
+
+/// "4.2 s", "1 min 05 s".
+fn seconds_text(s: f64) -> String {
+    if s >= 60.0 {
+        format!("{} min {:02.0} s", (s / 60.0).floor(), s % 60.0)
+    } else {
+        format!("{s:.1} s")
     }
 }
 
@@ -3032,6 +3172,8 @@ struct Timeline {
     position: f64,
     grab: Option<Grab>,
     markers: Vec<f64>,
+    splits: Vec<f64>,
+    removed: Vec<(f64, f64)>,
 }
 
 impl Timeline {
@@ -3211,6 +3353,47 @@ impl canvas::Program<Msg> for Timeline {
                 align_y: iced::alignment::Vertical::Center,
                 ..Default::default()
             });
+        }
+
+        // Parts cut out: darker, crossed through; splits: a thin white line.
+        for &(a, b) in &self.removed {
+            let (xa, xb) = (self.x_at(track, a), self.x_at(track, b));
+            if xb - xa < 1.0 {
+                continue;
+            }
+            f.fill_rectangle(
+                Point::new(xa, track.y),
+                Size::new(xb - xa, track.height),
+                theme::alpha(Color::BLACK, 0.78),
+            );
+            for (from, to) in [
+                (
+                    Point::new(xa, track.y),
+                    Point::new(xb, track.y + track.height),
+                ),
+                (
+                    Point::new(xa, track.y + track.height),
+                    Point::new(xb, track.y),
+                ),
+            ] {
+                f.stroke(
+                    &Shape::line(from, to),
+                    Stroke::default()
+                        .with_color(theme::alpha(Color::WHITE, 0.35))
+                        .with_width(1.0),
+                );
+            }
+        }
+        for &s in &self.splits {
+            if s <= self.trim.0 || s >= self.trim.1 {
+                continue;
+            }
+            let x = self.x_at(track, s);
+            f.fill_rectangle(
+                Point::new(x - 1.0, track.y),
+                Size::new(2.0, track.height),
+                theme::alpha(Color::WHITE, 0.9),
+            );
         }
 
         // The playhead.
