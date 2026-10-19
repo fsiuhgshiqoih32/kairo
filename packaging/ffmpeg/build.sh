@@ -85,13 +85,13 @@ common=(
   --enable-gpl --enable-libx264
   --enable-protocol=file,pipe
   --enable-indev=lavfi
-  --enable-demuxer=mov,mpegts,wav,matroska,image2
+  --enable-demuxer=mov,mpegts,wav,matroska,image2,mp3,ogg,flac,aac
   --enable-muxer=mp4,mov,mpegts,rawvideo,pcm_f32le,pcm_s16le,wav,image2,gif,null
-  --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,rawvideo,bmp,mjpeg,png,wrapped_avframe
-  --enable-encoder=libx264,aac,mjpeg,gif,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe
-  --enable-parser=h264,hevc,aac,mjpeg
+  --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,pcm_s24le,rawvideo,bmp,mjpeg,png,wrapped_avframe,mp3,mp3float,flac,vorbis,opus,alac
+  --enable-encoder=libx264,aac,mjpeg,gif,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe,flac
+  --enable-parser=h264,hevc,aac,mjpeg,mpegaudio,flac,vorbis,opus
   --enable-bsf=dump_extradata,h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata
-  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,amix,aresample,aformat,testsrc2,sine,showinfo,hwdownload,hwupload,hwmap,split,palettegen,paletteuse,atempo,overlay,boxblur,concat,xfade,fade,afade,acrossfade,anullsrc,setsar,settb,volume,apad
+  --enable-filter=fps,scale,format,null,anull,copy,crop,pad,setpts,asetpts,trim,atrim,select,amix,aresample,aformat,testsrc2,sine,showinfo,hwdownload,hwupload,hwmap,split,palettegen,paletteuse,atempo,overlay,boxblur,concat,xfade,fade,afade,acrossfade,anullsrc,setsar,settb,volume,apad,tpad,reverse,areverse,eq,hue,vignette,unsharp,curves,zoompan,gblur,drawbox,afftdn,loudnorm,dynaudnorm,highpass,lowpass,alimiter,pan,amerge
   --pkg-config-flags=--static
   --extra-cflags="-I$prefix/include $cflags"
   --extra-ldflags="-L$prefix/lib $ldflags"
@@ -103,7 +103,7 @@ case "$os" in
       --enable-w32threads
       --enable-d3d11va --enable-dxva2 --enable-mediafoundation --enable-amf
       --enable-ffnvcodec --enable-nvenc
-      --enable-encoder=h264_nvenc,h264_amf,h264_mf
+      --enable-encoder=h264_nvenc,h264_amf,h264_mf,hevc_nvenc,hevc_amf,hevc_mf
       --enable-filter=gfxcapture,ddagrab,scale_d3d11
       --enable-indev=gdigrab
       --enable-hwaccel=h264_d3d11va,h264_d3d11va2,h264_dxva2,hevc_d3d11va,hevc_d3d11va2,hevc_dxva2
@@ -114,7 +114,7 @@ case "$os" in
     platform=(
       --enable-pthreads
       --enable-avfoundation --enable-videotoolbox
-      --enable-encoder=h264_videotoolbox
+      --enable-encoder=h264_videotoolbox,hevc_videotoolbox
       --enable-indev=avfoundation
       --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox
     )
@@ -125,7 +125,7 @@ case "$os" in
       --enable-libxcb --enable-libxcb-shm --enable-libxcb-xfixes
       --enable-indev=xcbgrab
       --enable-ffnvcodec --enable-nvenc
-      --enable-encoder=h264_nvenc
+      --enable-encoder=h264_nvenc,hevc_nvenc
     )
     ;;
 esac

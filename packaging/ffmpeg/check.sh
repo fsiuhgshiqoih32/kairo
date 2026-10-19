@@ -60,6 +60,13 @@ test -s "$dir/montage.mp4"
 "$ff" "${q[@]}" -i "$dir/clip.mp4" -i "$dir/trim.mp4" -filter_complex   "[0:v]$fit[v0];[1:v]$fit[v1];[0:a:0]apad=whole_dur=3[a0];[1:a:0]anull[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"   -map "[v]" -map "[a]" -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/joined.mp4"
 test -s "$dir/joined.mp4"
 
+step "effects: speed, freeze frame, colour, zoom, reverse, music mixed under the clip, mic clean-up"
+"$ff" "${q[@]}" -f lavfi -i sine=frequency=330:duration=4 -ac 2 -c:a flac -f flac "$dir/music.flac"
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -i "$dir/music.flac" -filter_complex "[0:v]setpts=PTS/1.5,eq=contrast=1.08:saturation=1.25,vignette,unsharp,tpad=stop_mode=clone:stop_duration=0.5,zoompan=z=1.1:d=1:s=320x240:fps=30[v];[0:a:0]atempo=1.5,afftdn,highpass=f=80,apad=whole_dur=2.5[g];[1:a]volume=0.4,afade=t=out:st=2:d=0.5[m];[g][m]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5,alimiter[a]" -map "[v]" -map "[a]" -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/effects.mp4"
+test -s "$dir/effects.mp4"
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -t 1 -vf "reverse,hue=s=0,curves=preset=vintage,gblur=sigma=2,drawbox=x=10:y=10:w=50:h=20:color=white@0.5:t=fill" -af "areverse,dynaudnorm,lowpass=f=8000" -map 0:v:0 -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/reverse.mp4"
+test -s "$dir/reverse.mp4"
+
 step "screenshot: one frame of the stream as JPEG"
 "$ff" "${q[@]}" -i "$dir/video.ts" -vf "select=eq(n\,80)" -frames:v 1 -q:v 2 -update 1 "$dir/shot.jpg"
 test -s "$dir/shot.jpg"
