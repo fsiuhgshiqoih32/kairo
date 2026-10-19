@@ -182,6 +182,17 @@ fn text_width<F: Font>(sf: &ab_glyph::PxScaleFont<&F>, s: &str) -> f32 {
 /// Draws `text` in white with a black outline, wrapped to at most `max_width` pixels (two lines
 /// at most), `size` pixels tall. `None` for an unusable font or empty text.
 pub fn render(text: &str, max_width: u32, size: f32, font: &[u8]) -> Option<Picture> {
+    render_colored(text, max_width, size, font, [255, 255, 255])
+}
+
+/// [`render`] in the colour `rgb`.
+pub fn render_colored(
+    text: &str,
+    max_width: u32,
+    size: f32,
+    font: &[u8],
+    rgb: [u8; 3],
+) -> Option<Picture> {
     let font = FontRef::try_from_slice(font).ok()?;
     let sf = font.as_scaled(PxScale::from(size));
     let pad = (size * 0.12).ceil() as i32 + 2;
@@ -267,8 +278,9 @@ pub fn render(text: &str, max_width: u32, size: f32, font: &[u8]) -> Option<Pict
         if alpha <= 0.0 {
             continue;
         }
-        let white = (a_in / alpha * 255.0).round() as u8;
-        rgba[k * 4..k * 4 + 4].copy_from_slice(&[white, white, white, (alpha * 255.0) as u8]);
+        let lit = a_in / alpha;
+        let [r, g, b] = rgb.map(|c| (c as f32 * lit).round() as u8);
+        rgba[k * 4..k * 4 + 4].copy_from_slice(&[r, g, b, (alpha * 255.0) as u8]);
     }
     Some(Picture {
         width: w as u32,

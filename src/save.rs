@@ -44,9 +44,22 @@ pub fn keys_for(clip: &Path) -> PathBuf {
     thumbs_dir().join(format!("{name}.keys.json"))
 }
 
-/// The files that belong with a clip: its thumbnail, banner picture, keys and captions.
+/// Where a clip's text and stickers are kept.
+pub fn stamps_for(clip: &Path) -> PathBuf {
+    keys_for(clip)
+        .with_extension("")
+        .with_extension("stamps.json")
+}
+
+/// The files that belong with a clip: its thumbnail, banner picture, keys, captions, and text
+/// and stickers.
 pub fn sidecars(clip: &Path) -> Vec<PathBuf> {
-    let mut v = vec![thumb_for(clip), keys_for(clip), clip.with_extension("srt")];
+    let mut v = vec![
+        thumb_for(clip),
+        keys_for(clip),
+        clip.with_extension("srt"),
+        stamps_for(clip),
+    ];
     if let Some(stem) = clip.file_stem() {
         v.push(thumbs_dir().join(format!("hero-{}.jpg", stem.to_string_lossy())));
     }

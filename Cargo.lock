@@ -2844,6 +2844,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
  "opener",
+ "resvg",
  "rfd",
  "security-framework",
  "self-replace",

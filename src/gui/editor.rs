@@ -21,11 +21,12 @@ use iced::{
 use kairo::args::Encoder;
 use kairo::library;
 use kairo::media::{self, Info, format_time};
+use kairo::overlays::{self, ANIMS, COLORS, Item, STICKERS};
 
 use super::icons::{Icon, icon, icon_filled};
 use super::library::{ClipItem, tip};
 use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
-use super::widgets::{divider, hint_key, icon_button, icon_only, panel};
+use super::widgets::{divider, hint_key, icon_button, icon_only, panel, segmented};
 use super::{background, human_size};
 use crate::export::{self, Job, Kind};
 use crate::player::Player;
@@ -144,6 +145,22 @@ pub enum Msg {
     AddTagNamed(String),
     RemoveTag(String),
     SetFolder(super::FolderPick),
+    /// Text being typed for a new text item.
+    StampText(String),
+    AddText,
+    AddSticker(&'static str),
+    PickStamp(Option<usize>),
+    /// Dragged on the picture: its new middle.
+    MoveStamp(usize, f32, f32),
+    DropStamp,
+    StampWords(String),
+    StampSize(f32),
+    StampColor(usize),
+    StampAnim(&'static str),
+    /// The picked item starts (or ends) at the playhead.
+    StampStart,
+    StampEnd,
+    DeleteStamp(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +274,32 @@ pub struct Editor {
     /// Overlay pictures already drawn, by which keys are down.
     key_pictures: std::cell::RefCell<std::collections::HashMap<u32, image::Handle>>,
     caption_job: Option<export::CaptionJob>,
+    /// Text and stickers (kept beside the clip), and the one being changed.
+    stamps: Vec<Item>,
+    stamp_picked: Option<usize>,
+    stamp_text: String,
+    /// Their pictures on the monitor, by what they look like.
+    stamp_pictures: StampPictures,
+    /// The sticker buttons' pictures.
+    sticker_icons: Vec<image::Handle>,
+}
+
+/// Text and sticker pictures for the monitor, by what they look like, with their sizes.
+type StampPictures =
+    std::cell::RefCell<std::collections::HashMap<String, (image::Handle, (u32, u32))>>;
+
+/// Text and stickers are drawn for the monitor as if the picture were this tall.
+const STAMP_REF_H: u32 = 720;
+const FONT_BOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
+
+/// A sticker's button picture, about 26 pixels tall.
+fn sticker_icon(id: &str) -> image::Handle {
+    let mut it = Item::sticker(id, 0.0, 1.0);
+    it.size = 0.05;
+    match it.picture(520, 400, FONT_BOLD) {
+        Some(p) => image::Handle::from_rgba(p.width, p.height, p.rgba),
+        None => image::Handle::from_rgba(1, 1, vec![0; 4]),
+    }
 }
 
 impl Editor {
@@ -325,6 +368,11 @@ impl Editor {
                 keys: crate::save::read_keys(&clip_path),
                 show_keys: true,
                 key_pictures: Default::default(),
+                stamps: overlays::load(&crate::save::stamps_for(&clip_path)),
+                stamp_picked: None,
+                stamp_text: String::new(),
+                stamp_pictures: Default::default(),
+                sticker_icons: STICKERS.iter().map(|s| sticker_icon(s.id)).collect(),
             },
             strip,
         ))
@@ -358,6 +406,13 @@ impl Editor {
         self.markers = marks;
     }
 
+    /// Shows these text and stickers, one picked (for previews; not saved with the clip).
+    #[cfg(test)]
+    pub fn show_stamps(&mut self, stamps: Vec<Item>, picked: Option<usize>) {
+        self.stamps = stamps;
+        self.stamp_picked = picked;
+    }
+
     /// The first frame and the filmstrip are in.
     pub fn ready(&self) -> bool {
         self.frame.is_some() && !self.strip_loading && !self.strip.is_empty()
@@ -385,11 +440,55 @@ impl Editor {
         self.show_keys = true;
     }
 
-    /// Copies get something beyond a plain cut: a style, captions or the keys overlay.
+    /// Copies get something beyond a plain cut: a style, captions, text and stickers or the keys
+    /// overlay.
     fn styled(&self) -> bool {
         !self.effects.is_plain()
             || (self.burn_captions && !self.captions.is_empty())
             || (self.show_keys && !self.keys.is_empty())
+            || !self.stamps.is_empty()
+    }
+
+    fn save_stamps(&self) {
+        let _ = overlays::save(&crate::save::stamps_for(&self.clip), &self.stamps);
+    }
+
+    /// Where a new item shows: from the playhead (inside the trim) for three seconds.
+    fn new_stamp_span(&self) -> (f64, f64) {
+        let (a, b) = self.trim;
+        let start = self.player.position.clamp(a, (b - 0.5).max(a));
+        (start, (start + 3.0).min(b.max(start + 0.5)))
+    }
+
+    /// An item's picture for the monitor, drawn once for each look.
+    fn stamp_picture(&self, item: &Item) -> Option<(image::Handle, (u32, u32))> {
+        let key = format!(
+            "{}|{}|{}|{:.4}",
+            item.text, item.sticker, item.color, item.size
+        );
+        let mut cache = self.stamp_pictures.borrow_mut();
+        if let Some(v) = cache.get(&key) {
+            return Some(v.clone());
+        }
+        let aspect = self.player.info.width as f32 / self.player.info.height.max(1) as f32;
+        let max_w = (STAMP_REF_H as f32 * aspect * 0.9) as u32;
+        let p = item.picture(STAMP_REF_H, max_w, FONT_BOLD)?;
+        let v = (
+            image::Handle::from_rgba(p.width, p.height, p.rgba),
+            (p.width, p.height),
+        );
+        if cache.len() > 64 {
+            cache.clear();
+        }
+        cache.insert(key, v.clone());
+        Some(v)
+    }
+
+    fn update_stamp(&mut self, change: impl FnOnce(&mut Item)) {
+        if let Some(it) = self.stamp_picked.and_then(|i| self.stamps.get_mut(i)) {
+            change(it);
+            self.save_stamps();
+        }
     }
 
     /// The keys copies show.
@@ -699,6 +798,50 @@ impl Editor {
             Msg::MicCleanup(on) => self.effects.mic_cleanup = on,
             Msg::EvenLoudness(on) => self.effects.even_loudness = on,
             Msg::ResetStyle => self.effects = media::Effects::default(),
+            Msg::StampText(t) => self.stamp_text = t,
+            Msg::AddText => {
+                let words = self.stamp_text.trim().to_string();
+                if !words.is_empty() {
+                    let (a, b) = self.new_stamp_span();
+                    self.stamps.push(Item::text(&words, a, b));
+                    self.stamp_picked = Some(self.stamps.len() - 1);
+                    self.stamp_text.clear();
+                    self.save_stamps();
+                }
+            }
+            Msg::AddSticker(id) => {
+                let (a, b) = self.new_stamp_span();
+                self.stamps.push(Item::sticker(id, a, b));
+                self.stamp_picked = Some(self.stamps.len() - 1);
+                self.save_stamps();
+            }
+            Msg::PickStamp(i) => self.stamp_picked = i.filter(|i| *i < self.stamps.len()),
+            Msg::MoveStamp(i, x, y) => {
+                if let Some(it) = self.stamps.get_mut(i) {
+                    it.x = x.clamp(0.0, 1.0);
+                    it.y = y.clamp(0.0, 1.0);
+                }
+            }
+            Msg::DropStamp => self.save_stamps(),
+            Msg::StampWords(t) => self.update_stamp(|it| it.text = t),
+            Msg::StampSize(v) => self.update_stamp(|it| it.size = v),
+            Msg::StampColor(c) => self.update_stamp(|it| it.color = c),
+            Msg::StampAnim(a) => self.update_stamp(|it| it.anim = a.to_string()),
+            Msg::StampStart => {
+                let t = self.player.position;
+                self.update_stamp(|it| it.start = t.min(it.end - 0.2).max(0.0));
+            }
+            Msg::StampEnd => {
+                let (t, d) = (self.player.position, self.player.duration());
+                self.update_stamp(|it| it.end = t.max(it.start + 0.2).min(d.max(it.start + 0.2)));
+            }
+            Msg::DeleteStamp(i) => {
+                if i < self.stamps.len() {
+                    self.stamps.remove(i);
+                    self.stamp_picked = None;
+                    self.save_stamps();
+                }
+            }
             Msg::Track(t) => self.player.set_track(t.index),
             Msg::Name(n) => self.name = n,
             Msg::Rename => return self.rename(),
@@ -909,7 +1052,10 @@ impl Editor {
             self.player.info.clone(),
             range,
             self.encoders.clone(),
-            self.effects.clone(),
+            media::Effects {
+                stamps: self.stamps.clone(),
+                ..self.effects.clone()
+            },
             self.captions_for_copies(),
             self.keys_for_copies(),
         ));
@@ -1090,6 +1236,39 @@ impl Editor {
                 .padding(26),
             );
         }
+        if self.frame.is_some() && !self.stamps.is_empty() {
+            let t = self.player.position;
+            let items = self
+                .stamps
+                .iter()
+                .enumerate()
+                .filter(|(i, it)| it.shows_at(t) || self.stamp_picked == Some(*i))
+                .filter_map(|(i, it)| {
+                    let (handle, size) = self.stamp_picture(it)?;
+                    Some(Shown {
+                        index: i,
+                        handle,
+                        size,
+                        x: it.x,
+                        y: it.y,
+                        pose: it.pose_at(t),
+                        dim: !it.shows_at(t),
+                    })
+                })
+                .collect();
+            monitor = monitor.push(
+                Canvas::new(StampLayer {
+                    items,
+                    video: (
+                        self.player.info.width.max(1) as f32,
+                        self.player.info.height.max(1) as f32,
+                    ),
+                    picked: self.stamp_picked,
+                })
+                .width(Fill)
+                .height(Fill),
+            );
+        }
         if !self.player.is_playing() && self.frame.is_some() {
             monitor = monitor.push(
                 container(
@@ -1178,6 +1357,7 @@ impl Editor {
                 self.tags_panel(tags, known_tags, folders, folder),
                 self.trim_panel(),
                 self.marks_panel(),
+                self.stamps_panel(),
                 self.captions_panel(),
                 self.style_panel(),
                 self.export_panel(),
@@ -1483,6 +1663,170 @@ impl Editor {
             ]
             .spacing(10),
         )
+    }
+
+    /// Text and stickers: add them at the playhead, drag them on the picture, pick how they come
+    /// in and go out.
+    fn stamps_panel(&self) -> Element<'_, Msg> {
+        let add = row![
+            text_input("Type some text", &self.stamp_text)
+                .on_input(Msg::StampText)
+                .on_submit(Msg::AddText)
+                .size(12)
+                .padding(Padding::from([6, 8]))
+                .style(theme::input),
+            button(text("Add").size(12).font(MEDIUM))
+                .padding(Padding::from([6, 10]))
+                .style(theme::secondary)
+                .on_press_maybe((!self.stamp_text.trim().is_empty()).then_some(Msg::AddText)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let mut stickers = row![].spacing(4);
+        for (s, img) in STICKERS.iter().zip(&self.sticker_icons) {
+            stickers = stickers.push(tip(
+                button(image(img.clone()).height(22))
+                    .padding(Padding::from([5, 6]))
+                    .style(theme::ghost)
+                    .on_press(Msg::AddSticker(s.id)),
+                s.name,
+            ));
+        }
+        let mut body = column![add, stickers.wrap().vertical_spacing(2)].spacing(10);
+        if !self.stamps.is_empty() {
+            let mut list = column![].spacing(4);
+            for (i, it) in self.stamps.iter().enumerate() {
+                let picked = self.stamp_picked == Some(i);
+                list = list.push(
+                    row![
+                        button(
+                            row![
+                                text(it.label())
+                                    .size(12)
+                                    .font(if picked { SEMIBOLD } else { MEDIUM })
+                                    .wrapping(text::Wrapping::None)
+                                    .width(Fill),
+                                text(format!("{}-{}", format_time(it.start), format_time(it.end)))
+                                    .font(Font::MONOSPACE)
+                                    .size(10)
+                                    .color(theme::muted()),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding(Padding::from([5, 8]))
+                        .width(Fill)
+                        .style(if picked {
+                            theme::secondary
+                        } else {
+                            theme::ghost
+                        })
+                        .on_press(Msg::PickStamp(if picked { None } else { Some(i) })),
+                        button(icon(Icon::Close, 12.0, theme::ink_2()))
+                            .padding(5)
+                            .style(theme::ghost)
+                            .on_press(Msg::DeleteStamp(i)),
+                    ]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
+                );
+            }
+            body = body.push(list);
+        }
+        if let Some(it) = self.stamp_picked.and_then(|i| self.stamps.get(i)) {
+            let mut edit = column![].spacing(8);
+            if it.is_text() {
+                edit = edit.push(
+                    text_input("Text", &it.text)
+                        .on_input(Msg::StampWords)
+                        .size(12)
+                        .padding(Padding::from([6, 8]))
+                        .style(theme::input),
+                );
+            }
+            let small = |label: &'static str, m: Msg| {
+                button(text(label).size(11).font(MEDIUM))
+                    .padding(Padding::from([5, 8]))
+                    .style(theme::secondary)
+                    .on_press(m)
+            };
+            edit = edit.push(
+                row![
+                    small("Start here", Msg::StampStart),
+                    small("End here", Msg::StampEnd),
+                ]
+                .spacing(6),
+            );
+            edit = edit.push(
+                row![
+                    text("Size").size(12).color(theme::ink_2()).width(44),
+                    slider(0.03..=0.4, it.size, Msg::StampSize)
+                        .step(0.005_f32)
+                        .style(theme::volume_slider),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+            let mut swatches = row![].spacing(6);
+            for (i, (name, rgb)) in COLORS.iter().enumerate() {
+                let chosen = it.color == i;
+                let c = Color::from_rgb8(rgb[0], rgb[1], rgb[2]);
+                swatches = swatches.push(tip(
+                    button(Space::new().width(18).height(18))
+                        .padding(0)
+                        .style(move |_, st| button::Style {
+                            background: Some(c.into()),
+                            border: iced::Border {
+                                color: if chosen {
+                                    theme::ink()
+                                } else if matches!(st, button::Status::Hovered) {
+                                    theme::alpha(theme::ink(), 0.5)
+                                } else {
+                                    theme::edge()
+                                },
+                                width: if chosen { 2.5 } else { 1.0 },
+                                radius: 999.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .on_press(Msg::StampColor(i)),
+                    name,
+                ));
+            }
+            edit = edit.push(swatches);
+            let anim = ANIMS
+                .iter()
+                .map(|(id, _)| *id)
+                .find(|id| *id == it.anim)
+                .unwrap_or("pop");
+            edit = edit.push(
+                column![
+                    text("Coming in and going out")
+                        .size(12)
+                        .color(theme::ink_2()),
+                    segmented(
+                        ANIMS.iter().map(|(id, n)| (*id, n.to_string())).collect(),
+                        anim,
+                        Msg::StampAnim,
+                    ),
+                ]
+                .spacing(6),
+            );
+            body = body.push(container(edit).padding(Padding {
+                top: 4.0,
+                ..Default::default()
+            }));
+        }
+        body = body.push(
+            text(if self.stamps.is_empty() {
+                "Added at the playhead for 3 seconds."
+            } else {
+                "Drag them on the picture to move them."
+            })
+            .size(11)
+            .color(theme::muted()),
+        );
+        panel("Text and stickers", body)
     }
 
     /// Speed, look, fades, music and the mix: applied to every copy made below.
@@ -2378,6 +2722,167 @@ impl canvas::Program<Msg> for Strip<'_> {
             }
         }
         vec![f.into_geometry()]
+    }
+}
+
+/// Text or a sticker on the monitor.
+struct Shown {
+    index: usize,
+    handle: image::Handle,
+    /// Its picture's size, drawn for a `STAMP_REF_H`-tall picture.
+    size: (u32, u32),
+    x: f32,
+    y: f32,
+    pose: overlays::Pose,
+    /// Picked but not showing at the playhead.
+    dim: bool,
+}
+
+/// Text and stickers over the picture, where they can be picked and dragged.
+struct StampLayer {
+    items: Vec<Shown>,
+    video: (f32, f32),
+    picked: Option<usize>,
+}
+
+impl StampLayer {
+    /// Where the picture is within the monitor (it's fitted in the middle).
+    fn picture(&self, bounds: Rectangle) -> Rectangle {
+        let k = (bounds.width / self.video.0).min(bounds.height / self.video.1);
+        let (w, h) = ((self.video.0 * k).floor(), self.video.1 * k);
+        Rectangle {
+            x: (bounds.width - w) / 2.0,
+            y: (bounds.height - h) / 2.0,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// An item's place on the monitor: settled, or as its pose has it.
+    fn rect(&self, pic: Rectangle, s: &Shown, posed: bool) -> Rectangle {
+        let k = pic.height / STAMP_REF_H as f32;
+        let p = if posed {
+            s.pose
+        } else {
+            overlays::Pose::SETTLED
+        };
+        let (w, h) = (s.size.0 as f32 * k * p.scale, s.size.1 as f32 * k * p.scale);
+        let (cx, cy) = (
+            pic.x + (s.x + p.shift) * pic.width,
+            pic.y + s.y * pic.height,
+        );
+        Rectangle {
+            x: cx - w / 2.0,
+            y: cy - h / 2.0,
+            width: w,
+            height: h,
+        }
+    }
+
+    fn under(&self, bounds: Rectangle, p: Point) -> Option<&Shown> {
+        let pic = self.picture(bounds);
+        self.items
+            .iter()
+            .rev()
+            .find(|s| self.rect(pic, s, false).contains(p))
+    }
+}
+
+impl canvas::Program<Msg> for StampLayer {
+    /// The item being dragged, and where in it it was grabbed (shares of the picture).
+    type State = Option<(usize, f32, f32)>;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &iced::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<Action<Msg>> {
+        let pic = self.picture(bounds);
+        match event {
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let p = cursor.position_in(bounds)?;
+                let s = self.under(bounds, p)?;
+                *state = Some((
+                    s.index,
+                    (p.x - pic.x) / pic.width - s.x,
+                    (p.y - pic.y) / pic.height - s.y,
+                ));
+                Some(Action::publish(Msg::PickStamp(Some(s.index))).and_capture())
+            }
+            iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let (i, ox, oy) = (*state)?;
+                let p = cursor.position()?;
+                let (x, y) = (p.x - bounds.x, p.y - bounds.y);
+                Some(
+                    Action::publish(Msg::MoveStamp(
+                        i,
+                        (x - pic.x) / pic.width - ox,
+                        (y - pic.y) / pic.height - oy,
+                    ))
+                    .and_capture(),
+                )
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.take()?;
+                Some(Action::publish(Msg::DropStamp).and_capture())
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _: &Self::State,
+        renderer: &Renderer,
+        _: &Theme,
+        bounds: Rectangle,
+        _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut f = Frame::new(renderer, bounds.size());
+        let pic = self.picture(bounds);
+        for s in &self.items {
+            let mut img = iced::advanced::image::Image::from(&s.handle);
+            img.opacity = s.pose.alpha * if s.dim { 0.45 } else { 1.0 };
+            if img.opacity > 0.0 && s.pose.scale > 0.0 {
+                f.draw_image(self.rect(pic, s, true), img);
+            }
+            if self.picked == Some(s.index) {
+                let r = self.rect(pic, s, false);
+                f.stroke(
+                    &Shape::rectangle(
+                        Point::new(r.x - 4.0, r.y - 4.0),
+                        Size::new(r.width + 8.0, r.height + 8.0),
+                    ),
+                    Stroke {
+                        line_dash: canvas::LineDash {
+                            segments: &[5.0, 4.0],
+                            offset: 0,
+                        },
+                        ..Stroke::default()
+                            .with_color(theme::accent())
+                            .with_width(1.5)
+                    },
+                );
+            }
+        }
+        vec![f.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+        match cursor.position_in(bounds) {
+            Some(p) if self.under(bounds, p).is_some() => mouse::Interaction::Grab,
+            _ => mouse::Interaction::default(),
+        }
     }
 }
 

@@ -9,6 +9,7 @@ pub mod keys;
 pub mod library;
 pub mod media;
 pub mod mp4;
+pub mod overlays;
 pub mod pcm;
 pub mod ring;
 pub mod ts;

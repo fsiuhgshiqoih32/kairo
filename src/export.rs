@@ -141,6 +141,10 @@ impl Export<'_> {
         if !self.caps.is_empty() {
             eff.burns = render_burns(self.caps, self.range, eff.speed, size, &self.burns_dir)?;
         }
+        if !eff.stamps.is_empty() {
+            let stamps = render_stamps(&eff.stamps, self.range, eff.speed, size, &self.burns_dir)?;
+            eff.burns.extend(stamps);
+        }
         if !self.keys.is_empty() {
             const FPS: u32 = 15;
             let overlay = kairo::keys::size_for(size.1);
@@ -374,7 +378,90 @@ pub fn render_burns(
             height: p.height,
             start,
             end,
+            at: None,
+            fps: None,
         });
+    }
+    Ok(out)
+}
+
+/// Frames per second of text and stickers coming in and going out.
+const STAMP_FPS: u32 = 60;
+
+/// Text and stickers for an export: each drawn for `out_size`, written as raw RGBA into `dir`
+/// and placed in the export's timeline, with its animation in and out (when it starts and ends
+/// inside the export) as frames of their own.
+pub fn render_stamps(
+    items: &[kairo::overlays::Item],
+    range: (f64, f64),
+    speed: f64,
+    out_size: (u32, u32),
+    dir: &Path,
+) -> Result<Vec<media::Burn>, String> {
+    let font = include_bytes!("../assets/fonts/Inter-Bold.ttf");
+    let (w, h) = out_size;
+    let mut out = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let Some((a, b)) = media::burn_window(item.start, item.end, range, speed) else {
+            continue;
+        };
+        let Some(pic) = item.picture(h, w * 9 / 10, font) else {
+            continue;
+        };
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let centre = (item.x * w as f32, item.y * h as f32);
+        let (inn, outro) = item.anim_lengths(b - a);
+        let mut still = (a, b);
+        let parts = [
+            (false, inn, item.start >= range.0 - 1e-6, a),
+            (true, outro, item.end <= range.1 + 1e-6, b - outro),
+        ];
+        for (leaving, len, whole, at) in parts {
+            if len <= 0.0 || !whole {
+                continue;
+            }
+            let Some(m) = kairo::overlays::animate(
+                &pic, &item.anim, leaving, centre, out_size, len, STAMP_FPS,
+            ) else {
+                continue;
+            };
+            let path = dir.join(format!(
+                "stamp-{i}-{}.rgba",
+                if leaving { "out" } else { "in" }
+            ));
+            std::fs::write(&path, &m.rgba).map_err(|e| e.to_string())?;
+            out.push(media::Burn {
+                path,
+                width: m.width,
+                height: m.height,
+                start: at,
+                // The last frame ends where the still picture takes over.
+                end: at + len - 0.5 / STAMP_FPS as f64,
+                at: Some((m.x, m.y)),
+                fps: Some(STAMP_FPS),
+            });
+            if leaving {
+                still.1 = at;
+            } else {
+                still.0 = at + len;
+            }
+        }
+        if still.1 > still.0 {
+            let path = dir.join(format!("stamp-{i}.rgba"));
+            std::fs::write(&path, &pic.rgba).map_err(|e| e.to_string())?;
+            out.push(media::Burn {
+                path,
+                width: pic.width,
+                height: pic.height,
+                start: still.0,
+                end: still.1,
+                at: Some((
+                    (centre.0 - pic.width as f32 / 2.0).round() as i32,
+                    (centre.1 - pic.height as f32 / 2.0).round() as i32,
+                )),
+                fps: None,
+            });
+        }
     }
     Ok(out)
 }
@@ -538,4 +625,74 @@ pub fn encode_with(
         return Err(ffmpeg::last_lines(&text, 3).unwrap_or_else(|| format!("ffmpeg failed ({st})")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Burns text and an animated sticker into a copy of a made-up clip, and keeps a few frames
+    /// to look at: `KAIRO_SNAPSHOTS=<dir> cargo test -- --ignored export::tests::stamps`.
+    /// Needs ffmpeg.
+    #[test]
+    #[ignore]
+    fn stamps_burn_into_a_copy() {
+        let dir = PathBuf::from(std::env::var_os("KAIRO_SNAPSHOTS").expect("dir"));
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let clip = dir.join("stamps-source.mp4");
+        let make = [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=60",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330",
+            "-t",
+            "4",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([clip.display().to_string()])
+        .collect::<Vec<_>>();
+        ffmpeg::run(&ff, &make, Duration::from_secs(60)).expect("source clip");
+        let info = ffmpeg::probe_clip(&ff, &clip).expect("probe");
+        let mut words = kairo::overlays::Item::text("What a clutch", 0.5, 3.5);
+        words.color = 1;
+        let mut star = kairo::overlays::Item::sticker("star", 1.0, 3.5);
+        star.anim = "slide".into();
+        (star.x, star.y) = (0.8, 0.3);
+        let burns_dir = dir.join("stamps-work");
+        let mut eff = Effects {
+            stamps: vec![words, star],
+            ..Default::default()
+        };
+        eff.burns =
+            render_stamps(&eff.stamps, (0.0, 4.0), 1.0, (1280, 720), &burns_dir).expect("stamps");
+        assert_eq!(eff.burns.len(), 6, "in, still and out for each");
+        let out = dir.join("stamps-out.mp4");
+        let a = media::trim_args(&clip, 0.0, 4.0, &info, &eff, Encoder::X264, &out);
+        ffmpeg::run(&ff, &a, Duration::from_secs(120)).expect("export");
+        for t in ["0.55", "1.08", "2.00", "3.45"] {
+            let shot = dir.join(format!("stamps-{t}.jpg"));
+            let grab = ["-y", "-ss", t, "-i"]
+                .map(String::from)
+                .into_iter()
+                .chain([out.display().to_string()])
+                .chain(["-frames:v", "1", "-vf", "scale=640:-2"].map(String::from))
+                .chain([shot.display().to_string()])
+                .collect::<Vec<_>>();
+            ffmpeg::run(&ff, &grab, Duration::from_secs(30)).expect("frame");
+        }
+        let _ = std::fs::remove_dir_all(&burns_dir);
+    }
 }

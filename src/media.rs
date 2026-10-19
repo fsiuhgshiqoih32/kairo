@@ -325,8 +325,8 @@ pub struct Music {
     pub volume: f32,
 }
 
-/// A caption picture to lay over the picture: raw RGBA in a file, shown from `start` to `end`
-/// (seconds into the clip).
+/// A picture to lay over the export: raw RGBA in a file, shown from `start` to `end` (seconds
+/// into the export). Captions sit at the bottom; text and stickers at their own place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Burn {
     pub path: std::path::PathBuf,
@@ -334,6 +334,11 @@ pub struct Burn {
     pub height: u32,
     pub start: f64,
     pub end: f64,
+    /// Its top-left corner in the export's picture; `None` for a caption.
+    pub at: Option<(i32, i32)>,
+    /// Frames per second when the file holds an animation (frames one after another) that
+    /// starts at `start`.
+    pub fps: Option<u32>,
 }
 
 /// A stream of overlay frames (raw RGBA in a file) laid over the picture's corner.
@@ -366,6 +371,8 @@ pub struct Effects {
     pub burns: Vec<Burn>,
     /// The keys-and-clicks overlay (made for the export just before it runs).
     pub keys: Option<OverlayVideo>,
+    /// Text and stickers (drawn into `burns` just before it runs).
+    pub stamps: Vec<crate::overlays::Item>,
 }
 
 impl Default for Effects {
@@ -382,6 +389,7 @@ impl Default for Effects {
             even_loudness: false,
             burns: Vec::new(),
             keys: None,
+            stamps: Vec::new(),
         }
     }
 }
@@ -471,8 +479,17 @@ fn effects_graph(
         let n = eff.burns.len() + eff.keys.is_some() as usize;
         for (i, b) in eff.burns.iter().enumerate() {
             let to = if i + 1 == n { s("v") } else { format!("c{i}") };
+            let place = match b.at {
+                Some((x, y)) => format!("x={x}:y={y}"),
+                None => s("x=(W-w)/2:y=H-h-H/14"),
+            };
+            let pass = if b.fps.is_some() {
+                ":eof_action=pass"
+            } else {
+                ""
+            };
             parts.push(format!(
-                "[{last}][{}:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,{:.3},{:.3})'[{to}]",
+                "[{last}][{}:v]overlay={place}{pass}:enable='between(t,{:.3},{:.3})'[{to}]",
                 first + i,
                 b.start,
                 b.end
@@ -569,9 +586,16 @@ fn effects_head(clip: &Path, start: f64, end: f64, eff: &Effects) -> Vec<String>
             s("rgba"),
             s("-video_size"),
             format!("{}x{}", b.width, b.height),
-            s("-i"),
-            b.path.display().to_string(),
         ]);
+        if let Some(fps) = b.fps {
+            a.extend([
+                s("-framerate"),
+                fps.to_string(),
+                s("-itsoffset"),
+                format!("{:.3}", b.start),
+            ]);
+        }
+        a.extend([s("-i"), b.path.display().to_string()]);
     }
     if let Some(k) = &eff.keys {
         a.extend([
@@ -1243,6 +1267,7 @@ At least one output file must be specified";
             }),
             burns: Vec::new(),
             keys: None,
+            stamps: Vec::new(),
         };
         let a = trim_args(
             Path::new("c.mp4"),
@@ -1350,6 +1375,8 @@ At least one output file must be specified";
             }),
             burns: vec![
                 Burn {
+                    at: None,
+                    fps: None,
                     path: "c0.rgba".into(),
                     width: 400,
                     height: 80,
@@ -1357,6 +1384,8 @@ At least one output file must be specified";
                     end: 1.5,
                 },
                 Burn {
+                    at: None,
+                    fps: None,
                     path: "c1.rgba".into(),
                     width: 300,
                     height: 80,
@@ -1395,6 +1424,8 @@ At least one output file must be specified";
     fn the_keys_overlay_goes_in_the_corner_after_captions() {
         let eff = Effects {
             burns: vec![Burn {
+                at: None,
+                fps: None,
                 path: "c0.rgba".into(),
                 width: 400,
                 height: 80,

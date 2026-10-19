@@ -366,6 +366,20 @@ fn preview() {
     theme::set_light(true);
     shoot(app.view(), "iced-light-editor", size);
     theme::set_light(false);
+    // Text and stickers on the picture, the text picked.
+    let ed = app.editor.as_mut().expect("editor");
+    let mut words = kairo::overlays::Item::text("What a clutch", 4.0, 8.0);
+    words.color = 1;
+    let mut star = kairo::overlays::Item::sticker("star", 4.0, 8.0);
+    (star.x, star.y) = (0.84, 0.24);
+    let mut gg = kairo::overlays::Item::sticker("gg", 5.0, 8.0);
+    (gg.x, gg.y) = (0.16, 0.78);
+    ed.show_stamps(vec![words, star, gg], Some(0));
+    shoot(app.view(), "iced-editor-stamps", (1280.0, 1500.0));
+    app.editor
+        .as_mut()
+        .expect("editor")
+        .show_stamps(Vec::new(), None);
     app.settings.discord_channel = "Kairo".into();
     shoot(app.view(), "iced-editor-channel", (1280.0, 1400.0));
     app.page = Page::Settings;
