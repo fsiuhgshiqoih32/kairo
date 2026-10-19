@@ -841,7 +841,7 @@ impl Editor {
             container(icon_filled(
                 if playing { Icon::Pause } else { Icon::Play },
                 18.0,
-                Color::WHITE,
+                theme::on_accent(),
             ))
             .center(Length::Fixed(22.0)),
         )

@@ -532,6 +532,89 @@ pub fn format_time(t: f64) -> String {
     format!("{}:{:05.2}", m as u64, t - m * 60.0)
 }
 
+/// One clip in a montage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Piece {
+    pub path: std::path::PathBuf,
+    pub duration: f64,
+    pub has_audio: bool,
+}
+
+/// Each montage clip fades in from and out to black over this long.
+pub const MONTAGE_FADE: f64 = 0.3;
+
+/// Joins `pieces` into one video, in order: each scaled into `size` (letterboxed if its shape
+/// differs) at `fps`, dipping to black between clips, sound faded with the picture. Clips
+/// without sound get silence. Progress goes to stdout.
+pub fn montage_args(
+    pieces: &[Piece],
+    size: (u32, u32),
+    fps: u32,
+    encoder: Encoder,
+    out: &Path,
+) -> Vec<String> {
+    let encoder = export_encoder(encoder);
+    let (w, h) = (size.0.max(2) & !1, size.1.max(2) & !1);
+    let fps = fps.clamp(1, 60);
+    let mut a = vec![s("-y")];
+    a.extend(head());
+    a.extend([s("-progress"), s("pipe:1")]);
+    for p in pieces {
+        a.extend([s("-i"), p.path.display().to_string()]);
+    }
+    let fit = format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,\
+         setsar=1,fps={fps},format=yuv420p"
+    );
+    let mut graph = Vec::new();
+    let mut joined = String::new();
+    for (i, p) in pieces.iter().enumerate() {
+        let d = p.duration.max(MONTAGE_FADE * 2.0 + 0.1);
+        let fade = MONTAGE_FADE;
+        let out_at = d - fade;
+        graph.push(format!(
+            "[{i}:v]{fit},fade=t=in:st=0:d={fade},fade=t=out:st={out_at:.3}:d={fade}[v{i}]"
+        ));
+        let sound = if p.has_audio {
+            format!(
+                "[{i}:a:0]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur={d:.3},\
+                 atrim=0:{d:.3}"
+            )
+        } else {
+            format!("anullsrc=r=48000:cl=stereo,atrim=0:{d:.3}")
+        };
+        graph.push(format!(
+            "{sound},afade=t=in:st=0:d={fade},afade=t=out:st={out_at:.3}:d={fade}[a{i}]"
+        ));
+        joined.push_str(&format!("[v{i}][a{i}]"));
+    }
+    graph.push(format!("{joined}concat=n={}:v=1:a=1[v][a]", pieces.len()));
+    let bitrate = crate::config::Quality::High
+        .bitrate(w as u64 * h as u64, fps)
+        .min(16_000_000);
+    a.extend([
+        s("-filter_complex"),
+        graph.join(";"),
+        s("-map"),
+        s("[v]"),
+        s("-map"),
+        s("[a]"),
+        s("-c:v"),
+        s(encoder.ffmpeg_name()),
+    ]);
+    a.extend(export_video_opts(encoder, bitrate, fps, false));
+    a.extend(mp4_tail(out));
+    a
+}
+
+/// How long a montage of `pieces` runs.
+pub fn montage_length(pieces: &[Piece]) -> f64 {
+    pieces
+        .iter()
+        .map(|p| p.duration.max(MONTAGE_FADE * 2.0 + 0.1))
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +730,45 @@ At least one output file must be specified";
         assert_eq!(progress_secs("frame=12"), None);
         assert_eq!(format_time(7.25), "0:07.25");
         assert_eq!(format_time(125.5), "2:05.50");
+    }
+
+    #[test]
+    fn montage_joins_clips_with_fades_and_fills_missing_sound() {
+        let pieces = [
+            Piece {
+                path: "a.mp4".into(),
+                duration: 30.0,
+                has_audio: true,
+            },
+            Piece {
+                path: "b.mp4".into(),
+                duration: 12.5,
+                has_audio: false,
+            },
+            Piece {
+                path: "c.mp4".into(),
+                duration: 8.0,
+                has_audio: true,
+            },
+        ];
+        let a = montage_args(&pieces, (1920, 1080), 60, Encoder::X264, Path::new("m.mp4"));
+        let j = a.join(" ");
+        assert!(j.contains("-i a.mp4 -i b.mp4 -i c.mp4"), "{j}");
+        let graph = &a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1];
+        assert!(graph.contains("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[v][a]"));
+        // The clip without sound gets silence of its length; the others are padded to theirs.
+        assert!(graph.contains("anullsrc=r=48000:cl=stereo,atrim=0:12.500"));
+        assert!(graph.contains(
+            "[0:a:0]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=30.000"
+        ));
+        assert!(!graph.contains("[1:a:0]"));
+        // Each fades out to black just before its end.
+        assert!(graph.contains("fade=t=out:st=29.700:d=0.3[v0]"));
+        assert!(
+            graph.contains("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080")
+        );
+        assert!(j.contains("-map [v] -map [a] -c:v libx264"));
+        assert!(j.ends_with("-movflags +faststart -f mp4 m.mp4"));
+        assert_eq!(montage_length(&pieces), 50.5);
     }
 }

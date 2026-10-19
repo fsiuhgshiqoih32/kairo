@@ -81,7 +81,7 @@ enum Dialog {
         name: String,
         error: Option<String>,
     },
-    Delete(PathBuf),
+    Delete(Vec<PathBuf>),
     /// A share link, to copy or scan.
     Link {
         url: String,
@@ -134,6 +134,13 @@ pub struct App {
     /// Exports `--ui-self-test` still has to make, after the trimmed copy.
     test_exports: Vec<editor::ExportKind>,
     test_current: Option<editor::ExportKind>,
+    /// What the self-test's exports made, in order.
+    test_made: Vec<PathBuf>,
+    /// Picking clips (for a montage, or to delete several).
+    selecting: bool,
+    /// The picked clips, in the order picked.
+    selected: Vec<PathBuf>,
+    montage: Option<crate::export::Montage>,
     _lock: Option<InstanceLock>,
 }
 
@@ -142,6 +149,7 @@ enum SelfTest {
     Loading(Instant),
     Playing(Instant),
     Exporting(Instant),
+    Montage(Instant),
 }
 
 static TEST_RESULT: std::sync::Mutex<Option<Result<String, String>>> = std::sync::Mutex::new(None);
@@ -160,6 +168,14 @@ pub enum Message {
     Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
     Shots(Vec<ShotItem>),
+    /// Starts or stops picking clips.
+    Select(bool),
+    ToggleSelect(PathBuf),
+    MakeMontage,
+    CancelMontage,
+    MontageTick,
+    /// Asks before deleting the picked clips.
+    DeleteSelected,
     /// Opens or closes the menu of clip lengths under the save button.
     SaveMenu(bool),
     /// Saves the last this many seconds.
@@ -252,6 +268,10 @@ impl App {
                 test: None,
                 test_exports: Vec::new(),
                 test_current: None,
+                test_made: Vec::new(),
+                selecting: false,
+                selected: Vec::new(),
+                montage: None,
                 _lock: None,
             },
             tasks.map(Message::Settings),
@@ -452,10 +472,11 @@ impl App {
                         .as_ref()
                         .and_then(|e| e.last_export())
                         .map(Path::to_path_buf);
-                    if let (Some(kind), Some(path)) = (self.test_current, made)
-                        && let Err(e) = check_export(kind, &path)
-                    {
-                        return self.finish_test(Err(e));
+                    if let (Some(kind), Some(path)) = (self.test_current, made) {
+                        if let Err(e) = check_export(kind, &path) {
+                            return self.finish_test(Err(e));
+                        }
+                        self.test_made.push(path);
                     }
                     let next = self.test_exports.pop();
                     self.test_current = next;
@@ -466,9 +487,19 @@ impl App {
                             return self.editor_effect(effect);
                         }
                         _ => {
-                            return self.finish_test(Ok(
-                                "played, then saved a trimmed copy, a GIF, a vertical copy and slow motion".into(),
-                            ));
+                            // Last, a montage of the clip and its trimmed copy, picked the way a
+                            // person picks them.
+                            let clip = self.editor.as_ref().map(|e| e.clip.clone());
+                            let trimmed = self.test_made.first().cloned();
+                            let (Some(clip), Some(trimmed)) = (clip, trimmed) else {
+                                return self
+                                    .finish_test(Err("nothing to make a montage of".into()));
+                            };
+                            println!("ui self-test: exported; now a montage");
+                            self.test = Some(SelfTest::Montage(Instant::now()));
+                            self.selecting = true;
+                            self.selected = vec![clip, trimmed];
+                            return self.update(Message::MakeMontage);
                         }
                     }
                 }
@@ -490,7 +521,7 @@ impl App {
             }
             editor::Effect::Exported => return self.reload(),
             editor::Effect::Favorite(p) => return self.update(Message::Favorite(p)),
-            editor::Effect::AskDelete(p) => self.dialog = Some(Dialog::Delete(p)),
+            editor::Effect::AskDelete(p) => self.dialog = Some(Dialog::Delete(vec![p])),
             editor::Effect::Back => return self.update(Message::Back),
             editor::Effect::Share { file, clip, range } => {
                 self.start_upload(file, clip, range);
@@ -667,37 +698,119 @@ impl App {
                 self.note("Renamed.", true);
                 return self.reload();
             }
-            Message::AskDelete(p) => self.dialog = Some(Dialog::Delete(p)),
+            Message::AskDelete(p) => self.dialog = Some(Dialog::Delete(vec![p])),
+            Message::Select(on) => {
+                self.selecting = on;
+                self.selected.clear();
+            }
+            Message::ToggleSelect(p) => match self.selected.iter().position(|s| *s == p) {
+                Some(i) => {
+                    self.selected.remove(i);
+                }
+                None => self.selected.push(p),
+            },
+            Message::DeleteSelected => {
+                if !self.selected.is_empty() {
+                    self.dialog = Some(Dialog::Delete(self.selected.clone()));
+                }
+            }
+            Message::MakeMontage => {
+                if self.montage.is_none() && self.selected.len() >= 2 {
+                    match crate::ffmpeg::path() {
+                        Ok(ff) => {
+                            self.montage = Some(crate::export::start_montage(
+                                ff,
+                                self.selected.clone(),
+                                self.settings.save_dir(),
+                            ))
+                        }
+                        Err(e) => self.note(e, false),
+                    }
+                }
+            }
+            Message::CancelMontage => {
+                if let Some(m) = &self.montage {
+                    m.cancel();
+                }
+            }
+            Message::MontageTick => {
+                if !self.montage.as_ref().is_some_and(|m| m.finished()) {
+                    return Task::none();
+                }
+                let m = self.montage.take().expect("finished montage");
+                let result = m.status.lock().unwrap().result.take();
+                match result {
+                    Some(Ok(path)) => {
+                        if let Some(SelfTest::Montage(_)) = &self.test {
+                            let want: f64 = self
+                                .selected
+                                .iter()
+                                .filter_map(|p| {
+                                    crate::ffmpeg::probe_clip(&crate::ffmpeg::path().ok()?, p).ok()
+                                })
+                                .map(|i| i.duration)
+                                .sum();
+                            return self.finish_test(check_montage(&path, want).map(|_| {
+                                "played, then saved a trimmed copy, a GIF, a vertical copy, slow motion and a montage".into()
+                            }));
+                        }
+                        self.selecting = false;
+                        self.selected.clear();
+                        self.note("Montage saved.", true);
+                        return Task::batch([self.reload(), self.open_editor(path)]);
+                    }
+                    Some(Err(e)) => {
+                        if self.test.is_some() {
+                            return self.finish_test(Err(format!("montage failed: {e}")));
+                        }
+                        if e != "Cancelled" {
+                            self.note(format!("Couldn't make the montage: {e}"), false);
+                        }
+                    }
+                    None => {}
+                }
+            }
             Message::DeleteConfirm => {
-                let Some(Dialog::Delete(p)) = self.dialog.take() else {
+                let Some(Dialog::Delete(paths)) = self.dialog.take() else {
                     return Task::none();
                 };
-                if let Some(e) = &mut self.editor
-                    && e.clip == p
-                {
-                    e.release();
-                }
-                match std::fs::remove_file(&p) {
-                    Ok(()) => {
-                        let _ = std::fs::remove_file(crate::save::thumb_for(&p));
-                        let mut l = Library::load();
-                        if l.is_favorite(&p)
-                            || l.links
-                                .contains_key(&*p.file_name().unwrap_or_default().to_string_lossy())
-                        {
-                            l.set_favorite(&p, false);
-                            l.set_link(&p, None);
-                            let _ = l.save();
-                        }
-                        self.clips.retain(|c| c.path != p);
-                        self.shots.retain(|s| s.path != p);
-                        if self.editor.as_ref().is_some_and(|e| e.clip == p) {
-                            self.editor = None;
-                            self.page = Page::Library;
-                        }
-                        self.note("Deleted.", true);
+                let mut l = Library::load();
+                let (mut gone, mut failed) = (0, None);
+                for p in &paths {
+                    if let Some(e) = &mut self.editor
+                        && e.clip == *p
+                    {
+                        e.release();
                     }
-                    Err(e) => self.note(format!("Couldn't delete: {e}"), false),
+                    match std::fs::remove_file(p) {
+                        Ok(()) => {
+                            gone += 1;
+                            let _ = std::fs::remove_file(crate::save::thumb_for(p));
+                            if let Some(h) = library::hero_path(p) {
+                                let _ = std::fs::remove_file(h);
+                            }
+                            l.set_favorite(p, false);
+                            l.set_link(p, None);
+                            l.set_markers(p, Vec::new());
+                            self.clips.retain(|c| c.path != *p);
+                            self.shots.retain(|s| s.path != *p);
+                            self.selected.retain(|s| s != p);
+                            if self.editor.as_ref().is_some_and(|e| e.clip == *p) {
+                                self.editor = None;
+                                self.page = Page::Library;
+                            }
+                        }
+                        Err(e) => failed = Some(e.to_string()),
+                    }
+                }
+                let _ = l.save();
+                if self.selected.is_empty() {
+                    self.selecting = false;
+                }
+                match failed {
+                    Some(e) => self.note(format!("Couldn't delete: {e}"), false),
+                    None if gone > 1 => self.note(format!("Deleted {gone} clips."), true),
+                    None => self.note("Deleted.", true),
                 }
             }
             Message::CloseDialog => self.dialog = None,
@@ -786,6 +899,11 @@ impl App {
         if matches!(key.as_ref(), Key::Named(Named::Escape)) {
             if self.dialog.is_some() {
                 self.dialog = None;
+            } else if self.save_menu {
+                self.save_menu = false;
+            } else if self.selecting && self.montage.is_none() {
+                self.selecting = false;
+                self.selected.clear();
             } else if self.page != Page::Library {
                 return self.update(Message::Back);
             }
@@ -871,6 +989,7 @@ impl App {
             SelfTest::Loading(t) => SelfTest::Loading(*t),
             SelfTest::Playing(t) => SelfTest::Playing(*t),
             SelfTest::Exporting(t) => SelfTest::Exporting(*t),
+            SelfTest::Montage(t) => SelfTest::Montage(*t),
         };
         let Some(ed) = &mut self.editor else {
             return self.finish_test(Err("the editor didn't open".into()));
@@ -926,6 +1045,9 @@ impl App {
             SelfTest::Exporting(t) if t.elapsed() > Duration::from_secs(150) => {
                 return self.finish_test(Err("the export didn't finish".into()));
             }
+            SelfTest::Montage(t) if t.elapsed() > Duration::from_secs(150) => {
+                return self.finish_test(Err("the montage didn't finish".into()));
+            }
             _ => {}
         }
         Task::none()
@@ -940,6 +1062,9 @@ impl App {
         ];
         if !self.uploads.is_empty() {
             subs.push(iced::time::every(Duration::from_millis(150)).map(|_| Message::UploadTick));
+        }
+        if self.montage.is_some() {
+            subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::MontageTick));
         }
         if self.editor.as_ref().is_some_and(|e| e.busy()) {
             // A timer rather than the window's frames, so playback runs while it's hidden too.
@@ -1017,6 +1142,9 @@ impl App {
                 .padding(22),
             );
         }
+        if self.selecting && self.page == Page::Library {
+            layers = layers.push(self.selection_bar());
+        }
         if self.save_menu {
             layers = layers.push(self.save_menu_view());
         }
@@ -1024,6 +1152,100 @@ impl App {
             layers = layers.push(self.dialog_view(d));
         }
         layers.into()
+    }
+
+    /// The bar at the bottom while picking clips: what's picked, and what to do with it.
+    fn selection_bar(&self) -> Element<'_, Message> {
+        let n = self.selected.len();
+        let total: f64 = self
+            .clips
+            .iter()
+            .filter(|c| self.selected.contains(&c.path))
+            .filter_map(|c| c.duration)
+            .sum();
+        let content: Element<'_, Message> = if let Some(m) = &self.montage {
+            let (stage, p) = {
+                let st = m.status.lock().unwrap();
+                (st.stage.clone(), st.progress)
+            };
+            row![
+                icon(Icon::Layers, 17.0, theme::accent()),
+                column![
+                    text(format!("{stage}: {:.0}%", p * 100.0))
+                        .size(13)
+                        .font(MEDIUM),
+                    iced::widget::progress_bar(0.0..=1.0, p)
+                        .girth(5)
+                        .style(theme::progress),
+                ]
+                .spacing(6)
+                .width(Fill),
+                button(text("Cancel").size(13).font(MEDIUM))
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::ghost)
+                    .on_press(Message::CancelMontage),
+            ]
+            .spacing(14)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            let what = match n {
+                0 => "Pick clips in the order they should play.".to_string(),
+                1 => format!("1 clip, {}", duration(Some(total))),
+                n => format!("{n} clips, {} in all", duration(Some(total))),
+            };
+            row![
+                icon(Icon::Selected, 17.0, theme::accent()),
+                text(what).size(14).font(MEDIUM),
+                space::horizontal(),
+                library::tip(
+                    widgets::icon_button(Icon::Layers, "Make a montage", theme::on_accent())
+                        .style(theme::primary)
+                        .on_press_maybe((n >= 2).then_some(Message::MakeMontage)),
+                    "Joins them into one video, fading between clips",
+                ),
+                widgets::icon_button(Icon::Trash, "Delete", TEXT_2)
+                    .style(theme::danger_ghost)
+                    .on_press_maybe((n >= 1).then_some(Message::DeleteSelected)),
+                button(text("Done").size(13).font(MEDIUM))
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::ghost)
+                    .on_press(Message::Select(false)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into()
+        };
+        container(
+            container(content)
+                .padding(Padding::from([10, 14]))
+                .max_width(720)
+                .style(|_| container::Style {
+                    background: Some(theme::SURFACE_HI.into()),
+                    border: iced::Border {
+                        color: theme::alpha(theme::accent(), 0.45),
+                        width: 1.0,
+                        radius: 14.0.into(),
+                    },
+                    shadow: iced::Shadow {
+                        color: theme::alpha(iced::Color::BLACK, 0.6),
+                        offset: iced::Vector::new(0.0, 10.0),
+                        blur_radius: 34.0,
+                    },
+                    ..Default::default()
+                }),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(Padding {
+            top: 0.0,
+            right: 28.0,
+            bottom: 22.0,
+            left: 264.0,
+        })
+        .into()
     }
 
     /// The menu under the save button: the usual length, or less of it.
@@ -1210,16 +1432,22 @@ impl App {
                     Message::CloseDialog,
                 )
             }
-            Dialog::Delete(p) => dialog(
-                if p.extension().is_some_and(|e| e != "mp4") {
-                    "Delete this screenshot?"
-                } else {
-                    "Delete this clip?"
+            Dialog::Delete(paths) => dialog(
+                &match paths.as_slice() {
+                    [p] if p.extension().is_some_and(|e| e != "mp4") => {
+                        "Delete this screenshot?".to_string()
+                    }
+                    [_] => "Delete this clip?".to_string(),
+                    many => format!("Delete {} clips?", many.len()),
                 },
-                text(format!(
-                    "\"{}\" will be deleted from your clips folder. This can't be undone.",
-                    stem(p)
-                ))
+                text(match paths.as_slice() {
+                    [p] => format!(
+                        "\"{}\" will be deleted from your clips folder. This can't be undone.",
+                        stem(p)
+                    ),
+                    _ => "They'll be deleted from your clips folder. This can't be undone."
+                        .to_string(),
+                })
                 .size(14)
                 .color(TEXT_2),
                 row![
@@ -1229,7 +1457,7 @@ impl App {
                         .on_press(Message::CloseDialog),
                     button(
                         row![
-                            icon(Icon::Trash, 15.0, iced::Color::WHITE),
+                            icon(Icon::Trash, 15.0, theme::on_accent()),
                             text("Delete").size(13).font(SEMIBOLD)
                         ]
                         .spacing(7)
@@ -1758,6 +1986,29 @@ fn take_open_request() -> Option<String> {
 }
 
 /// `--ui-self-test`: checks what an export made (the test trims 0.5 to 2.5 s of a 1280x720 clip).
+/// A montage must be one clip about as long as its parts, at their size.
+fn check_montage(path: &Path, want: f64) -> Result<(), String> {
+    let ff = crate::ffmpeg::path()?;
+    let info = crate::ffmpeg::probe_clip(&ff, path)?;
+    println!(
+        "ui self-test: montage is {}x{}, {:.2} s (parts {want:.2} s), {} sound track(s)",
+        info.width,
+        info.height,
+        info.duration,
+        info.audio_tracks.len()
+    );
+    if (info.width, info.height) != (1280, 720) || info.audio_tracks.is_empty() {
+        return Err(format!("the montage is {}x{}", info.width, info.height));
+    }
+    if (info.duration - want).abs() > 0.5 {
+        return Err(format!(
+            "the montage lasts {:.2} s, not about {want:.2} s",
+            info.duration
+        ));
+    }
+    Ok(())
+}
+
 fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
     let what = format!("{kind:?} export {}", path.display());
     if kind == editor::ExportKind::Gif {

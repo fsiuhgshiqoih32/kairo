@@ -5,9 +5,10 @@ sound in memory. Press **F8** and the last 30 seconds are saved as an MP4, like 
 ShadowPlay. It's free and open source (MIT), with no account and no ads. Nothing is uploaded
 unless you ask for a share link.
 
-- **Always ready, light on games.** The replay lives in RAM and is captured and encoded on the
-  GPU (NVIDIA NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox),
-  with x264 as a fallback. Nothing touches the disk until you save.
+- **Always ready, light on games.** The replay is captured and encoded on the GPU (NVIDIA
+  NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox), with x264 as a
+  fallback. It lives in memory, or for long buffers in a scratch file the system caches in spare
+  memory, so even minutes of 1440p cost Rewindr little.
 - **Instant saves.** A clip is cut from the buffer without re-encoding. It's saved in about a
   second and named after the game in front.
 - **Editor.** Play a clip with sound, scrub its filmstrip, drag the handles to trim, and save an
@@ -17,6 +18,8 @@ unless you ask for a share link.
 - **Share for Discord.** One click makes a copy under 10 MB (or 50/500 MB for Nitro) and puts it
   on the clipboard: paste it into Discord.
 - **Voice clipping.** Say "clip that" and it saves a clip. Speech is recognised offline (Vosk).
+- **Markers.** F10 marks a moment while you play; the clip shows a flag there.
+- **Montages.** Pick clips and join them into one video that dips to black between them.
 - **Screenshots** with F9, and **more formats**: GIF, vertical 9:16, slow motion.
 - **Gallery.** Filter by game, search, star favourites, rename, and optionally keep the clips
   folder under a size limit (oldest go first, favourites stay).
@@ -46,9 +49,12 @@ Run Rewindr. A tray icon appears and the window opens. Then:
 | --- | --- |
 | **F8** | Save the last 30 seconds (change the key and length in Settings) |
 | **F9** | Save a screenshot |
+| **F10** | Mark this moment; the clip that holds it shows a flag there |
 | "clip that" | Save a clip by voice (turn it on in Settings > Voice clipping) |
 | Click a clip | Open it in the editor: play, trim, share |
 | Space, Left/Right, `,` `.`, I/O | In the editor: play, jump a second, step a frame, set start/end |
+| M, N / Shift+N | In the editor: mark a moment, go to the next / previous mark |
+| Select (library) | Pick clips to join into a montage or delete together |
 | Tray > Pause recording | Stop keeping a replay until you resume |
 | `rewindr save` | Save a clip from a script or desktop shortcut (needed on Wayland) |
 | `rewindr screenshot` | Save a screenshot the same way |
@@ -68,7 +74,8 @@ Clips go to `Videos/Rewindr`. Settings are stored in `config.toml` in your confi
 ffmpeg captures the screen (Windows Graphics Capture, Desktop Duplication or GDI on Windows,
 AVFoundation on macOS, X11 on Linux), encodes it with a keyframe every second, and streams
 MPEG-TS stamped with wall-clock time into Rewindr. Rewindr cuts the stream at keyframes and
-keeps the last N seconds in a ring buffer. Sound is captured separately (WASAPI loopback on
+keeps the last N seconds in a ring buffer, in memory or (for long buffers) in a fixed-size
+scratch file that's deleted when Rewindr closes. Sound is captured separately (WASAPI loopback on
 Windows, ScreenCaptureKit on macOS, the PulseAudio/PipeWire monitor on Linux, plus the
 microphone) and stamped with the
 same clock. On save, the video is written from the keyframe just before the cut, the matching

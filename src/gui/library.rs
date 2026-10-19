@@ -268,6 +268,20 @@ impl App {
                 .padding(Padding::from([7, 12]))
                 .style(theme::pick)
                 .menu_style(theme::menu),
+            tip(
+                icon_button(
+                    Icon::Selected,
+                    "Select",
+                    if self.selecting {
+                        theme::accent()
+                    } else {
+                        TEXT_2
+                    }
+                )
+                .style(theme::secondary)
+                .on_press(Message::Select(!self.selecting)),
+                "Pick clips to join into a montage, or to delete",
+            ),
             icon_button(Icon::Folder, "Folder", TEXT_2)
                 .style(theme::secondary)
                 .on_press(Message::OpenFolder),
@@ -404,25 +418,62 @@ impl App {
         if let Some(p) = self.upload_progress(&c.path) {
             layers = layers.push(uploading(p.0, p.1));
         }
-        let star = if c.favorite {
-            icon_filled(Icon::Star, 15.0, theme::GOLD)
+        let picked = self.selected.iter().position(|p| *p == c.path);
+        if self.selecting {
+            // The pick's number (the order it plays in a montage), or an empty ring.
+            let mark: Element<'a, Message> = match picked {
+                Some(i) => container(
+                    text((i + 1).to_string())
+                        .size(13)
+                        .font(BOLD)
+                        .color(theme::on_accent()),
+                )
+                .center(iced::Length::Fixed(28.0))
+                .style(|_| iced::widget::container::Style {
+                    background: Some(theme::accent().into()),
+                    border: iced::Border {
+                        color: TEXT,
+                        width: 2.0,
+                        radius: 14.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into(),
+                None => container(Space::new())
+                    .center(iced::Length::Fixed(28.0))
+                    .style(|_| iced::widget::container::Style {
+                        background: Some(theme::alpha(Color::BLACK, 0.4).into()),
+                        border: iced::Border {
+                            color: theme::alpha(TEXT, 0.85),
+                            width: 2.0,
+                            radius: 14.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into(),
+            };
+            layers = layers.push(container(mark).padding(10));
         } else {
-            icon(Icon::Star, 15.0, TEXT)
-        };
-        layers = layers.push(
-            container(tip(
-                button(star)
-                    .padding(7)
-                    .style(theme::overlay_icon)
-                    .on_press(Message::Favorite(c.path.clone())),
-                if c.favorite {
-                    "Remove from favourites"
-                } else {
-                    "Favourite: never cleaned up"
-                },
-            ))
-            .padding(8),
-        );
+            let star = if c.favorite {
+                icon_filled(Icon::Star, 15.0, theme::GOLD)
+            } else {
+                icon(Icon::Star, 15.0, TEXT)
+            };
+            layers = layers.push(
+                container(tip(
+                    button(star)
+                        .padding(7)
+                        .style(theme::overlay_icon)
+                        .on_press(Message::Favorite(c.path.clone())),
+                    if c.favorite {
+                        "Remove from favourites"
+                    } else {
+                        "Favourite: never cleaned up"
+                    },
+                ))
+                .padding(8),
+            );
+        }
 
         let meta = row![
             text(when(c.modified, now)).size(12).color(MUTED),
@@ -456,12 +507,27 @@ impl App {
                 left: 12.0
             }),
         ];
+        let selected = picked.is_some();
         let base = button(content)
             .padding(0)
             .width(Fill)
             .height(Fill)
-            .style(theme::card)
-            .on_press(Message::Open(c.path.clone()));
+            .style(move |t, s| {
+                let mut st = theme::card(t, s);
+                if selected {
+                    st.border.color = theme::accent();
+                    st.border.width = 2.0;
+                }
+                st
+            })
+            .on_press(if self.selecting {
+                Message::ToggleSelect(c.path.clone())
+            } else {
+                Message::Open(c.path.clone())
+            });
+        if self.selecting {
+            return base.into();
+        }
         hover(base, self.actions(&c.path, c.link.is_some(), true))
     }
 

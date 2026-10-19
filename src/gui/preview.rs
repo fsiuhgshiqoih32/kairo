@@ -141,6 +141,11 @@ fn preview() {
     app.save_menu = true;
     shoot(app.view(), "iced-save-menu", size);
     app.save_menu = false;
+    app.selecting = true;
+    app.selected = vec![app.clips[2].path.clone(), app.clips[0].path.clone()];
+    shoot(app.view(), "iced-select", size);
+    app.selecting = false;
+    app.selected.clear();
     theme::set_accent("purple");
     shoot_at(
         app.view(),
@@ -152,7 +157,7 @@ fn preview() {
     shoot(app.view(), "iced-library-gold", size);
     theme::set_accent("red");
     shoot_at(app.view(), "iced-library-hover", size, Some((560.0, 230.0)));
-    app.dialog = Some(super::Dialog::Delete(app.clips[3].path.clone()));
+    app.dialog = Some(super::Dialog::Delete(vec![app.clips[3].path.clone()]));
     shoot(app.view(), "iced-delete", size);
     app.dialog = None;
 

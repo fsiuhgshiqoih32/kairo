@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Markers.** Press F10 while you play to mark a moment (a short tick confirms it). Clips that
+  hold it show a gold flag there on their timeline; the editor's Moments panel jumps to each one
+  or keeps the 10 seconds around it. M marks a moment in the editor, N jumps to the next.
+- **Montages.** Select clips in the library, in the order they should play, and join them into
+  one video that dips to black between clips. Selecting also deletes several clips at once.
+- **Lighter on your PC.**
+  - Long replay buffers can live on disk (Settings > Video > Replay buffer). Automatic puts any
+    buffer that could pass 1 GB in a scratch file the system keeps in spare memory and hands
+    back to games, so a 200-second 1440p buffer no longer sits in Rewindr's memory.
+  - 120 fps recordings use about 25% fewer bits for the same picture, so clips and buffers are
+    that much smaller.
+  - NVIDIA's encoder runs a faster preset with the same picture.
+  - The buffer wastes no memory on spare room, and sound takes half the memory it did.
+  - Voice clipping runs one thread instead of one per CPU core.
+  - The window wakes up half as often and shows screenshots from small thumbnails.
+- **A cooler window.** Eight accent colours (Settings > Rewindr). Clips glow in the accent when
+  you point at them. All clips opens with your latest clip as a big banner.
+- **Save a shorter clip** from the menu next to the save button.
 - **Share links, like Medal.** One click uploads a clip (or just the trimmed part) and copies a
   link anyone can watch in their browser; Discord plays it right in the chat. A QR code opens it
   on a phone. Links last forever (removed after two years without views) or 1 hour to 3 days, as

@@ -180,6 +180,80 @@ fn run(
     }
 }
 
+/// A montage being made from several clips.
+pub struct Montage {
+    pub status: Arc<Mutex<Status>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Montage {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn finished(&self) -> bool {
+        self.status.lock().unwrap().result.is_some()
+    }
+}
+
+/// Joins `clips` (in that order) into a new clip in `dir`, on a worker thread.
+pub fn start_montage(ff: PathBuf, clips: Vec<PathBuf>, dir: PathBuf) -> Montage {
+    let status = Arc::new(Mutex::new(Status {
+        stage: format!("Making a montage of {} clips", clips.len()),
+        ..Default::default()
+    }));
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let (status, cancel) = (status.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let result = montage(&ff, &clips, &dir, &status, &cancel);
+            if let Err(e) = &result {
+                warning!("montage failed: {e}");
+            }
+            status.lock().unwrap().result = Some(result);
+        });
+    }
+    Montage { status, cancel }
+}
+
+fn montage(
+    ff: &Path,
+    clips: &[PathBuf],
+    dir: &Path,
+    status: &Mutex<Status>,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, String> {
+    let mut pieces = Vec::new();
+    let mut first: Option<Info> = None;
+    for c in clips {
+        let info = ffmpeg::probe_clip(ff, c)?;
+        pieces.push(media::Piece {
+            path: c.clone(),
+            duration: info.duration,
+            has_audio: !info.audio_tracks.is_empty(),
+        });
+        first.get_or_insert(info);
+    }
+    let first = first.ok_or("Pick some clips first.")?;
+    // The first clip's shape, at most 1080p and 60 fps: montages are for sharing.
+    let size = args::output_size((first.width, first.height), Some(1080));
+    let fps = (first.fps.round() as u32).clamp(24, 60);
+    let encoder = best_encoder(ff, &Mutex::new(None));
+    let out = crate::save::clip_path(dir, Some("Montage"));
+    let part = out.with_extension("mp4.part");
+    let a = media::montage_args(&pieces, size, fps, encoder, &part);
+    encode(
+        ff,
+        &a,
+        media::montage_length(&pieces),
+        &part,
+        status,
+        cancel,
+        (0.0, 1.0),
+    )?;
+    finish(ff, &part, &out)
+}
+
 /// Longest stretch a GIF export takes.
 pub const GIF_MAX_SECONDS: f64 = 15.0;
 
