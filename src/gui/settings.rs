@@ -373,18 +373,19 @@ impl State {
     ) -> Vec<Element<'a, Msg>> {
         let _ = report;
         let mut rows: Vec<Element<'a, Msg>> = vec![
-            text(
-                "Give a game its own clip length, quality or save shortcut. Kairo finds it by the \
-                 start of its window title, so \"Minecraft\" also covers \"Minecraft 26.3\". \
-                 \"Never record\" keeps no replay while that app is in front.",
+            container(
+                text(
+                    "Give a game its own clip length, quality or save shortcut. Kairo finds it \
+                     by the start of its window title, so \"Minecraft\" also covers \
+                     \"Minecraft 26.3\". \"Never record\" keeps no replay while that app is in \
+                     front.",
+                )
+                .size(13)
+                .color(theme::muted()),
             )
-            .size(13)
-            .color(theme::muted())
+            .padding(Padding::from([14, 18]))
             .into(),
         ];
-        rows[0] = container(rows.remove(0))
-            .padding(Padding::from([14, 18]))
-            .into();
         for (i, r) in s.game_rules.iter().enumerate() {
             let top = row![
                 text_input("Game", &r.game)
