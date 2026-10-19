@@ -46,6 +46,16 @@ step "export: exact trim and a size-limited copy"
 "$ff" "${q[@]}" -i "$dir/clip.mp4" -map 0:v:0 -map "0:a:0?" -vf fps=15,scale=-2:120 -c:v libx264 \
   -b:v 200k -maxrate 200k -bufsize 200k -c:a aac -b:a 64000 -f mp4 "$dir/share.mp4"
 
+step "more formats: GIF with a palette, vertical with a blurred background, slow motion"
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -an   -vf "fps=10,scale=80:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"   -loop 0 -f gif "$dir/clip.gif"
+test -s "$dir/clip.gif"
+"$ff" "${q[@]}" -i "$dir/clip.mp4"   -filter_complex "[0:v]split[bg][fg];[bg]scale=36:64:force_original_aspect_ratio=increase,crop=36:64,boxblur=4:1,scale=144:256[b];[fg]scale=144:-2[f];[b][f]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"   -map "[v]" -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/vertical.mp4"
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -map 0:v:0 -map 0:a:0 -vf "setpts=2.0*PTS" -af atempo=0.5   -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/slow.mp4"
+
+step "screenshot: one frame of the stream as JPEG"
+"$ff" "${q[@]}" -i "$dir/video.ts" -vf "select=eq(n\,80)" -frames:v 1 -q:v 2 -update 1 "$dir/shot.jpg"
+test -s "$dir/shot.jpg"
+
 step "encoder probe: null output"
 "$ff" "${q[@]}" -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 5 -c:v libx264 -f null -
 
