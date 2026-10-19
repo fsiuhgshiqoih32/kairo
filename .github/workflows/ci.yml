@@ -102,7 +102,8 @@ jobs:
           $say = @{ "said1" = "clip that"; "said2" = "that was insane, clip that"; "other1" = "we need to push now"; "other2" = "grab the flag" }
           foreach ($k in $say.Keys) { $s.SetOutputToWaveFile("$PWD\$k.wav", $fmt); $s.Speak($say[$k]) }
           $s.SetOutputToNull()
-          cargo run --locked -- voice-test "clip that" +said1.wav +said2.wav -other1.wav -other2.wav
+          cargo run --locked -- voice-test "clip that" '+said1.wav' '+said2.wav' '-other1.wav' '-other2.wav'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Voice test (macOS)
         if: runner.os == 'macOS'

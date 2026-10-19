@@ -79,7 +79,7 @@ const MODEL: Download = Download {
 };
 
 #[cfg(windows)]
-const LIB_FILE: &str = "lib/libvosk.dll";
+const LIB_FILE: &str = "lib\\libvosk.dll";
 #[cfg(target_os = "macos")]
 const LIB_FILE: &str = "lib/libvosk.dylib";
 #[cfg(target_os = "linux")]
@@ -262,9 +262,14 @@ impl Drop for Engine {
 
 #[cfg(windows)]
 fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
-    use libloading::os::windows::{LOAD_WITH_ALTERED_SEARCH_PATH, Library};
-    // Its C++ runtime DLLs sit beside it; this flag makes Windows look there.
-    unsafe { Library::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH).map(Into::into) }
+    use libloading::os::windows::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, Library,
+    };
+    // Its C++ runtime DLLs sit beside it. Windows looks in the DLL's own folder only when asked,
+    // and only finds that folder in a path written with backslashes.
+    let path = PathBuf::from(path.to_string_lossy().replace('/', "\\"));
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    unsafe { Library::load_with_flags(&path, flags).map(Into::into) }
 }
 
 #[cfg(not(windows))]
@@ -522,11 +527,13 @@ pub fn test_files(phrase: &str, files: &[String]) -> Result<(), String> {
         let (samples, rate, channels) = read_wav(Path::new(path))?;
         let mut l = Listener::new(engine.clone(), phrase)?;
         let mut heard = 0;
-        // Feed it in 20 ms pieces, like the microphone does, then a second of silence.
+        // Feed it in 20 ms pieces, like the microphone does, between stretches of silence (a
+        // microphone hears quiet before and after someone speaks).
         let piece = (rate as usize / 50) * channels as usize;
         let silence = vec![0f32; rate as usize * channels as usize];
-        for c in samples
+        for c in silence[..silence.len() / 2]
             .chunks(piece.max(1))
+            .chain(samples.chunks(piece.max(1)))
             .chain(silence.chunks(piece.max(1)))
         {
             if l.feed(c, rate, channels) {
