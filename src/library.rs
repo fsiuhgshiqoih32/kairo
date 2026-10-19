@@ -1,7 +1,7 @@
-//! The clips folder: listing clips, which game each is from, favourites, and keeping the
-//! folder under a size limit.
+//! The clips folder: listing clips, which game each is from, favourites, tags, the Recently
+//! deleted folder, and keeping the folder under a size limit.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -109,6 +109,24 @@ pub struct Library {
     pub links: std::collections::BTreeMap<String, Link>,
     /// Marked moments, in seconds from the clip's start.
     pub markers: std::collections::BTreeMap<String, Vec<f64>>,
+    /// Tags the user put on clips.
+    pub tags: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// Tags are short: this many characters at most.
+pub const MAX_TAG: usize = 24;
+
+/// A tag as typed, tidied: trimmed, single spaces, at most [`MAX_TAG`] characters.
+pub fn clean_tag(tag: &str) -> String {
+    let words: Vec<&str> = tag.split_whitespace().collect();
+    words
+        .join(" ")
+        .trim_start_matches('#')
+        .chars()
+        .take(MAX_TAG)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Marks closer together than this are one.
@@ -241,6 +259,67 @@ impl Library {
         self.markers(clip).to_vec()
     }
 
+    /// The clip's tags, by name.
+    pub fn tags(&self, clip: &Path) -> Vec<String> {
+        clip.file_name()
+            .and_then(|n| self.tags.get(&*n.to_string_lossy()))
+            .map(|t| t.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Tags a clip. A tag that's already in use elsewhere keeps its spelling ("Clutch", not
+    /// "clutch"). Returns false when there was nothing to add.
+    pub fn add_tag(&mut self, clip: &Path, tag: &str) -> bool {
+        let tag = clean_tag(tag);
+        let Some(n) = clip.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return false;
+        };
+        if tag.is_empty() {
+            return false;
+        }
+        let tag = self
+            .tags
+            .values()
+            .flatten()
+            .find(|t| t.eq_ignore_ascii_case(&tag))
+            .cloned()
+            .unwrap_or(tag);
+        self.tags.entry(n).or_default().insert(tag)
+    }
+
+    pub fn remove_tag(&mut self, clip: &Path, tag: &str) {
+        let Some(n) = clip.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return;
+        };
+        if let Some(t) = self.tags.get_mut(&n) {
+            t.remove(tag);
+            if t.is_empty() {
+                self.tags.remove(&n);
+            }
+        }
+    }
+
+    /// Every tag in use, and on how many clips, by name.
+    pub fn all_tags(&self) -> Vec<(String, usize)> {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for t in self.tags.values().flatten() {
+            *counts.entry(t.clone()).or_default() += 1;
+        }
+        let mut v: Vec<(String, usize)> = counts.into_iter().collect();
+        v.sort_by_key(|(t, _)| t.to_lowercase());
+        v
+    }
+
+    /// Forgets everything kept about a clip that's gone for good.
+    pub fn forget(&mut self, clip: &Path) {
+        self.set_favorite(clip, false);
+        self.set_link(clip, None);
+        self.set_markers(clip, Vec::new());
+        if let Some(n) = clip.file_name() {
+            self.tags.remove(&*n.to_string_lossy());
+        }
+    }
+
     /// Keeps a favourite's star, a shared link and marks when the file is renamed.
     pub fn renamed(&mut self, from: &Path, to: &Path) {
         if self.is_favorite(from) {
@@ -253,18 +332,33 @@ impl Library {
                 self.links.insert(t.clone(), l);
             }
             if let Some(m) = self.markers.remove(&f) {
-                self.markers.insert(t, m);
+                self.markers.insert(t.clone(), m);
+            }
+            if let Some(tags) = self.tags.remove(&f) {
+                self.tags.insert(t, tags);
             }
         }
     }
 }
 
-/// Deletes the oldest clips (never favourites) until the folder's clips total at most
-/// `limit_bytes`. Returns what was deleted.
+/// Deletes for good until the folder's clips and Recently deleted total at most `limit_bytes`:
+/// what's in Recently deleted first, then the oldest clips (never favourites). Returns where
+/// what went was saved.
 pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library) -> Vec<PathBuf> {
     let clips = scan(dir);
-    let mut total: u64 = clips.iter().map(|c| c.size).sum();
+    let bin = trashed(dir);
+    let mut total: u64 =
+        clips.iter().map(|c| c.size).sum::<u64>() + bin.iter().map(|t| t.size).sum::<u64>();
     let mut deleted = Vec::new();
+    for t in bin.iter().rev() {
+        if total <= limit_bytes {
+            break;
+        }
+        if purge(dir, &t.path).is_ok() {
+            total = total.saturating_sub(t.size);
+            deleted.push(t.from.clone());
+        }
+    }
     for c in clips.iter().rev() {
         if total <= limit_bytes {
             break;
@@ -278,6 +372,222 @@ pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library) -> Vec<PathBuf> {
         }
     }
     deleted
+}
+
+// --- Recently deleted ------------------------------------------------------------------------
+
+/// Deleted clips and screenshots wait in this folder inside the clips folder, so a delete can be
+/// undone.
+pub const TRASH_DIR: &str = "Recently deleted";
+/// How long they wait before they're gone for good.
+pub const TRASH_DAYS: u64 = 30;
+const TRASH_SECONDS: u64 = TRASH_DAYS * 24 * 3600;
+/// Where each file in the trash came from, and when it was deleted.
+const TRASH_LIST: &str = ".deleted.json";
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct TrashEntry {
+    from: PathBuf,
+    deleted: u64,
+}
+
+/// A file in Recently deleted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trashed {
+    /// Where it is now.
+    pub path: PathBuf,
+    /// Where it was.
+    pub from: PathBuf,
+    /// When it was deleted, in Unix seconds.
+    pub deleted: u64,
+    pub size: u64,
+}
+
+impl Trashed {
+    /// When it goes for good, in Unix seconds.
+    pub fn purge_at(&self) -> u64 {
+        self.deleted + TRASH_SECONDS
+    }
+}
+
+pub fn trash_dir(dir: &Path) -> PathBuf {
+    dir.join(TRASH_DIR)
+}
+
+fn read_trash_list(dir: &Path) -> BTreeMap<String, TrashEntry> {
+    std::fs::read_to_string(trash_dir(dir).join(TRASH_LIST))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_trash_list(dir: &Path, list: &BTreeMap<String, TrashEntry>) {
+    let path = trash_dir(dir).join(TRASH_LIST);
+    if list.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(list) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+fn unix(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// `path`, or "<stem> (2).<ext>" and so on if that's taken.
+fn free_name(path: &Path) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut p = path.to_path_buf();
+    let mut n = 2;
+    while p.exists() {
+        p = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    p
+}
+
+/// Moves a file, copying when it has to cross drives. Fails without leaving a copy behind.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from).inspect_err(|_| {
+        let _ = std::fs::remove_file(to);
+    })
+}
+
+/// Moves `file` (and its captions) into Recently deleted in `dir`. Returns where it went.
+pub fn trash(dir: &Path, file: &Path, now: u64) -> std::io::Result<PathBuf> {
+    let bin = trash_dir(dir);
+    std::fs::create_dir_all(&bin)?;
+    let name = file
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("not a file"))?;
+    let to = free_name(&bin.join(name));
+    move_file(file, &to)?;
+    let srt = file.with_extension("srt");
+    if srt.exists() {
+        let _ = move_file(&srt, &to.with_extension("srt"));
+    }
+    let mut list = read_trash_list(dir);
+    list.insert(
+        to.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        TrashEntry {
+            from: file.to_path_buf(),
+            deleted: now,
+        },
+    );
+    write_trash_list(dir, &list);
+    Ok(to)
+}
+
+/// What's in Recently deleted, most recently deleted first. Files someone put there by hand
+/// count too, as if deleted when they were last changed.
+pub fn trashed(dir: &Path) -> Vec<Trashed> {
+    let Ok(rd) = std::fs::read_dir(trash_dir(dir)) else {
+        return Vec::new();
+    };
+    let list = read_trash_list(dir);
+    let mut v: Vec<Trashed> = rd
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            let name = e.file_name().to_string_lossy().to_string();
+            if !meta.is_file() || name.starts_with('.') || name.ends_with(".srt") {
+                return None;
+            }
+            let entry = list.get(&name);
+            Some(Trashed {
+                path: e.path(),
+                from: entry.map_or_else(|| dir.join(&name), |t| t.from.clone()),
+                deleted: entry.map_or_else(|| meta.modified().map_or(0, unix), |t| t.deleted),
+                size: meta.len(),
+            })
+        })
+        .collect();
+    v.sort_by_key(|t| std::cmp::Reverse(t.deleted));
+    v
+}
+
+/// Puts a deleted file back where it was (under a free name if that's taken now). Returns
+/// where it went.
+pub fn restore(dir: &Path, trashed: &Path) -> std::io::Result<PathBuf> {
+    let name = trashed
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let mut list = read_trash_list(dir);
+    let from = list
+        .get(&name)
+        .map_or_else(|| dir.join(&name), |t| t.from.clone());
+    if let Some(parent) = from.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let to = free_name(&from);
+    move_file(trashed, &to)?;
+    let srt = trashed.with_extension("srt");
+    if srt.exists() {
+        let _ = move_file(&srt, &to.with_extension("srt"));
+    }
+    list.remove(&name);
+    write_trash_list(dir, &list);
+    Ok(to)
+}
+
+/// Deletes a file in Recently deleted for good.
+pub fn purge(dir: &Path, trashed: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(trashed)?;
+    let _ = std::fs::remove_file(trashed.with_extension("srt"));
+    let mut list = read_trash_list(dir);
+    if let Some(n) = trashed.file_name() {
+        list.remove(&*n.to_string_lossy());
+    }
+    write_trash_list(dir, &list);
+    Ok(())
+}
+
+/// Deletes for good what's waited in Recently deleted for [`TRASH_DAYS`]. Returns what went.
+pub fn purge_expired(dir: &Path, now: u64) -> Vec<Trashed> {
+    trashed(dir)
+        .into_iter()
+        .filter(|t| t.purge_at() <= now)
+        .filter(|t| purge(dir, &t.path).is_ok())
+        .collect()
+}
+
+/// Clips in `dir` and its Sessions folder older than `days` (by when they were saved), except
+/// favourites: the ones the "keep clips" setting moves to Recently deleted.
+pub fn expired_clips(dir: &Path, days: u32, lib: &Library, now: u64) -> Vec<PathBuf> {
+    if days == 0 {
+        return Vec::new();
+    }
+    let cutoff = now.saturating_sub(days as u64 * 24 * 3600);
+    scan(dir)
+        .into_iter()
+        .chain(scan(&dir.join("Sessions")))
+        .filter(|c| unix(c.modified) < cutoff && !lib.is_favorite(&c.path))
+        .map(|c| c.path)
+        .collect()
 }
 
 /// A name for a new file next to `clip`: "<name> (<what>).mp4", numbered if taken.
@@ -451,5 +761,97 @@ mod tests {
         // Old files without marks still load.
         let old: Library = serde_json::from_str(r#"{"favorites":["x.mp4"]}"#).unwrap();
         assert!(old.markers.is_empty());
+    }
+
+    #[test]
+    fn tags_keep_one_spelling_and_follow_renames() {
+        let mut lib = Library::default();
+        let a = Path::new("/c/A.mp4");
+        let b = Path::new("/c/B.mp4");
+        assert!(lib.add_tag(a, "  #Clutch   round  "));
+        assert!(!lib.add_tag(a, "clutch round"), "same tag, other case");
+        assert!(lib.add_tag(b, "CLUTCH ROUND"));
+        assert!(lib.add_tag(b, "funny"));
+        assert!(!lib.add_tag(b, "   "));
+        assert_eq!(lib.tags(b), vec!["Clutch round", "funny"]);
+        assert_eq!(
+            lib.all_tags(),
+            vec![("Clutch round".to_string(), 2), ("funny".to_string(), 1)]
+        );
+        assert_eq!(clean_tag(&"x".repeat(40)).len(), MAX_TAG);
+        lib.renamed(b, Path::new("/c/C.mp4"));
+        assert!(lib.tags(b).is_empty());
+        assert_eq!(lib.tags(Path::new("/c/C.mp4")).len(), 2);
+        lib.remove_tag(a, "Clutch round");
+        assert!(!lib.tags.contains_key("A.mp4"));
+        lib.set_favorite(Path::new("/c/C.mp4"), true);
+        lib.forget(Path::new("/c/C.mp4"));
+        assert_eq!(lib, Library::default());
+    }
+
+    #[test]
+    fn recently_deleted_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("Sessions")).unwrap();
+        let clip = d.join("Game 2026-10-19 10-00-00.mp4");
+        let session = d.join("Sessions").join("Game session.mp4");
+        std::fs::write(&clip, b"clip").unwrap();
+        std::fs::write(clip.with_extension("srt"), b"1").unwrap();
+        std::fs::write(&session, b"session").unwrap();
+
+        let t1 = trash(d, &clip, 1_000).unwrap();
+        let t2 = trash(d, &session, 2_000).unwrap();
+        assert!(!clip.exists() && !clip.with_extension("srt").exists());
+        assert!(t1.with_extension("srt").exists());
+        // Deleted clips aren't clips any more.
+        assert!(scan(d).is_empty());
+        let list = trashed(d);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].from, session, "most recent first");
+        assert_eq!(list[1].size, 4);
+
+        // A new file with the same name was saved since: restoring doesn't overwrite it.
+        std::fs::write(&clip, b"new").unwrap();
+        let back = restore(d, &t1).unwrap();
+        assert_ne!(back, clip);
+        assert_eq!(std::fs::read(&back).unwrap(), b"clip");
+        assert!(back.with_extension("srt").exists());
+        assert_eq!(restore(d, &t2).unwrap(), session);
+        assert!(trashed(d).is_empty());
+
+        // Gone for good after 30 days, not before.
+        let t3 = trash(d, &session, 5_000).unwrap();
+        assert!(purge_expired(d, 5_000 + TRASH_SECONDS - 1).is_empty());
+        assert_eq!(purge_expired(d, 5_000 + TRASH_SECONDS).len(), 1);
+        assert!(!t3.exists());
+        assert!(!trash_dir(d).join(TRASH_LIST).exists());
+    }
+
+    #[test]
+    fn old_clips_expire_but_favourites_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let old = d.join("Old.mp4");
+        let fav = d.join("Fav.mp4");
+        let new = d.join("New.mp4");
+        for p in [&old, &fav, &new] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        let now = unix(SystemTime::now());
+        let ten_days_ago = SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 3600);
+        for p in [&old, &fav] {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(ten_days_ago)
+                .unwrap();
+        }
+        let mut lib = Library::default();
+        lib.set_favorite(&fav, true);
+        assert_eq!(expired_clips(d, 7, &lib, now), vec![old.clone()]);
+        assert!(expired_clips(d, 30, &lib, now).is_empty());
+        assert!(expired_clips(d, 0, &lib, now).is_empty());
     }
 }

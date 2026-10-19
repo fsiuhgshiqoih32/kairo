@@ -344,6 +344,7 @@ fn content_type(file: &Path) -> &'static str {
 fn multipart(
     boundary: &str,
     fields: &[(&str, String)],
+    file_field: &str,
     file_name: &str,
     mime: &str,
 ) -> (Vec<u8>, Vec<u8>) {
@@ -358,7 +359,7 @@ fn multipart(
         .map(|c| if c == '"' || c.is_control() { '_' } else { c })
         .collect();
     head.push_str(&format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"{safe}\"\r\nContent-Type: {mime}\r\n\r\n"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{safe}\"\r\nContent-Type: {mime}\r\n\r\n"
     ));
     (
         head.into_bytes(),
@@ -393,6 +394,21 @@ fn post_file(
     cancel: &Arc<AtomicBool>,
 ) -> Result<String, Failure> {
     let site = url.split('/').nth(2).unwrap_or(url).to_string();
+    let (status, text) = post_form(url, fields, "fileToUpload", file, sent, cancel)?;
+    judge(&site, status, &text)
+}
+
+/// POSTs `file` (as `file_field`) with `fields` as multipart/form-data; the status and text of
+/// the answer.
+fn post_form(
+    url: &str,
+    fields: &[(&str, String)],
+    file_field: &str,
+    file: &Path,
+    sent: &Arc<AtomicU64>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(u16, String), Failure> {
+    let site = url.split('/').nth(2).unwrap_or(url).to_string();
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -404,7 +420,7 @@ fn post_file(
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos())
     );
-    let (head, tail) = multipart(&boundary, fields, &name, content_type(file));
+    let (head, tail) = multipart(&boundary, fields, file_field, &name, content_type(file));
     let f = std::fs::File::open(file)
         .map_err(|e| Failure::Refused(format!("{}: {e}", file.display())))?;
     let size = f
@@ -443,7 +459,179 @@ fn post_file(
         response.map_err(|e| Failure::Unavailable(format!("Couldn't reach {site} ({e}).")))?;
     let status = response.status().as_u16();
     let text = response.body_mut().read_to_string().unwrap_or_default();
-    judge(&site, status, &text)
+    Ok((status, text))
+}
+
+// --- Discord channels ----------------------------------------------------------------------
+
+/// Whether `url` is a Discord channel's webhook link:
+/// `https://discord.com/api/webhooks/<id>/<token>`.
+pub fn is_webhook(url: &str) -> bool {
+    let Some(rest) = url.trim().strip_prefix("https://") else {
+        return false;
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let at = parts.iter().position(|p| *p == "webhooks");
+    matches!(
+        host,
+        "discord.com" | "discordapp.com" | "ptb.discord.com" | "canary.discord.com"
+    ) && parts.first() == Some(&"api")
+        && at.is_some_and(|i| {
+            parts.len() == i + 3 && parts[i + 1].chars().all(|c| c.is_ascii_digit())
+        })
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .user_agent(concat!(
+            "Rewindr/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://github.com/fsiuhgshiqoih32/rewindr)"
+        ))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+/// Checks a webhook link works; its name in the channel ("Captain Hook").
+pub fn check_webhook(url: &str) -> Result<String, String> {
+    if !is_webhook(url) {
+        return Err(
+            "That isn't a Discord webhook link. In Discord: channel settings, \
+                    Integrations, Webhooks, Copy Webhook URL."
+                .into(),
+        );
+    }
+    let mut r = agent()
+        .get(url.trim())
+        .call()
+        .map_err(|e| format!("Couldn't reach Discord ({e})."))?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().read_to_string().unwrap_or_default();
+    match status {
+        200..=299 => {
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            Ok(v.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("Webhook")
+                .to_string())
+        }
+        401 | 403 | 404 => Err("Discord doesn't know that link. Copy it again from the \
+                               channel's Webhooks."
+            .into()),
+        s => Err(webhook_answer(s, &text).unwrap_err()),
+    }
+}
+
+/// A clip on its way to a Discord channel.
+pub struct Post {
+    pub clip: PathBuf,
+    sent: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
+    pub cancel: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
+impl Post {
+    /// How much has been sent, 0 to 1.
+    pub fn progress(&self) -> f32 {
+        let sent = self.sent.load(Ordering::Relaxed) as f64;
+        (sent / self.total.load(Ordering::Relaxed).max(1) as f64).min(1.0) as f32
+    }
+
+    /// The finished result, once.
+    pub fn take(&self) -> Option<Result<(), String>> {
+        self.result.lock().unwrap().take()
+    }
+}
+
+/// Sends `file` to the connected Discord channel with `message`, on a thread. `clip` is what
+/// the window shows progress on.
+pub fn post_to_channel(file: &Path, clip: &Path, message: &str) -> Post {
+    let post = Post {
+        clip: clip.to_path_buf(),
+        sent: Arc::default(),
+        total: Arc::new(AtomicU64::new(
+            std::fs::metadata(file).map_or(1, |m| m.len().max(1)),
+        )),
+        cancel: Arc::default(),
+        result: Arc::default(),
+    };
+    let (file, message) = (file.to_path_buf(), message.to_string());
+    let (sent, cancel, result) = (post.sent.clone(), post.cancel.clone(), post.result.clone());
+    std::thread::spawn(move || {
+        // Read here, off the window's thread: the password store may ask to be unlocked.
+        let r = match crate::secret::get(crate::secret::WEBHOOK) {
+            Some(webhook) => send_to_webhook(&webhook, &file, &message, &sent, &cancel),
+            None => Err(
+                "The channel's webhook is missing. Connect the channel again in Settings.".into(),
+            ),
+        };
+        match &r {
+            Ok(()) => info!("sent {} to a Discord channel", file.display()),
+            Err(e) if e != "Cancelled" => warning!("sending {} failed: {e}", file.display()),
+            Err(_) => {}
+        }
+        *result.lock().unwrap() = Some(r);
+    });
+    post
+}
+
+fn send_to_webhook(
+    webhook: &str,
+    file: &Path,
+    message: &str,
+    sent: &Arc<AtomicU64>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let webhook = webhook.trim();
+    let url = format!(
+        "{webhook}{}wait=true",
+        if webhook.contains('?') { '&' } else { '?' }
+    );
+    // No pings: a clip named "@everyone" stays text.
+    let payload = serde_json::json!({
+        "content": message,
+        "allowed_mentions": { "parse": [] },
+    })
+    .to_string();
+    match post_form(
+        &url,
+        &[("payload_json", payload)],
+        "files[0]",
+        file,
+        sent,
+        cancel,
+    ) {
+        Ok((status, text)) => webhook_answer(status, &text),
+        Err(Failure::Cancelled) => Err("Cancelled".into()),
+        Err(Failure::Refused(e) | Failure::Unavailable(e)) => Err(e),
+    }
+}
+
+/// What Discord's answer to a post means.
+fn webhook_answer(status: u16, text: &str) -> Result<(), String> {
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let said = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("message")?.as_str().map(str::to_string));
+    Err(match status {
+        413 => {
+            "Too big for that channel. Lower \"Discord size\" in Settings and send it again.".into()
+        }
+        401 | 403 | 404 => "That channel's webhook is gone. Paste a new one in Settings.".into(),
+        429 => "Discord asked to slow down. Send it again in a minute.".into(),
+        s if s >= 500 => format!("Discord isn't working right now (error {s})."),
+        s => format!(
+            "Discord wouldn't take it: {}",
+            said.unwrap_or_else(|| format!("error {s}"))
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -550,7 +738,7 @@ mod tests {
 
     #[test]
     fn quotes_in_file_names_dont_break_the_form() {
-        let (head, tail) = multipart("b", &[], "say \"hi\".mp4", "video/mp4");
+        let (head, tail) = multipart("b", &[], "fileToUpload", "say \"hi\".mp4", "video/mp4");
         let head = String::from_utf8(head).unwrap();
         assert!(head.contains("filename=\"say _hi_.mp4\""), "{head}");
         assert_eq!(tail, b"\r\n--b--\r\n");
@@ -605,5 +793,78 @@ mod tests {
         ];
         let e = try_hosts(&tries, &file, &Arc::default(), &Arc::default()).unwrap_err();
         assert!(e.contains("Try again"), "{e}");
+    }
+
+    #[test]
+    fn knows_webhook_links() {
+        for ok in [
+            "https://discord.com/api/webhooks/1234567890/abcDEF-_x",
+            "https://discordapp.com/api/webhooks/12/t0k3n",
+            "https://ptb.discord.com/api/v10/webhooks/12/tok",
+            " https://discord.com/api/webhooks/12/tok?thread_id=5 ",
+        ] {
+            assert!(is_webhook(ok), "{ok}");
+        }
+        for bad in [
+            "http://discord.com/api/webhooks/12/tok",
+            "https://discord.com/channels/12/34",
+            "https://discord.com/api/webhooks/12",
+            "https://discord.com/api/webhooks/abc/tok",
+            "https://evil.example/api/webhooks/12/tok",
+            "https://discord.com.evil.example/api/webhooks/12/tok",
+            "",
+        ] {
+            assert!(!is_webhook(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn explains_what_discord_said() {
+        assert_eq!(webhook_answer(200, "{}"), Ok(()));
+        assert_eq!(webhook_answer(204, ""), Ok(()));
+        assert!(
+            webhook_answer(413, "")
+                .unwrap_err()
+                .contains("Discord size")
+        );
+        assert!(
+            webhook_answer(404, r#"{"message": "Unknown Webhook", "code": 10015}"#)
+                .unwrap_err()
+                .contains("Paste a new one")
+        );
+        assert_eq!(
+            webhook_answer(400, r#"{"message": "Cannot send an empty message"}"#),
+            Err("Discord wouldn't take it: Cannot send an empty message".into())
+        );
+        assert!(
+            webhook_answer(502, "<html>")
+                .unwrap_err()
+                .contains("error 502")
+        );
+    }
+
+    #[test]
+    fn posts_a_clip_to_a_webhook() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Clip one (Discord).mp4");
+        std::fs::write(&file, vec![7u8; 50_000]).unwrap();
+        let (url, server) = serve_once(r#"{"id": "1", "attachments": [{"url": "https://cdn"}]}"#);
+        let sent = Arc::new(AtomicU64::new(0));
+        let r = send_to_webhook(
+            &url,
+            &file,
+            "@everyone Clip one",
+            &sent,
+            &Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(r, Ok(()));
+        let (headers, body) = server.join().unwrap();
+        assert!(headers.starts_with("POST /api.php?wait=true "), "{headers}");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("name=\"payload_json\""));
+        assert!(body.contains(r#""content":"@everyone Clip one""#));
+        assert!(body.contains(r#""allowed_mentions":{"parse":[]}"#));
+        assert!(body.contains("name=\"files[0]\"; filename=\"Clip one (Discord).mp4\""));
+        assert!(sent.load(Ordering::Relaxed) > 50_000);
     }
 }

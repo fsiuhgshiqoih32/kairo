@@ -210,6 +210,8 @@ pub fn run() -> Result<(), String> {
     let mut tray: Option<Tray> = None;
     let mut mtime = config::mtime(&path);
     let mut last_tick = Instant::now() - Duration::from_secs(1);
+    // When the clips folder was last tidied (old clips out, Recently deleted emptied).
+    let mut last_tidy: Option<Instant> = None;
     let mut threads = Some(threads);
     let _lock = lock;
 
@@ -289,6 +291,11 @@ pub fn run() -> Result<(), String> {
                                 .then(|| crate::platform::windows_input::start(shared.clone()))
                                 .and_then(|r| r.map_err(|e| warning!("{e}")).ok());
                         }
+                        if s.keep_days != shared.settings().keep_days
+                            || s.save_dir() != shared.settings().save_dir()
+                        {
+                            last_tidy = None;
+                        }
                         shared.apply(s);
                     }
                     Err(e) => warning!("{e}"),
@@ -308,6 +315,11 @@ pub fn run() -> Result<(), String> {
             }
             if crate::session::tend(&shared, game_title) {
                 finish_session(&shared);
+            }
+            if last_tidy.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                last_tidy = Some(Instant::now());
+                let s = shared.settings();
+                std::thread::spawn(move || crate::save::tidy_folder(&s));
             }
             if take_request(Request::TogglePause) {
                 toggle_pause(&shared);

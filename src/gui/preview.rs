@@ -72,6 +72,11 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                 kind: *kind,
                 thumb: src.thumb.clone(),
                 marks: [2, 0, 1, 0, 0, 0, 0][i],
+                tags: match i {
+                    1 | 3 => vec!["Clutch".into()],
+                    6 => vec!["Clutch".into(), "Ranked".into()],
+                    _ => Vec::new(),
+                },
                 link: (i == 3).then(|| rewindr::library::Link {
                     url: "https://files.catbox.moe/k3x9qa.mp4".into(),
                     created: 0,
@@ -225,7 +230,33 @@ fn preview() {
 
     app.filter = Filter::Game("VALORANT".into());
     shoot(app.view(), "iced-filtered", size);
+    app.filter = Filter::Tag("Clutch".into());
+    shoot(app.view(), "iced-tagged", size);
     app.filter = Filter::All;
+
+    // Recently deleted, and the notice with Undo.
+    let unix = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+    app.trash = app
+        .clips
+        .iter()
+        .skip(4)
+        .enumerate()
+        .map(|(i, c)| rewindr::library::Trashed {
+            path: c.path.clone(),
+            from: c.path.clone(),
+            deleted: unix(now) - [3_600, 86_400 * 4, 86_400 * 29 + 7_200][i % 3],
+            size: c.size,
+        })
+        .collect();
+    app.filter = Filter::Trash;
+    shoot(app.view(), "iced-trash", size);
+    app.filter = Filter::All;
+    app.note("Moved to Recently deleted.", true);
+    if let Some(n) = &mut app.notice {
+        n.undo = vec![PathBuf::from("x.mp4")];
+    }
+    shoot(app.view(), "iced-undo", size);
+    app.notice = None;
 
     // Shared links, the link dialog, screenshots.
     app.filter = Filter::Shared;
@@ -266,6 +297,12 @@ fn preview() {
     ed.settle((2.5, 9.0), 5.5);
     ed.show_marks(vec![3.4, 7.1, 11.0]);
     shoot(app.view(), "iced-editor", size);
+    app.settings.discord_channel = "Rewindr".into();
+    shoot(app.view(), "iced-editor-channel", (1280.0, 1400.0));
+    app.page = Page::Settings;
+    shoot(app.view(), "iced-settings-channel", (1280.0, 2600.0));
+    app.page = Page::Editor;
+    app.settings.discord_channel.clear();
 
     app.editor = None;
     app.page = Page::Library;

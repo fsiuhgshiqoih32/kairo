@@ -44,6 +44,9 @@ pub enum Filter {
     Screenshots,
     Sessions,
     Game(String),
+    Tag(String),
+    /// Recently deleted.
+    Trash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,8 @@ struct Notice {
     text: String,
     ok: bool,
     at: Instant,
+    /// Files in Recently deleted that Undo puts back.
+    undo: Vec<PathBuf>,
 }
 
 pub struct App {
@@ -112,6 +117,10 @@ pub struct App {
     strip_order: Vec<PathBuf>,
     strip_loading: HashSet<PathBuf>,
     uploads: Vec<share::Upload>,
+    /// Clips on their way to the Discord channel.
+    posts: Vec<share::Post>,
+    /// What's in Recently deleted.
+    pub trash: Vec<lib::Trashed>,
     pub report: Option<Report>,
     pub settings: Settings,
     saved: Settings,
@@ -161,6 +170,7 @@ pub struct Scan {
     sig: u64,
     clips: Vec<ClipItem>,
     shots: Vec<ShotItem>,
+    trash: Vec<lib::Trashed>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,13 +179,21 @@ pub enum Message {
     Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
     Shots(Vec<ShotItem>),
+    Trash(Vec<lib::Trashed>),
+    /// Puts back what was just deleted.
+    Undo,
+    /// Puts a file in Recently deleted back.
+    Restore(PathBuf),
+    /// Asks before deleting files in Recently deleted for good.
+    AskPurge(Vec<PathBuf>),
+    CancelPost(PathBuf),
     /// Starts or stops picking clips.
     Select(bool),
     ToggleSelect(PathBuf),
     MakeMontage,
     CancelMontage,
     MontageTick,
-    /// Asks before deleting the picked clips.
+    /// Moves the picked clips to Recently deleted.
     DeleteSelected,
     /// Starts or stops recording a whole session.
     ToggleSession,
@@ -253,6 +271,8 @@ impl App {
                 strip_order: Vec::new(),
                 strip_loading: HashSet::new(),
                 uploads: Vec::new(),
+                posts: Vec::new(),
+                trash: Vec::new(),
                 report: None,
                 saved: settings.clone(),
                 settings,
@@ -298,9 +318,11 @@ impl App {
     fn reload(&self) -> Task<Message> {
         let dir = self.settings.save_dir();
         let shots = self.settings.screenshot_dir();
+        let bin = dir.clone();
         Task::batch([
             Task::perform(background(move || load_clips(&dir)), Message::Clips),
             Task::perform(background(move || load_shots(&shots)), Message::Shots),
+            Task::perform(background(move || lib::trashed(&bin)), Message::Trash),
         ])
     }
 
@@ -334,8 +356,9 @@ impl App {
             background(move || {
                 let thumbs = crate::save::thumbs_dir();
                 let sessions = dir.join("Sessions");
+                let bin = lib::trash_dir(&dir);
                 let sig = library::folder_signature(
-                    &[&dir, &shots, &thumbs, &sessions],
+                    &[&dir, &shots, &thumbs, &sessions, &bin],
                     &rewindr::library::Library::path(),
                 );
                 (Some(sig) != last).then(|| {
@@ -343,6 +366,7 @@ impl App {
                         sig,
                         clips: load_clips(&dir),
                         shots: load_shots(&shots),
+                        trash: lib::trashed(&dir),
                     })
                 })
             }),
@@ -397,6 +421,22 @@ impl App {
     /// Finished uploads: show and copy the link, or say what went wrong.
     fn poll_uploads(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
+        let mut j = 0;
+        while j < self.posts.len() {
+            let Some(result) = self.posts[j].take() else {
+                j += 1;
+                continue;
+            };
+            self.posts.remove(j);
+            match result {
+                Ok(()) => self.note(
+                    format!("Sent to the channel as {}.", self.settings.discord_channel),
+                    true,
+                ),
+                Err(e) if e == "Cancelled" => self.note("Sending cancelled.", true),
+                Err(e) => self.note(e, false),
+            }
+        }
         let mut i = 0;
         while i < self.uploads.len() {
             let Some(result) = self.uploads[i].take() else {
@@ -426,11 +466,79 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Moves files to Recently deleted, with Undo on the notice.
+    fn delete(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
+        let dir = self.settings.save_dir();
+        let now = share::now_secs();
+        let (mut moved, mut failed) = (Vec::new(), None);
+        for p in &paths {
+            if let Some(e) = &mut self.editor
+                && e.clip == *p
+            {
+                e.release();
+            }
+            match lib::trash(&dir, p, now) {
+                Ok(to) => {
+                    moved.push(to);
+                    self.clips.retain(|c| c.path != *p);
+                    self.shots.retain(|s| s.path != *p);
+                    self.selected.retain(|s| s != p);
+                    if self.editor.as_ref().is_some_and(|e| e.clip == *p) {
+                        self.editor = None;
+                        self.page = Page::Library;
+                    }
+                }
+                Err(e) => failed = Some(e.to_string()),
+            }
+        }
+        if self.selected.is_empty() {
+            self.selecting = false;
+        }
+        match failed {
+            Some(e) => self.note(format!("Couldn't delete: {e}"), false),
+            None => {
+                self.note(
+                    match moved.len() {
+                        1 => "Moved to Recently deleted.".to_string(),
+                        n => format!("Moved {n} files to Recently deleted."),
+                    },
+                    true,
+                );
+                if let Some(n) = &mut self.notice {
+                    n.undo = moved;
+                }
+            }
+        }
+        self.reload()
+    }
+
+    /// Puts files in Recently deleted back where they were.
+    fn restore(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
+        if paths.is_empty() {
+            return Task::none();
+        }
+        let dir = self.settings.save_dir();
+        let mut failed = None;
+        for p in &paths {
+            match lib::restore(&dir, p) {
+                Ok(_) => self.trash.retain(|t| t.path != *p),
+                Err(e) => failed = Some(e.to_string()),
+            }
+        }
+        match failed {
+            Some(e) => self.note(format!("Couldn't put it back: {e}"), false),
+            None if paths.len() > 1 => self.note(format!("Put back {} files.", paths.len()), true),
+            None => self.note("Put back.", true),
+        }
+        self.reload()
+    }
+
     fn note(&mut self, text: impl Into<String>, ok: bool) {
         self.notice = Some(Notice {
             text: text.into(),
             ok,
             at: Instant::now(),
+            undo: Vec::new(),
         });
     }
 
@@ -545,7 +653,39 @@ impl App {
             }
             editor::Effect::Exported => return self.reload(),
             editor::Effect::Favorite(p) => return self.update(Message::Favorite(p)),
-            editor::Effect::AskDelete(p) => self.dialog = Some(Dialog::Delete(vec![p])),
+            editor::Effect::AskDelete(p) => return self.delete(vec![p]),
+            editor::Effect::SendToChannel {
+                file,
+                clip,
+                message,
+            } => {
+                if !self.posts.iter().any(|p| p.clip == clip) {
+                    self.posts
+                        .push(share::post_to_channel(&file, &clip, &message));
+                }
+                return self.reload();
+            }
+            editor::Effect::CancelSend(clip) => return self.update(Message::CancelPost(clip)),
+            editor::Effect::Tag { clip, tag, add } => {
+                let mut l = Library::load();
+                if add {
+                    l.add_tag(&clip, &tag);
+                } else {
+                    l.remove_tag(&clip, &tag);
+                }
+                if let Err(e) = l.save() {
+                    self.note(format!("Couldn't keep the tag: {e}"), false);
+                }
+                let tags = l.tags(&clip);
+                for c in self.clips.iter_mut().filter(|c| c.path == clip) {
+                    c.tags = tags.clone();
+                }
+                if let Filter::Tag(t) = &self.filter
+                    && !l.all_tags().iter().any(|(name, _)| name == t)
+                {
+                    self.filter = Filter::All;
+                }
+            }
             editor::Effect::Back => return self.update(Message::Back),
             editor::Effect::Share { file, clip, range } => {
                 self.start_upload(file, clip, range);
@@ -588,12 +728,35 @@ impl App {
                 }
             }
             Message::Shots(s) => self.shots = s,
+            Message::Trash(t) => self.trash = t,
+            Message::Undo => {
+                let undo = self.notice.take().map(|n| n.undo).unwrap_or_default();
+                return self.restore(undo);
+            }
+            Message::Restore(p) => return self.restore(vec![p]),
+            Message::AskPurge(paths) => {
+                if !paths.is_empty() {
+                    self.dialog = Some(Dialog::Delete(paths));
+                }
+            }
+            Message::CancelPost(p) => {
+                for post in self.posts.iter().filter(|post| post.clip == p) {
+                    post.cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             Message::Rescanned(found) => {
                 if let Some(b) = found {
-                    let Scan { sig, clips, shots } = *b;
+                    let Scan {
+                        sig,
+                        clips,
+                        shots,
+                        trash,
+                    } = *b;
                     self.scan_sig = Some(sig);
                     self.clips = clips;
                     self.shots = shots;
+                    self.trash = trash;
                     self.loaded = true;
                     return self.ensure_hero();
                 }
@@ -722,7 +885,7 @@ impl App {
                 self.note("Renamed.", true);
                 return self.reload();
             }
-            Message::AskDelete(p) => self.dialog = Some(Dialog::Delete(vec![p])),
+            Message::AskDelete(p) => return self.delete(vec![p]),
             Message::Select(on) => {
                 self.selecting = on;
                 self.selected.clear();
@@ -735,7 +898,7 @@ impl App {
             },
             Message::DeleteSelected => {
                 if !self.selected.is_empty() {
-                    self.dialog = Some(Dialog::Delete(self.selected.clone()));
+                    return self.delete(self.selected.clone());
                 }
             }
             Message::MakeMontage => {
@@ -798,41 +961,32 @@ impl App {
                 let Some(Dialog::Delete(paths)) = self.dialog.take() else {
                     return Task::none();
                 };
+                let dir = self.settings.save_dir();
                 let mut l = Library::load();
                 let (mut gone, mut failed) = (0, None);
                 for p in &paths {
-                    if let Some(e) = &mut self.editor
-                        && e.clip == *p
-                    {
-                        e.release();
-                    }
-                    match std::fs::remove_file(p) {
+                    let from = self
+                        .trash
+                        .iter()
+                        .find(|t| t.path == *p)
+                        .map_or_else(|| p.clone(), |t| t.from.clone());
+                    match lib::purge(&dir, p) {
                         Ok(()) => {
                             gone += 1;
-                            crate::save::remove_sidecars(p);
-                            l.set_favorite(p, false);
-                            l.set_link(p, None);
-                            l.set_markers(p, Vec::new());
-                            self.clips.retain(|c| c.path != *p);
-                            self.shots.retain(|s| s.path != *p);
-                            self.selected.retain(|s| s != p);
-                            if self.editor.as_ref().is_some_and(|e| e.clip == *p) {
-                                self.editor = None;
-                                self.page = Page::Library;
-                            }
+                            crate::save::remove_sidecars(&from);
+                            l.forget(&from);
+                            self.trash.retain(|t| t.path != *p);
                         }
                         Err(e) => failed = Some(e.to_string()),
                     }
                 }
                 let _ = l.save();
-                if self.selected.is_empty() {
-                    self.selecting = false;
-                }
                 match failed {
                     Some(e) => self.note(format!("Couldn't delete: {e}"), false),
-                    None if gone > 1 => self.note(format!("Deleted {gone} clips."), true),
-                    None => self.note("Deleted.", true),
+                    None if gone > 1 => self.note(format!("Deleted {gone} files for good."), true),
+                    None => self.note("Deleted for good.", true),
                 }
+                return self.reload();
             }
             Message::CloseDialog => self.dialog = None,
             Message::Page(p) => {
@@ -983,7 +1137,14 @@ impl App {
             }
         }
         if let Some(n) = &self.notice
-            && n.at.elapsed() > Duration::from_secs(if n.ok { 4 } else { 9 })
+            && n.at.elapsed()
+                > Duration::from_secs(if !n.undo.is_empty() {
+                    8
+                } else if n.ok {
+                    4
+                } else {
+                    9
+                })
         {
             self.notice = None;
         }
@@ -1087,7 +1248,7 @@ impl App {
             keyboard::listen().map(Message::Key),
             window::open_events().map(Message::Opened),
         ];
-        if !self.uploads.is_empty() {
+        if !self.uploads.is_empty() || !self.posts.is_empty() {
             subs.push(iced::time::every(Duration::from_millis(150)).map(|_| Message::UploadTick));
         }
         if self.montage.is_some() {
@@ -1122,6 +1283,20 @@ impl App {
                 let share = editor::ShareView {
                     progress: self.upload_progress(&target),
                     link: self.link_of(&target).cloned(),
+                    channel: (!self.settings.discord_channel.is_empty())
+                        .then(|| self.settings.discord_channel.clone()),
+                    sending: self
+                        .posts
+                        .iter()
+                        .find(|p| p.clip == e.clip)
+                        .map(share::Post::progress),
+                    tags: {
+                        let mut all: Vec<String> =
+                            self.clips.iter().flat_map(|c| c.tags.clone()).collect();
+                        all.sort_by_key(|t| t.to_lowercase());
+                        all.dedup();
+                        all
+                    },
                 };
                 column![
                     Space::new().height(18),
@@ -1155,6 +1330,19 @@ impl App {
                             ),
                             text(n.text.clone()).size(13).font(MEDIUM),
                         ]
+                        .push((!n.undo.is_empty()).then(|| {
+                            button(
+                                row![
+                                    icon(Icon::Undo, 14.0, TEXT),
+                                    text("Undo").size(13).font(SEMIBOLD)
+                                ]
+                                .spacing(6)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding(Padding::from([5, 10]))
+                            .style(theme::secondary)
+                            .on_press(Message::Undo)
+                        }))
                         .spacing(10)
                         .align_y(Alignment::Center),
                     )
@@ -1460,20 +1648,16 @@ impl App {
                 )
             }
             Dialog::Delete(paths) => dialog(
-                &match paths.as_slice() {
-                    [p] if p.extension().is_some_and(|e| e != "mp4") => {
-                        "Delete this screenshot?".to_string()
-                    }
-                    [_] => "Delete this clip?".to_string(),
-                    many => format!("Delete {} clips?", many.len()),
+                &match paths.len() {
+                    1 => "Delete for good?".to_string(),
+                    n => format!("Delete {n} files for good?"),
                 },
                 text(match paths.as_slice() {
                     [p] => format!(
-                        "\"{}\" will be deleted from your clips folder. This can't be undone.",
+                        "\"{}\" will be gone from your computer. This can't be undone.",
                         stem(p)
                     ),
-                    _ => "They'll be deleted from your clips folder. This can't be undone."
-                        .to_string(),
+                    _ => "They'll be gone from your computer. This can't be undone.".to_string(),
                 })
                 .size(14)
                 .color(TEXT_2),
@@ -1485,7 +1669,7 @@ impl App {
                     button(
                         row![
                             icon(Icon::Trash, 15.0, theme::on_accent()),
-                            text("Delete").size(13).font(SEMIBOLD)
+                            text("Delete for good").size(13).font(SEMIBOLD)
                         ]
                         .spacing(7)
                         .align_y(Alignment::Center)
@@ -1557,6 +1741,13 @@ impl App {
                 in_library && self.filter == Filter::Sessions
             )
             .on_press(Message::Filter(Filter::Sessions)),
+            nav_item(
+                Icon::Trash,
+                "Recently deleted",
+                Some(self.trash.len()),
+                in_library && self.filter == Filter::Trash
+            )
+            .on_press(Message::Filter(Filter::Trash)),
         ]
         .spacing(2);
 
@@ -1578,6 +1769,27 @@ impl App {
                 nav = nav.push(
                     nav_item(Icon::Gamepad, &g, Some(n), active)
                         .on_press(Message::Filter(Filter::Game(g))),
+                );
+            }
+        }
+        let mut tags: Vec<(String, usize)> = Vec::new();
+        for t in self.clips.iter().flat_map(|c| &c.tags) {
+            match tags.iter_mut().find(|(name, _)| name == t) {
+                Some((_, n)) => *n += 1,
+                None => tags.push((t.clone(), 1)),
+            }
+        }
+        tags.sort_by_key(|(t, _)| t.to_lowercase());
+        if !tags.is_empty() {
+            nav = nav.push(Space::new().height(14)).push(
+                container(text("Tags").size(12).font(SEMIBOLD).color(MUTED))
+                    .padding(Padding::from([4, 12])),
+            );
+            for (t, n) in tags {
+                let active = in_library && self.filter == Filter::Tag(t.clone());
+                nav = nav.push(
+                    nav_item(Icon::Tag, &t, Some(n), active)
+                        .on_press(Message::Filter(Filter::Tag(t))),
                 );
             }
         }
@@ -1822,6 +2034,8 @@ impl App {
                 Filter::Screenshots => "Screenshots".into(),
                 Filter::Sessions => "Sessions".into(),
                 Filter::Game(g) => g.clone(),
+                Filter::Tag(t) => t.clone(),
+                Filter::Trash => "Recently deleted".into(),
             },
         };
         let live = self

@@ -14,6 +14,7 @@ mod platform;
 mod player;
 mod recorder;
 mod save;
+mod secret;
 mod selftest;
 mod session;
 mod share;

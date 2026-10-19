@@ -186,6 +186,11 @@ pub struct Settings {
     pub max_storage_gb: u32,
     /// Size limit for "Share for Discord", in MB (10 for free accounts).
     pub discord_mb: u32,
+    /// The name the connected Discord channel's webhook posts as; empty when none is connected.
+    /// (The webhook link itself is in the system's password store.)
+    pub discord_channel: String,
+    /// Clips older than this many days go to Recently deleted (never favourites); 0 keeps them.
+    pub keep_days: u32,
     /// Saves a screenshot: "F9" and so on; empty turns it off.
     pub screenshot_hotkey: String,
     /// How long share links work: "forever", or "72h", "24h", "12h", "1h".
@@ -238,6 +243,8 @@ impl Default for Settings {
             check_updates: true,
             max_storage_gb: 0,
             discord_mb: 10,
+            discord_channel: String::new(),
+            keep_days: 0,
             screenshot_hotkey: "F9".into(),
             share_expiry: "forever".into(),
             voice_clip: false,
@@ -271,6 +278,7 @@ impl Settings {
         self.fps = self.fps.clamp(10, 240);
         self.max_storage_gb = self.max_storage_gb.min(10_000);
         self.discord_mb = self.discord_mb.clamp(5, 500);
+        self.keep_days = self.keep_days.min(3650);
         if self.hotkey.trim().is_empty() {
             self.hotkey = "F8".into();
         }

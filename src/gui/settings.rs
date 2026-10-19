@@ -54,6 +54,10 @@ pub struct State {
     /// Bytes done and total while the speech files download.
     voice_install: Option<Arc<[AtomicU64; 2]>>,
     voice_problem: Option<String>,
+    /// The Discord webhook link as pasted (kept only until it's checked).
+    webhook_text: String,
+    webhook_busy: bool,
+    webhook_problem: Option<String>,
     pub update: Updates,
 }
 
@@ -117,6 +121,12 @@ pub enum Msg {
     Cleanup(bool),
     GbText(String),
     Discord(u32),
+    WebhookText(String),
+    ConnectWebhook,
+    /// The webhook works (its name) and is stored, or why not.
+    WebhookChecked(Result<String, String>),
+    DisconnectWebhook,
+    KeepDays(u32),
     Autostart(bool),
     CheckUpdates(bool),
     CheckNow,
@@ -173,6 +183,9 @@ impl State {
                 phrase_text: settings.voice_phrase.clone(),
                 voice_install: None,
                 voice_problem: None,
+                webhook_text: String::new(),
+                webhook_busy: false,
+                webhook_problem: None,
                 update,
             },
             Task::batch(tasks),
@@ -516,6 +529,53 @@ impl State {
                 s.discord_mb = mb;
                 return changed;
             }
+            Msg::WebhookText(t) => {
+                self.webhook_text = t;
+                self.webhook_problem = None;
+            }
+            Msg::ConnectWebhook => {
+                if !self.webhook_busy && !self.webhook_text.trim().is_empty() {
+                    self.webhook_busy = true;
+                    self.webhook_problem = None;
+                    let url = self.webhook_text.trim().to_string();
+                    return (
+                        Task::perform(
+                            background(move || {
+                                let name = crate::share::check_webhook(&url)?;
+                                crate::secret::set(crate::secret::WEBHOOK, &url)?;
+                                Ok(name)
+                            }),
+                            Msg::WebhookChecked,
+                        ),
+                        Effect::None,
+                    );
+                }
+            }
+            Msg::WebhookChecked(r) => {
+                self.webhook_busy = false;
+                match r {
+                    Ok(name) => {
+                        self.webhook_text.clear();
+                        s.discord_channel = name;
+                        return changed;
+                    }
+                    Err(e) => self.webhook_problem = Some(e),
+                }
+            }
+            Msg::DisconnectWebhook => {
+                s.discord_channel.clear();
+                return (
+                    Task::perform(
+                        background(|| crate::secret::remove(crate::secret::WEBHOOK)),
+                        |_| Msg::WebhookText(String::new()),
+                    ),
+                    Effect::Changed,
+                );
+            }
+            Msg::KeepDays(d) => {
+                s.keep_days = d;
+                return changed;
+            }
             Msg::Autostart(on) => {
                 if let Some(l) = &self.launcher {
                     autostart::set_enabled(l, on);
@@ -844,7 +904,7 @@ impl State {
                         "Rewindr keeps the last {} ready to save.",
                         seconds_label(s.clip_seconds)
                     )),
-                    row![
+                    column![
                         segmented(
                             [15u32, 30, 60, 120, 300, 600]
                                 .iter()
@@ -853,16 +913,21 @@ impl State {
                             s.clip_seconds,
                             Msg::ClipSeconds
                         ),
-                        text_input("30", &self.clip_text)
-                            .on_input(Msg::ClipText)
-                            .width(56)
-                            .padding(Padding::from([7, 9]))
-                            .size(13)
-                            .style(theme::input),
-                        text("s").size(13).color(MUTED),
+                        row![
+                            text("Or exactly").size(13).color(MUTED),
+                            text_input("30", &self.clip_text)
+                                .on_input(Msg::ClipText)
+                                .width(64)
+                                .padding(Padding::from([7, 9]))
+                                .size(13)
+                                .style(theme::input),
+                            text("seconds").size(13).color(MUTED),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
                     ]
                     .spacing(8)
-                    .align_y(Alignment::Center),
+                    .align_x(Alignment::End),
                 ),
             ],
         ));
@@ -1183,14 +1248,32 @@ impl State {
                     cleanup,
                 ),
                 setting(
+                    "Keep clips",
+                    Some(format!(
+                        "Older clips move to Recently deleted, where they wait {} days; favourites always stay.",
+                        rewindr::library::TRASH_DAYS
+                    )),
+                    segmented(
+                        vec![
+                            (0u32, "Forever".into()),
+                            (7, "1 week".into()),
+                            (30, "30 days".into()),
+                            (90, "90 days".into()),
+                        ],
+                        s.keep_days,
+                        Msg::KeepDays,
+                    ),
+                ),
+                setting(
                     "Discord size",
-                    Some("The limit for Share to Discord.".into()),
+                    Some("The limit for Share to Discord and Send to Discord channel.".into()),
                     segmented(
                         vec![(10u32, "10 MB".into()), (50, "50 MB".into()), (500, "500 MB".into())],
                         s.discord_mb,
                         Msg::Discord,
                     ),
                 ),
+                self.channel_row(s),
                 setting("Notification", Some("A small card in the corner when a clip is saved.".into()), switch(s.notify, Msg::Notify)),
                 setting("Sound", Some("A short tone when a clip is saved.".into()), switch(s.sound, Msg::Sound)),
             ],
@@ -1372,6 +1455,66 @@ fn pick<'a>(
         .style(theme::pick)
         .menu_style(theme::menu)
         .into()
+}
+
+impl State {
+    /// Connecting a Discord channel: paste its webhook link; it's checked, then kept in the
+    /// system's password store.
+    fn channel_row<'a>(&'a self, s: &'a Settings) -> Element<'a, Msg> {
+        let store = if cfg!(windows) {
+            "Credential Manager"
+        } else if cfg!(target_os = "macos") {
+            "your keychain"
+        } else {
+            "your keyring"
+        };
+        if !s.discord_channel.is_empty() {
+            return setting(
+                "Discord channel",
+                Some(format!(
+                    "Connected. Clips you send post as {}. The link is kept in {store}, not in the settings file.",
+                    s.discord_channel
+                )),
+                button(text("Disconnect").size(13).font(MEDIUM))
+                    .padding(Padding::from([7, 12]))
+                    .style(theme::ghost)
+                    .on_press(Msg::DisconnectWebhook),
+            );
+        }
+        let ready = !self.webhook_busy && !self.webhook_text.trim().is_empty();
+        setting(
+            "Discord channel",
+            Some(self.webhook_problem.clone().unwrap_or_else(|| {
+                "Send clips straight to a channel from the editor. In Discord: channel settings, \
+                 Integrations, Webhooks, New Webhook, Copy Webhook URL."
+                    .into()
+            })),
+            row![
+                text_input("Paste the webhook link", &self.webhook_text)
+                    .on_input(Msg::WebhookText)
+                    .on_submit(Msg::ConnectWebhook)
+                    .secure(true)
+                    .width(200)
+                    .padding(Padding::from([7, 9]))
+                    .size(13)
+                    .style(theme::input),
+                button(
+                    text(if self.webhook_busy {
+                        "Checking..."
+                    } else {
+                        "Connect"
+                    })
+                    .size(13)
+                    .font(MEDIUM)
+                )
+                .padding(Padding::from([7, 12]))
+                .style(theme::secondary)
+                .on_press_maybe(ready.then_some(Msg::ConnectWebhook)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+    }
 }
 
 fn switch<'a>(on: bool, msg: impl Fn(bool) -> Msg + 'a) -> Element<'a, Msg> {

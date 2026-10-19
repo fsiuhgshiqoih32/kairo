@@ -88,6 +88,35 @@ pub fn read_keys(clip: &Path) -> Vec<rewindr::keys::KeyEvent> {
         .unwrap_or_default()
 }
 
+/// Moves clips past the "keep clips" age to Recently deleted, and deletes for good what's
+/// waited there for 30 days.
+pub fn tidy_folder(settings: &rewindr::config::Settings) {
+    let dir = settings.save_dir();
+    let now = crate::share::now_secs();
+    let mut lib = library::Library::load();
+    for p in library::expired_clips(&dir, settings.keep_days, &lib, now) {
+        match library::trash(&dir, &p, now) {
+            Ok(_) => info!(
+                "moved {} to Recently deleted (older than {} days)",
+                p.display(),
+                settings.keep_days
+            ),
+            Err(e) => warning!("couldn't move {} to Recently deleted: {e}", p.display()),
+        }
+    }
+    let gone = library::purge_expired(&dir, now);
+    for t in &gone {
+        remove_sidecars(&t.from);
+        lib.forget(&t.from);
+        info!("deleted {} for good after 30 days", t.from.display());
+    }
+    if !gone.is_empty()
+        && let Err(e) = lib.save()
+    {
+        warning!("{e}");
+    }
+}
+
 /// `<title> 2026-10-18 14-30-05.mp4` in `dir`, not overwriting anything.
 pub fn clip_path(dir: &Path, title: Option<&str>) -> PathBuf {
     let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
@@ -298,14 +327,17 @@ pub fn save_inner(
     info!("saved {} ({seconds:.1} s)", out.display());
     if settings.max_storage_gb > 0 {
         let limit = settings.max_storage_gb as u64 * 1_000_000_000;
-        for p in library::clean_up(&dir, limit, &library::Library::load()) {
-            let _ = std::fs::remove_file(thumb_for(&p));
+        let mut lib = library::Library::load();
+        for p in library::clean_up(&dir, limit, &lib) {
+            remove_sidecars(&p);
+            lib.forget(&p);
             info!(
                 "deleted {} to stay under {} GB",
                 p.display(),
                 settings.max_storage_gb
             );
         }
+        let _ = lib.save();
     }
     drop(cleanup);
     shared.status.lock().unwrap().last_clip = Some(out.display().to_string());

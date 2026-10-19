@@ -25,7 +25,7 @@ use rewindr::media::{self, Info, format_time};
 use super::icons::{Icon, icon, icon_filled};
 use super::library::{ClipItem, tip};
 use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
-use super::widgets::{hint_key, icon_button, icon_only, panel};
+use super::widgets::{divider, hint_key, icon_button, icon_only, panel};
 use super::{background, human_size};
 use crate::export::{self, Job, Kind};
 use crate::player::Player;
@@ -135,6 +135,14 @@ pub enum Msg {
     BurnCaptions(bool),
     RevealSrt,
     ShowKeys(bool),
+    /// Makes the Discord-size copy and posts it to the connected channel.
+    SendToChannel,
+    CancelSend,
+    TagText(String),
+    AddTag,
+    /// Adds a tag used on other clips.
+    AddTagNamed(String),
+    RemoveTag(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +160,12 @@ pub enum ExportKind {
 pub struct ShareView {
     pub progress: Option<(String, f32)>,
     pub link: Option<rewindr::library::Link>,
+    /// The connected Discord channel's webhook name, if one is connected.
+    pub channel: Option<String>,
+    /// How much of the clip has gone to the channel, while it's sending.
+    pub sending: Option<f32>,
+    /// Every tag in the library, for adding with a click.
+    pub tags: Vec<String>,
 }
 
 /// What the editor asks of the window after a message.
@@ -176,6 +190,18 @@ pub enum Effect {
     CopyText(String),
     OpenUrl(String),
     ShowLink(PathBuf),
+    /// Post `file` (made from `clip`) to the Discord channel.
+    SendToChannel {
+        file: PathBuf,
+        clip: PathBuf,
+        message: String,
+    },
+    CancelSend(PathBuf),
+    Tag {
+        clip: PathBuf,
+        tag: String,
+        add: bool,
+    },
 }
 
 pub struct Editor {
@@ -201,6 +227,10 @@ pub struct Editor {
     share_expiry: String,
     /// Upload the trimmed copy once it's made.
     share_after_export: bool,
+    /// Post the Discord copy to the channel once it's made.
+    send_after_export: bool,
+    /// The tag being typed.
+    tag_text: String,
     /// The file the Share panel is about: the clip, or a trimmed copy made for sharing.
     shared_file: Option<PathBuf>,
     /// Marked moments, in seconds (kept in the library with the clip).
@@ -273,6 +303,8 @@ impl Editor {
                 discord_mb,
                 share_expiry: settings.share_expiry.clone(),
                 share_after_export: false,
+                send_after_export: false,
+                tag_text: String::new(),
                 shared_file: None,
                 markers: library::Library::load().markers(&clip_path).to_vec(),
                 mark_key: settings.marker_hotkey.clone(),
@@ -715,6 +747,47 @@ impl Editor {
                 }
             }
             Msg::CancelLink => return Effect::CancelUpload(self.share_target()),
+            Msg::SendToChannel => {
+                let e = self.start_export(ExportKind::Share);
+                if self.job.is_some() {
+                    self.send_after_export = true;
+                }
+                return e;
+            }
+            Msg::CancelSend => {
+                if self.send_after_export
+                    && let Some(j) = &self.job
+                {
+                    j.cancel();
+                }
+                return Effect::CancelSend(self.clip.clone());
+            }
+            Msg::TagText(t) => self.tag_text = t,
+            Msg::AddTag => {
+                let tag = library::clean_tag(&std::mem::take(&mut self.tag_text));
+                if !tag.is_empty() {
+                    return Effect::Tag {
+                        clip: self.clip.clone(),
+                        tag,
+                        add: true,
+                    };
+                }
+            }
+            Msg::AddTagNamed(tag) => {
+                self.tag_text.clear();
+                return Effect::Tag {
+                    clip: self.clip.clone(),
+                    tag,
+                    add: true,
+                };
+            }
+            Msg::RemoveTag(tag) => {
+                return Effect::Tag {
+                    clip: self.clip.clone(),
+                    tag,
+                    add: false,
+                };
+            }
             Msg::CopyLink(u) => return Effect::CopyText(u),
             Msg::OpenLink(u) => return Effect::OpenUrl(u),
             Msg::ShowQr => return Effect::ShowLink(self.share_target()),
@@ -792,6 +865,7 @@ impl Editor {
             ExportKind::Slow(f) => Kind::Slow(f),
         };
         self.share_after_export = false;
+        self.send_after_export = false;
         // The trimmed part; untrimmed, that's the whole clip.
         let range = if self.trimmed() {
             self.trim
@@ -840,9 +914,18 @@ impl Editor {
         self.job = None;
         match result {
             Some(Ok(path)) => {
+                let send = std::mem::take(&mut self.send_after_export);
                 let copied = matches!(kind, Kind::Share(_))
+                    && !send
                     && platform::copy_files(std::slice::from_ref(&path)).is_ok();
                 self.last_export = Some((path.clone(), copied));
+                if send {
+                    return Effect::SendToChannel {
+                        file: path,
+                        clip: self.clip.clone(),
+                        message: self.name.clone(),
+                    };
+                }
                 if std::mem::take(&mut self.share_after_export) {
                     self.shared_file = Some(path.clone());
                     return Effect::Share {
@@ -855,9 +938,14 @@ impl Editor {
             }
             Some(Err(e)) if e == "Cancelled" => {
                 self.share_after_export = false;
+                self.send_after_export = false;
                 Effect::Note("Export cancelled.".into(), true)
             }
-            Some(Err(e)) => Effect::Note(e, false),
+            Some(Err(e)) => {
+                self.share_after_export = false;
+                self.send_after_export = false;
+                Effect::Note(e, false)
+            }
             None => Effect::None,
         }
     }
@@ -876,7 +964,13 @@ impl Editor {
             .unwrap_or_else(|| self.clip.clone())
     }
 
-    pub fn view<'a>(&'a self, item: Option<&'a ClipItem>, share: ShareView) -> Element<'a, Msg> {
+    pub fn view<'a>(
+        &'a self,
+        item: Option<&'a ClipItem>,
+        mut share: ShareView,
+    ) -> Element<'a, Msg> {
+        let known_tags = std::mem::take(&mut share.tags);
+        let tags = item.map_or(&[][..], |c| c.tags.as_slice());
         let favorite = item.is_some_and(|c| c.favorite);
         let star = if favorite {
             icon_filled(Icon::Star, 16.0, theme::GOLD)
@@ -1065,6 +1159,7 @@ impl Editor {
         let side = scrollable(
             column![
                 self.share_panel(share),
+                self.tags_panel(tags, known_tags),
                 self.trim_panel(),
                 self.marks_panel(),
                 self.captions_panel(),
@@ -1586,7 +1681,130 @@ impl Editor {
         panel("Moments", body)
     }
 
+    /// Tags: the clip's, to take off, a field to add one, and tags from other clips to add with
+    /// a click.
+    fn tags_panel<'a>(&'a self, tags: &'a [String], known: Vec<String>) -> Element<'a, Msg> {
+        let chip = |t: &str, on: Msg, add: bool| {
+            button(
+                row![
+                    icon(
+                        if add { Icon::Tag } else { Icon::Close },
+                        12.0,
+                        if add { MUTED } else { TEXT_2 }
+                    ),
+                    text(t.to_string()).size(12).font(MEDIUM),
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center),
+            )
+            .padding(Padding::from([4, 9]))
+            .style(if add { theme::ghost } else { theme::secondary })
+            .on_press(on)
+        };
+        let mut c = column![].spacing(10);
+        if !tags.is_empty() {
+            let mut on = row![].spacing(6);
+            for t in tags {
+                on = on.push(chip(t, Msg::RemoveTag(t.clone()), false));
+            }
+            c = c.push(on.wrap().vertical_spacing(6));
+        }
+        c = c.push(
+            text_input("Add a tag, then Enter", &self.tag_text)
+                .on_input(Msg::TagText)
+                .on_submit(Msg::AddTag)
+                .size(13)
+                .padding(Padding::from([7, 9]))
+                .style(theme::input),
+        );
+        let typed = self.tag_text.trim().to_lowercase();
+        let others: Vec<String> = known
+            .into_iter()
+            .filter(|t| !tags.contains(t) && t.to_lowercase().contains(&typed))
+            .take(8)
+            .collect();
+        if !others.is_empty() {
+            let mut more = row![].spacing(6);
+            for t in others {
+                more = more.push(chip(&t, Msg::AddTagNamed(t.clone()), true));
+            }
+            c = c.push(more.wrap().vertical_spacing(6));
+        }
+        panel("Tags", c)
+    }
+
+    /// Sending to the connected Discord channel.
+    fn channel_view(&self, name: String, sending: Option<f32>) -> Element<'_, Msg> {
+        if let Some(p) = sending {
+            return column![
+                row![
+                    text("Sending to the channel").size(13).font(MEDIUM),
+                    space::horizontal(),
+                    text(format!("{:.0}%", p * 100.0)).size(12).color(MUTED)
+                ],
+                progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
+                button(text("Cancel").size(12).font(MEDIUM))
+                    .padding(Padding::from([6, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::CancelSend),
+            ]
+            .spacing(10)
+            .into();
+        }
+        if self.send_after_export && self.job.is_some() {
+            return text("Making the copy for the channel...")
+                .size(13)
+                .color(TEXT_2)
+                .into();
+        }
+        let span = if self.trimmed() {
+            self.trim.1 - self.trim.0
+        } else {
+            self.player.duration()
+        };
+        let fits = media::share_plan(
+            self.discord_mb as u64 * 1_000_000,
+            span,
+            &self.player.info,
+            1.0,
+        );
+        column![
+            button(
+                row![
+                    icon(Icon::Send, 16.0, TEXT),
+                    text("Send to Discord channel").font(SEMIBOLD).size(14)
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+            )
+            .width(Fill)
+            .padding(Padding::from([10, 12]))
+            .style(theme::secondary)
+            .on_press_maybe((fits.is_ok() && self.job.is_none()).then_some(Msg::SendToChannel)),
+            text(match &fits {
+                Ok(_) => format!(
+                    "Posts a copy under {} MB{} as {name}.",
+                    self.discord_mb,
+                    if self.trimmed() {
+                        " of the trimmed part"
+                    } else {
+                        ""
+                    }
+                ),
+                Err(e) => e.clone(),
+            })
+            .size(12)
+            .color(MUTED),
+        ]
+        .spacing(8)
+        .into()
+    }
+
     fn share_panel<'a>(&'a self, share: ShareView) -> Element<'a, Msg> {
+        let channel = share
+            .channel
+            .clone()
+            .map(|name| self.channel_view(name, share.sending));
         let preparing = self.share_after_export && self.job.is_some();
         let body: Element<'a, Msg> = if let Some((label, p)) = share.progress {
             column![
@@ -1700,7 +1918,10 @@ impl Editor {
             .spacing(8)
             .into()
         };
-        panel("Share", body)
+        match channel {
+            Some(c) => panel("Share", column![body, divider(), c].spacing(14)),
+            None => panel("Share", body),
+        }
     }
 
     fn export_panel(&self) -> Element<'_, Msg> {

@@ -37,6 +37,7 @@ pub struct ClipItem {
     pub link: Option<Link>,
     /// Moments marked in it.
     pub marks: usize,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
                 favorite: lib.is_favorite(&c.path),
                 link: lib.link(&c.path, now).cloned(),
                 marks: lib.markers(&c.path).len(),
+                tags: lib.tags(&c.path),
                 kind: if session_paths.contains(&c.path) {
                     ClipKind::Session
                 } else if c.name.contains("(Discord") {
@@ -233,12 +235,14 @@ impl App {
                 Filter::Favorites => c.favorite,
                 Filter::Shared => c.link.is_some(),
                 Filter::Game(g) => &c.game == g,
-                Filter::Screenshots => false,
+                Filter::Tag(t) => c.tags.contains(t),
+                Filter::Screenshots | Filter::Trash => false,
             })
             .filter(|c| {
                 q.is_empty()
                     || c.name.to_lowercase().contains(&q)
                     || c.game.to_lowercase().contains(&q)
+                    || c.tags.iter().any(|t| t.to_lowercase().contains(&q))
             })
             .collect();
         match self.sort {
@@ -257,6 +261,9 @@ impl App {
     pub(super) fn library_view(&self) -> Element<'_, Message> {
         if self.filter == Filter::Screenshots {
             return self.shots_view();
+        }
+        if self.filter == Filter::Trash {
+            return self.trash_view();
         }
         if self.loaded && self.clips.is_empty() {
             return self.empty();
@@ -400,6 +407,15 @@ impl App {
         }
         if c.marks > 0 {
             badges = badges.push(tag(Icon::Flag, c.marks.to_string()));
+        }
+        if let Some(first) = c.tags.first() {
+            badges = badges.push(tag(
+                Icon::Tag,
+                match c.tags.len() {
+                    1 => first.clone(),
+                    n => format!("{first} +{}", n - 1),
+                },
+            ));
         }
         let scrub_pos = self
             .scrub
@@ -818,6 +834,135 @@ impl App {
                 .into()
         };
         page(toolbar.into(), body)
+    }
+
+    /// Recently deleted: what's waiting to go for good, to put back or delete now.
+    fn trash_view(&self) -> Element<'_, Message> {
+        let now = self.now.unwrap_or_else(SystemTime::now);
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let total: u64 = self.trash.iter().map(|t| t.size).sum();
+        let toolbar = row![
+            text(match self.trash.len() {
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            })
+            .font(MEDIUM)
+            .size(14)
+            .color(TEXT_2),
+            text(human_size(total)).size(14).color(MUTED),
+            space::horizontal(),
+            icon_button(Icon::Trash, "Empty", TEXT_2)
+                .style(theme::danger_ghost)
+                .on_press_maybe((!self.trash.is_empty()).then(|| {
+                    Message::AskPurge(self.trash.iter().map(|t| t.path.clone()).collect())
+                })),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let mut body = column![
+            text(format!(
+                "Deleted clips and screenshots wait here for {} days, then they're gone for good.",
+                library::TRASH_DAYS
+            ))
+            .size(13)
+            .color(MUTED)
+        ]
+        .spacing(10);
+        if self.trash.is_empty() {
+            body = body.push(nothing(Icon::Trash, "Nothing deleted lately.".into()));
+        }
+        for t in &self.trash {
+            let is_clip = t
+                .path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+            let thumb = if is_clip {
+                crate::save::thumb_for(&t.from)
+            } else {
+                shot_thumb(&t.path, None)
+            };
+            let picture: Element<'_, Message> = if thumb.exists() {
+                image(image::Handle::from_path(thumb))
+                    .width(112)
+                    .height(63)
+                    .content_fit(ContentFit::Cover)
+                    .border_radius(6.0)
+                    .into()
+            } else {
+                container(icon(
+                    if is_clip { Icon::Film } else { Icon::Image },
+                    20.0,
+                    MUTED,
+                ))
+                .center_x(112)
+                .center_y(63)
+                .style(theme::well)
+                .into()
+            };
+            let left = t.purge_at().saturating_sub(now_secs).div_ceil(24 * 3600);
+            let name = t
+                .from
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            body = body.push(
+                container(
+                    row![
+                        picture,
+                        column![
+                            container(
+                                text(name)
+                                    .font(SEMIBOLD)
+                                    .size(14)
+                                    .wrapping(text::Wrapping::None)
+                            )
+                            .clip(true),
+                            text(format!(
+                                "Deleted {} · {} · {}",
+                                match now_secs.saturating_sub(t.deleted) / 86_400 {
+                                    0 => "today".to_string(),
+                                    1 => "yesterday".to_string(),
+                                    n => format!("{n} days ago"),
+                                },
+                                match left {
+                                    0 | 1 => "goes today".to_string(),
+                                    n => format!("{n} days left"),
+                                },
+                                human_size(t.size)
+                            ))
+                            .size(12)
+                            .color(MUTED),
+                        ]
+                        .spacing(4)
+                        .width(Fill),
+                        button(
+                            row![
+                                icon(Icon::Undo, 15.0, TEXT),
+                                text("Put back").size(13).font(MEDIUM)
+                            ]
+                            .spacing(7)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding(Padding::from([7, 12]))
+                        .style(theme::secondary)
+                        .on_press(Message::Restore(t.path.clone())),
+                        tip(
+                            icon_only(Icon::Trash, TEXT_2)
+                                .style(theme::danger_ghost)
+                                .on_press(Message::AskPurge(vec![t.path.clone()])),
+                            "Delete for good"
+                        ),
+                    ]
+                    .spacing(14)
+                    .align_y(Alignment::Center),
+                )
+                .padding(10)
+                .style(theme::well),
+            );
+        }
+        page(toolbar.into(), body.into())
     }
 
     fn empty(&self) -> Element<'_, Message> {
