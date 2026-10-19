@@ -143,6 +143,7 @@ pub enum Msg {
     /// Adds a tag used on other clips.
     AddTagNamed(String),
     RemoveTag(String),
+    SetFolder(super::FolderPick),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +167,8 @@ pub struct ShareView {
     pub sending: Option<f32>,
     /// Every tag in the library, for adding with a click.
     pub tags: Vec<String>,
+    /// Every folder, for moving the clip.
+    pub folders: Vec<String>,
 }
 
 /// What the editor asks of the window after a message.
@@ -201,6 +204,11 @@ pub enum Effect {
         clip: PathBuf,
         tag: String,
         add: bool,
+    },
+    /// Put the clip in a folder, or in none.
+    Folder {
+        clip: PathBuf,
+        folder: Option<String>,
     },
 }
 
@@ -781,6 +789,12 @@ impl Editor {
                     add: true,
                 };
             }
+            Msg::SetFolder(pick) => {
+                return Effect::Folder {
+                    clip: self.clip.clone(),
+                    folder: pick.0,
+                };
+            }
             Msg::RemoveTag(tag) => {
                 return Effect::Tag {
                     clip: self.clip.clone(),
@@ -970,6 +984,8 @@ impl Editor {
         mut share: ShareView,
     ) -> Element<'a, Msg> {
         let known_tags = std::mem::take(&mut share.tags);
+        let folders = std::mem::take(&mut share.folders);
+        let folder = item.and_then(|c| c.folder.clone());
         let tags = item.map_or(&[][..], |c| c.tags.as_slice());
         let favorite = item.is_some_and(|c| c.favorite);
         let star = if favorite {
@@ -1159,7 +1175,7 @@ impl Editor {
         let side = scrollable(
             column![
                 self.share_panel(share),
-                self.tags_panel(tags, known_tags),
+                self.tags_panel(tags, known_tags, folders, folder),
                 self.trim_panel(),
                 self.marks_panel(),
                 self.captions_panel(),
@@ -1688,7 +1704,13 @@ impl Editor {
 
     /// Tags: the clip's, to take off, a field to add one, and tags from other clips to add with
     /// a click.
-    fn tags_panel<'a>(&'a self, tags: &'a [String], known: Vec<String>) -> Element<'a, Msg> {
+    fn tags_panel<'a>(
+        &'a self,
+        tags: &'a [String],
+        known: Vec<String>,
+        folders: Vec<String>,
+        folder: Option<String>,
+    ) -> Element<'a, Msg> {
         let chip = |t: &str, on: Msg, add: bool| {
             button(
                 row![
@@ -1735,7 +1757,24 @@ impl Editor {
             }
             c = c.push(more.wrap().vertical_spacing(6));
         }
-        panel("Tags", c)
+        let picks: Vec<super::FolderPick> = std::iter::once(super::FolderPick(None))
+            .chain(folders.into_iter().map(|f| super::FolderPick(Some(f))))
+            .collect();
+        c = c.push(
+            row![
+                icon(Icon::Folder, 14.0, theme::muted()),
+                text("Folder").size(13).color(theme::ink_2()),
+                Space::new().width(Fill),
+                pick_list(picks, Some(super::FolderPick(folder)), Msg::SetFolder)
+                    .text_size(13)
+                    .padding(Padding::from([6, 10]))
+                    .style(theme::pick)
+                    .menu_style(theme::menu),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+        panel("Tags and folder", c)
     }
 
     /// Sending to the connected Discord channel.

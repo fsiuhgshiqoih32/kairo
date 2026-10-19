@@ -38,6 +38,8 @@ pub struct ClipItem {
     /// Moments marked in it.
     pub marks: usize,
     pub tags: Vec<String>,
+    /// The folder it's in.
+    pub folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,7 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
                 link: lib.link(&c.path, now).cloned(),
                 marks: lib.markers(&c.path).len(),
                 tags: lib.tags(&c.path),
+                folder: lib.folder(&c.path),
                 kind: if session_paths.contains(&c.path) {
                     ClipKind::Session
                 } else if c.name.contains("(Discord") {
@@ -236,6 +239,7 @@ impl App {
                 Filter::Shared => c.link.is_some(),
                 Filter::Game(g) => &c.game == g,
                 Filter::Tag(t) => c.tags.contains(t),
+                Filter::Folder(f) => c.folder.as_deref() == Some(f.as_str()),
                 Filter::Screenshots | Filter::Trash | Filter::Stats => false,
             })
             .filter(|c| {
@@ -273,7 +277,7 @@ impl App {
         }
         let shown = self.shown();
         let total: u64 = shown.iter().map(|c| c.size).sum();
-        let toolbar = row![
+        let mut toolbar = row![
             text(match shown.len() {
                 1 => "1 clip".to_string(),
                 n => format!("{n} clips"),
@@ -308,6 +312,19 @@ impl App {
         ]
         .spacing(10)
         .align_y(Alignment::Center);
+        if let Filter::Folder(f) = &self.filter {
+            toolbar = toolbar.push(
+                icon_button(Icon::Pencil, "Rename", theme::ink_2())
+                    .style(theme::secondary)
+                    .on_press(Message::FolderDialog(Some(f.clone()))),
+            );
+            toolbar = toolbar.push(tip(
+                icon_button(Icon::Trash, "Remove folder", theme::ink_2())
+                    .style(theme::danger_ghost)
+                    .on_press(Message::RemoveFolder(f.clone())),
+                "Its clips stay, in All clips",
+            ));
+        }
 
         let now = self.now.unwrap_or_else(SystemTime::now);
         // The newest clip gets the banner on the plain list of everything.

@@ -112,6 +112,25 @@ pub struct Library {
     pub markers: std::collections::BTreeMap<String, Vec<f64>>,
     /// Tags the user put on clips.
     pub tags: BTreeMap<String, BTreeSet<String>>,
+    /// Folders the user made (empty ones too).
+    pub folders: BTreeSet<String>,
+    /// The folder each clip is in; a clip is in one folder at most.
+    pub folder_of: BTreeMap<String, String>,
+}
+
+/// Folder names are short: this many characters at most.
+pub const MAX_FOLDER: usize = 32;
+
+/// A folder name as typed, tidied: trimmed, single spaces, at most [`MAX_FOLDER`] characters.
+pub fn clean_folder(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_FOLDER)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Tags are short: this many characters at most.
@@ -318,7 +337,68 @@ impl Library {
         self.set_markers(clip, Vec::new());
         if let Some(n) = clip.file_name() {
             self.tags.remove(&*n.to_string_lossy());
+            self.folder_of.remove(&*n.to_string_lossy());
         }
+    }
+
+    /// The folder `clip` is in.
+    pub fn folder(&self, clip: &Path) -> Option<String> {
+        let n = clip.file_name()?.to_string_lossy();
+        self.folder_of.get(&*n).cloned()
+    }
+
+    /// Puts `clip` in `folder` (made if it's new), or in none.
+    pub fn set_folder(&mut self, clip: &Path, folder: Option<&str>) {
+        let Some(n) = clip.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return;
+        };
+        match folder.map(clean_folder).filter(|f| !f.is_empty()) {
+            Some(f) => {
+                self.folders.insert(f.clone());
+                self.folder_of.insert(n, f);
+            }
+            None => {
+                self.folder_of.remove(&n);
+            }
+        }
+    }
+
+    /// Makes an empty folder; returns its tidied name, or `None` if the name is empty.
+    pub fn add_folder(&mut self, name: &str) -> Option<String> {
+        let f = clean_folder(name);
+        (!f.is_empty()).then(|| {
+            self.folders.insert(f.clone());
+            f
+        })
+    }
+
+    /// Removes a folder; its clips stay, in no folder.
+    pub fn remove_folder(&mut self, name: &str) {
+        self.folders.remove(name);
+        self.folder_of.retain(|_, f| f != name);
+    }
+
+    /// Renames a folder, keeping its clips in it. False if the new name is empty or taken.
+    pub fn rename_folder(&mut self, from: &str, to: &str) -> bool {
+        let to = clean_folder(to);
+        if to.is_empty() || (to != from && self.folders.contains(&to)) {
+            return false;
+        }
+        self.folders.remove(from);
+        self.folders.insert(to.clone());
+        for f in self.folder_of.values_mut().filter(|f| *f == from) {
+            *f = to.clone();
+        }
+        true
+    }
+
+    /// Every folder with how many clips are in it, by name.
+    pub fn all_folders(&self) -> Vec<(String, usize)> {
+        let mut out: BTreeMap<&str, usize> = self.folders.iter().map(|f| (f.as_str(), 0)).collect();
+        for f in self.folder_of.values() {
+            *out.entry(f.as_str()).or_default() += 1;
+        }
+        out.into_iter().map(|(f, n)| (f.to_string(), n)).collect()
     }
 
     /// Keeps a favourite's star, a shared link and marks when the file is renamed.
@@ -336,7 +416,10 @@ impl Library {
                 self.markers.insert(t.clone(), m);
             }
             if let Some(tags) = self.tags.remove(&f) {
-                self.tags.insert(t, tags);
+                self.tags.insert(t.clone(), tags);
+            }
+            if let Some(folder) = self.folder_of.remove(&f) {
+                self.folder_of.insert(t, folder);
             }
         }
     }
@@ -636,6 +719,40 @@ pub fn rename_target(clip: &Path, new_name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clips_go_in_folders() {
+        let mut l = Library::default();
+        let a = Path::new("C:/clips/A 1.mp4");
+        let b = Path::new("C:/clips/B 2.mp4");
+        assert_eq!(
+            l.add_folder("  Best   of  2026 "),
+            Some("Best of 2026".into())
+        );
+        assert_eq!(l.add_folder("   "), None);
+        l.set_folder(a, Some("Best of 2026"));
+        l.set_folder(b, Some("Funny"));
+        assert_eq!(l.folder(a).as_deref(), Some("Best of 2026"));
+        assert_eq!(
+            l.all_folders(),
+            vec![("Best of 2026".to_string(), 1), ("Funny".to_string(), 1)]
+        );
+        // Renaming keeps the clips; a taken name is refused.
+        assert!(!l.rename_folder("Funny", "Best of 2026"));
+        assert!(l.rename_folder("Funny", "Fails"));
+        assert_eq!(l.folder(b).as_deref(), Some("Fails"));
+        // A renamed clip keeps its folder; a forgotten one leaves it.
+        let a2 = Path::new("C:/clips/A renamed.mp4");
+        l.renamed(a, a2);
+        assert_eq!(l.folder(a2).as_deref(), Some("Best of 2026"));
+        l.forget(a2);
+        assert_eq!(l.folder(a2), None);
+        // Removing a folder leaves its clips in none.
+        l.remove_folder("Fails");
+        assert_eq!(l.folder(b), None);
+        assert_eq!(l.all_folders(), vec![("Best of 2026".to_string(), 0)]);
+        l.set_folder(b, None);
+    }
 
     #[test]
     fn games_from_names() {

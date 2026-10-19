@@ -72,6 +72,7 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                 kind: *kind,
                 thumb: src.thumb.clone(),
                 marks: [2, 0, 1, 0, 0, 0, 0][i],
+                folder: (i % 3 == 0).then(|| "Best of the week".to_string()),
                 tags: match i {
                     1 | 3 => vec!["Clutch".into()],
                     6 => vec!["Clutch".into(), "Ranked".into()],

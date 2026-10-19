@@ -22,8 +22,8 @@ use std::time::{Duration, Instant, SystemTime};
 use iced::alignment::Horizontal;
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{
-    Space, button, column, container, image, qr_code, row, scrollable, space, stack, text,
-    text_input,
+    Space, button, column, container, image, pick_list, qr_code, row, scrollable, space, stack,
+    text, text_input,
 };
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme, window};
 
@@ -51,6 +51,8 @@ pub enum Filter {
     Trash,
     /// Your stats: the library counted.
     Stats,
+    /// A folder the user made.
+    Folder(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,12 @@ pub enum Page {
 }
 
 enum Dialog {
+    /// Naming a new folder (`from` is `None`) or renaming one.
+    Folder {
+        from: Option<String>,
+        name: String,
+        error: Option<String>,
+    },
     /// After an update: the highlights of the version now running.
     WhatsNew {
         version: String,
@@ -137,6 +145,8 @@ pub struct App {
     /// The games and tags in the clip list, with how many clips each, for the sidebar: counted
     /// when the list changes rather than every frame.
     games: Vec<(String, usize)>,
+    /// The folders, with how many clips are in each (empty ones too).
+    folders: Vec<(String, usize)>,
     tags: Vec<(String, usize)>,
     pub report: Option<Report>,
     pub settings: Settings,
@@ -251,6 +261,13 @@ pub enum Message {
     AskRename(PathBuf),
     RenameInput(String),
     RenameConfirm,
+    /// Opens the dialog to make a folder (`None`) or rename one.
+    FolderDialog(Option<String>),
+    FolderInput(String),
+    FolderConfirm,
+    RemoveFolder(String),
+    /// Puts the picked clips in a folder, or in none.
+    MoveSelected(FolderPick),
     AskDelete(PathBuf),
     DeleteConfirm,
     CloseDialog,
@@ -300,6 +317,7 @@ impl App {
                 posts: Vec::new(),
                 trash: Vec::new(),
                 games: Vec::new(),
+                folders: Vec::new(),
                 tags: Vec::new(),
                 report: None,
                 saved: settings.clone(),
@@ -558,6 +576,34 @@ impl App {
             .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         self.tags = count(&mut self.clips.iter().flat_map(|c| &c.tags));
         self.tags.sort_by_key(|(t, _)| t.to_lowercase());
+        let mut folders: HashMap<String, usize> = Library::load()
+            .folders
+            .into_iter()
+            .map(|f| (f, 0))
+            .collect();
+        for c in &self.clips {
+            if let Some(f) = &c.folder {
+                *folders.entry(f.clone()).or_default() += 1;
+            }
+        }
+        self.folders = folders.into_iter().collect();
+        self.folders.sort_by_key(|(f, _)| f.to_lowercase());
+    }
+
+    /// Saves folder changes and shows them.
+    fn folders_changed(&mut self, lib: Library) {
+        if let Err(e) = lib.save() {
+            self.note(format!("Couldn't keep the folder: {e}"), false);
+        }
+        for c in &mut self.clips {
+            c.folder = lib.folder(&c.path);
+        }
+        self.index_clips();
+        if let Filter::Folder(f) = &self.filter
+            && !self.folders.iter().any(|(name, _)| name == f)
+        {
+            self.filter = Filter::All;
+        }
     }
 
     /// Moves files to Recently deleted, with Undo on the notice.
@@ -761,6 +807,11 @@ impl App {
                 return self.reload();
             }
             editor::Effect::CancelSend(clip) => return self.update(Message::CancelPost(clip)),
+            editor::Effect::Folder { clip, folder } => {
+                let mut l = Library::load();
+                l.set_folder(&clip, folder.as_deref());
+                self.folders_changed(l);
+            }
             editor::Effect::Tag { clip, tag, add } => {
                 let mut l = Library::load();
                 if add {
@@ -1007,6 +1058,67 @@ impl App {
                 self.note("Renamed.", true);
                 return self.reload();
             }
+            Message::FolderDialog(from) => {
+                self.dialog = Some(Dialog::Folder {
+                    name: from.clone().unwrap_or_default(),
+                    from,
+                    error: None,
+                });
+                return iced::widget::operation::focus("folder");
+            }
+            Message::FolderInput(t) => {
+                if let Some(Dialog::Folder { name, error, .. }) = &mut self.dialog {
+                    *name = t;
+                    *error = None;
+                }
+            }
+            Message::FolderConfirm => {
+                let Some(Dialog::Folder { from, name, error }) = &mut self.dialog else {
+                    return Task::none();
+                };
+                let mut l = Library::load();
+                let made = match from.clone() {
+                    Some(old) if lib::clean_folder(name) == old => Some(old),
+                    Some(old) => l.rename_folder(&old, name).then(|| lib::clean_folder(name)),
+                    None if l.folders.contains(&lib::clean_folder(name)) => None,
+                    None => l.add_folder(name),
+                };
+                let Some(made) = made else {
+                    *error = Some(if lib::clean_folder(name).is_empty() {
+                        "Give it a name.".into()
+                    } else {
+                        "There's a folder with that name already.".into()
+                    });
+                    return Task::none();
+                };
+                self.dialog = None;
+                self.folders_changed(l);
+                self.filter = Filter::Folder(made);
+            }
+            Message::RemoveFolder(f) => {
+                let mut l = Library::load();
+                l.remove_folder(&f);
+                self.folders_changed(l);
+                self.note("Folder removed. Its clips are still in All clips.", true);
+            }
+            Message::MoveSelected(pick) => {
+                let mut l = Library::load();
+                for p in &self.selected {
+                    l.set_folder(p, pick.0.as_deref());
+                }
+                let n = self.selected.len();
+                self.folders_changed(l);
+                self.note(
+                    match &pick.0 {
+                        Some(f) if n == 1 => format!("Moved to {f}."),
+                        Some(f) => format!("{n} clips moved to {f}."),
+                        None => "Taken out of their folder.".into(),
+                    },
+                    true,
+                );
+                self.selecting = false;
+                self.selected.clear();
+            }
             Message::AskDelete(p) => return self.delete(vec![p]),
             Message::Select(on) => {
                 self.selecting = on;
@@ -1221,6 +1333,7 @@ impl App {
                     Dialog::Rename { .. } => Message::RenameConfirm,
                     Dialog::Delete(_) => Message::DeleteConfirm,
                     Dialog::Link { .. } | Dialog::WhatsNew { .. } => Message::CloseDialog,
+                    Dialog::Folder { .. } => Message::FolderConfirm,
                 });
             }
             return Task::none();
@@ -1432,6 +1545,7 @@ impl App {
                         .find(|p| p.clip == e.clip)
                         .map(share::Post::progress),
                     tags: self.tags.iter().map(|(t, _)| t.clone()).collect(),
+                    folders: self.folders.iter().map(|(f, _)| f.clone()).collect(),
                 };
                 column![
                     Space::new().height(18),
@@ -1554,6 +1668,22 @@ impl App {
                         .on_press_maybe((n >= 2).then_some(Message::MakeMontage)),
                     "Joins them into one video, fading between clips",
                 ),
+                pick_list(
+                    std::iter::once(FolderPick(None))
+                        .chain(
+                            self.folders
+                                .iter()
+                                .map(|(f, _)| FolderPick(Some(f.clone())))
+                        )
+                        .collect::<Vec<_>>(),
+                    None::<FolderPick>,
+                    Message::MoveSelected,
+                )
+                .placeholder("Move to folder")
+                .text_size(13)
+                .padding(Padding::from([7, 12]))
+                .style(theme::pick)
+                .menu_style(theme::menu),
                 widgets::icon_button(Icon::Trash, "Delete", theme::ink_2())
                     .style(theme::danger_ghost)
                     .on_press_maybe((n >= 1).then_some(Message::DeleteSelected)),
@@ -1669,6 +1799,45 @@ impl App {
 
     fn dialog_view<'a>(&'a self, d: &'a Dialog) -> Element<'a, Message> {
         match d {
+            Dialog::Folder { from, name, error } => {
+                let mut body = column![
+                    text_input("Folder name", name)
+                        .id("folder")
+                        .on_input(Message::FolderInput)
+                        .on_submit(Message::FolderConfirm)
+                        .padding(Padding::from([9, 12]))
+                        .size(14)
+                        .style(theme::input)
+                ]
+                .spacing(8);
+                if let Some(e) = error {
+                    body = body.push(text(e.clone()).size(12).color(theme::accent()));
+                }
+                dialog(
+                    if from.is_some() {
+                        "Rename folder"
+                    } else {
+                        "New folder"
+                    },
+                    body,
+                    row![
+                        button(text("Cancel").size(13).font(MEDIUM))
+                            .padding(Padding::from([8, 14]))
+                            .style(theme::ghost)
+                            .on_press(Message::CloseDialog),
+                        button(
+                            text(if from.is_some() { "Rename" } else { "Make it" })
+                                .size(13)
+                                .font(SEMIBOLD)
+                        )
+                        .padding(Padding::from([8, 14]))
+                        .style(theme::primary)
+                        .on_press(Message::FolderConfirm),
+                    ]
+                    .spacing(8),
+                    Message::CloseDialog,
+                )
+            }
             Dialog::WhatsNew { version, notes } => {
                 let mut body = column![
                     text("You're up to date. Here's what this version brings.")
@@ -1939,6 +2108,33 @@ impl App {
         ]
         .spacing(2);
 
+        nav = nav.push(Space::new().height(14)).push(
+            row![
+                container(
+                    text("Folders")
+                        .size(12)
+                        .font(SEMIBOLD)
+                        .color(theme::muted())
+                )
+                .padding(Padding::from([4, 12]))
+                .width(Fill),
+                library::tip(
+                    button(icon(Icon::Folder, 14.0, theme::muted()))
+                        .padding(Padding::from([3, 8]))
+                        .style(theme::ghost)
+                        .on_press(Message::FolderDialog(None)),
+                    "New folder",
+                ),
+            ]
+            .align_y(Alignment::Center),
+        );
+        for (f, n) in &self.folders {
+            let active = in_library && matches!(&self.filter, Filter::Folder(x) if x == f);
+            nav = nav.push(
+                nav_item(Icon::Folder, f, Some(*n), active)
+                    .on_press(Message::Filter(Filter::Folder(f.clone()))),
+            );
+        }
         if !self.games.is_empty() {
             nav = nav.push(Space::new().height(14)).push(
                 container(text("Games").size(12).font(SEMIBOLD).color(theme::muted()))
@@ -2210,6 +2406,7 @@ impl App {
                 Filter::Tag(t) => t.clone(),
                 Filter::Trash => "Recently deleted".into(),
                 Filter::Stats => "Your stats".into(),
+                Filter::Folder(f) => f.clone(),
             },
         };
         let live = self
@@ -2474,6 +2671,16 @@ pub fn day_label(t: SystemTime, now: SystemTime) -> String {
 
 fn open_request_path() -> PathBuf {
     config::config_dir().join("open.request")
+}
+
+/// A folder to move clips to, or none, as a pick list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderPick(pub Option<String>);
+
+impl std::fmt::Display for FolderPick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.as_deref().unwrap_or("No folder"))
+    }
 }
 
 /// Asks the open window to install the update (instead of a clip to open).

@@ -311,6 +311,7 @@ mod tests {
             link: None,
             marks: 1,
             tags: Vec::new(),
+            folder: None,
         }
     }
 
