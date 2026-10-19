@@ -201,6 +201,11 @@ pub fn run() -> Result<(), String> {
         .map(|_| hotkey.sibling())
         .collect();
     set_quick_keys(&mut quick, &settings);
+    #[cfg(windows)]
+    let mut input_hooks = settings
+        .input_overlay
+        .then(|| crate::platform::windows_input::start(shared.clone()))
+        .and_then(|r| r.map_err(|e| warning!("{e}")).ok());
     let launcher = autostart::launcher();
     let mut tray: Option<Tray> = None;
     let mut mtime = config::mtime(&path);
@@ -277,6 +282,13 @@ pub fn run() -> Result<(), String> {
                         mark_key.set(&s.marker_hotkey);
                         session_key.set(&s.session_hotkey);
                         set_quick_keys(&mut quick, &s);
+                        #[cfg(windows)]
+                        if s.input_overlay != input_hooks.is_some() {
+                            input_hooks = s
+                                .input_overlay
+                                .then(|| crate::platform::windows_input::start(shared.clone()))
+                                .and_then(|r| r.map_err(|e| warning!("{e}")).ok());
+                        }
                         shared.apply(s);
                     }
                     Err(e) => warning!("{e}"),

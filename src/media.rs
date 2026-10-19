@@ -336,6 +336,15 @@ pub struct Burn {
     pub end: f64,
 }
 
+/// A stream of overlay frames (raw RGBA in a file) laid over the picture's corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayVideo {
+    pub path: std::path::PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
 /// What an export changes on the way: speed, colour, fades, the mix, music, captions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Effects {
@@ -355,6 +364,8 @@ pub struct Effects {
     pub even_loudness: bool,
     /// Captions to burn in (made for the export's size just before it runs).
     pub burns: Vec<Burn>,
+    /// The keys-and-clicks overlay (made for the export just before it runs).
+    pub keys: Option<OverlayVideo>,
 }
 
 impl Default for Effects {
@@ -370,6 +381,7 @@ impl Default for Effects {
             mic_cleanup: false,
             even_loudness: false,
             burns: Vec::new(),
+            keys: None,
         }
     }
 }
@@ -447,15 +459,16 @@ fn effects_graph(
         pic.push(format!("fade=t=out:st={:.3}:d={FADE}", length - FADE));
     }
     parts.push(format!("[0:v]{}[pre]", pic.join(",")));
-    if eff.burns.is_empty() {
+    if eff.burns.is_empty() && eff.keys.is_none() {
         parts.push(s(shape));
     } else {
-        // Captions over the finished picture, each for its time (in the export's timeline).
+        // Captions over the finished picture, each for its time (in the export's timeline),
+        // then the keys in the bottom-left corner.
         let shaped = shape.strip_suffix("[v]").unwrap_or(shape);
         parts.push(format!("{shaped}[sv]"));
         let first = if eff.music.is_some() { 2 } else { 1 };
         let mut last = s("sv");
-        let n = eff.burns.len();
+        let n = eff.burns.len() + eff.keys.is_some() as usize;
         for (i, b) in eff.burns.iter().enumerate() {
             let to = if i + 1 == n { s("v") } else { format!("c{i}") };
             parts.push(format!(
@@ -465,6 +478,12 @@ fn effects_graph(
                 b.end
             ));
             last = to;
+        }
+        if eff.keys.is_some() {
+            parts.push(format!(
+                "[{last}][{}:v]overlay=x=W*3/100:y=H-h-H*5/100:eof_action=pass[v]",
+                first + eff.burns.len()
+            ));
         }
     }
     if !sound {
@@ -552,6 +571,20 @@ fn effects_head(clip: &Path, start: f64, end: f64, eff: &Effects) -> Vec<String>
             format!("{}x{}", b.width, b.height),
             s("-i"),
             b.path.display().to_string(),
+        ]);
+    }
+    if let Some(k) = &eff.keys {
+        a.extend([
+            s("-f"),
+            s("rawvideo"),
+            s("-pix_fmt"),
+            s("rgba"),
+            s("-video_size"),
+            format!("{}x{}", k.width, k.height),
+            s("-framerate"),
+            k.fps.to_string(),
+            s("-i"),
+            k.path.display().to_string(),
         ]);
     }
     a
@@ -670,10 +703,11 @@ pub fn gif_args(
     fps: u32,
     out: &Path,
 ) -> Vec<String> {
-    // A GIF has no sound, and captions don't survive its palette.
+    // A GIF has no sound, and overlays don't survive its palette.
     let eff = Effects {
         music: None,
         burns: Vec::new(),
+        keys: None,
         ..eff.clone()
     };
     let shape = format!(
@@ -1208,6 +1242,7 @@ At least one output file must be specified";
                 volume: 0.3,
             }),
             burns: Vec::new(),
+            keys: None,
         };
         let a = trim_args(
             Path::new("c.mp4"),
@@ -1354,5 +1389,45 @@ At least one output file must be specified";
         assert_eq!(burn_window(5.0, 7.0, (4.0, 10.0), 2.0), Some((0.5, 1.5)));
         assert_eq!(burn_window(1.0, 3.0, (4.0, 10.0), 1.0), None);
         assert_eq!(burn_window(3.5, 4.5, (4.0, 10.0), 1.0), Some((0.0, 0.5)));
+    }
+
+    #[test]
+    fn the_keys_overlay_goes_in_the_corner_after_captions() {
+        let eff = Effects {
+            burns: vec![Burn {
+                path: "c0.rgba".into(),
+                width: 400,
+                height: 80,
+                start: 0.5,
+                end: 1.5,
+            }],
+            keys: Some(OverlayVideo {
+                path: "k.rgba".into(),
+                width: 344,
+                height: 172,
+                fps: 15,
+            }),
+            ..Default::default()
+        };
+        let a = trim_args(
+            Path::new("c.mp4"),
+            0.0,
+            4.0,
+            &three_tracks(),
+            &eff,
+            Encoder::X264,
+            Path::new("o.mp4"),
+        );
+        let j = a.join(" ");
+        assert!(
+            j.contains("-video_size 344x172 -framerate 15 -i k.rgba"),
+            "{j}"
+        );
+        let g = graph(&a);
+        assert!(g.contains("[sv][1:v]overlay=x=(W-w)/2"), "{g}");
+        assert!(
+            g.contains("[c0][2:v]overlay=x=W*3/100:y=H-h-H*5/100:eof_action=pass[v]"),
+            "{g}"
+        );
     }
 }

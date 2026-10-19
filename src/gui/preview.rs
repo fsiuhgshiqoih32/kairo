@@ -156,10 +156,39 @@ fn caption_sample() {
     frame.save(out("caption")).expect("save");
 }
 
+/// The keys-and-clicks overlay with W, A, Shift and the left button down, over a frame.
+fn keys_sample() {
+    let font = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
+    let size = rewindr::keys::size_for(1080);
+    let mask = (1 << 1) | (1 << 4) | (1 << 8) | (1 << rewindr::keys::MOUSE_LEFT);
+    let pic = rewindr::keys::render(mask, size, [255, 79, 70], font);
+    let real = super::load_clips(&rewindr::config::default_save_dir());
+    let frame = real
+        .iter()
+        .find_map(|c| image::open(crate::save::thumb_for(&c.path)).ok())
+        .expect("a thumbnail");
+    let mut frame = frame
+        .resize_exact(1920, 1080, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let (x0, y0) = (1920 * 3 / 100, 1080 - size.1 - 1080 * 5 / 100);
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let i = ((y * size.0 + x) * 4) as usize;
+            let a = pic[i + 3] as f32 / 255.0;
+            let px = frame.get_pixel_mut(x0 + x, y0 + y);
+            for c in 0..3 {
+                px[c] = (pic[i + c] as f32 * a + px[c] as f32 * (1.0 - a)) as u8;
+            }
+        }
+    }
+    frame.save(out("keys")).expect("save");
+}
+
 #[test]
 #[ignore = "renders the windows to PNGs; needs REWINDR_HOME with clips and REWINDR_SNAPSHOTS"]
 fn preview() {
     caption_sample();
+    keys_sample();
     let size = (1280.0, 800.0);
     let now = SystemTime::now();
     let (mut app, _) = App::new(rewindr::config::Settings::default());

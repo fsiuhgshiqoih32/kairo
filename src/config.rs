@@ -215,6 +215,8 @@ pub struct Settings {
     pub chat_track: bool,
     /// The app: the start of its program's name ("Discord" also finds DiscordPTB, DiscordCanary).
     pub chat_app: String,
+    /// Keep the gaming keys and clicks pressed while recording, for an overlay in copies.
+    pub input_overlay: bool,
 }
 
 impl Default for Settings {
@@ -251,6 +253,7 @@ impl Default for Settings {
             session_auto: false,
             chat_track: false,
             chat_app: "Discord".into(),
+            input_overlay: false,
         }
     }
 }

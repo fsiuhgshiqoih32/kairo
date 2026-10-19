@@ -101,6 +101,7 @@ pub fn stop(
     }
     let end_us = now_us();
     let marks: Vec<i64> = shared.marks.lock().unwrap().iter().copied().collect();
+    let inputs = shared.inputs_within(s.start_us, end_us);
     let settings = shared.settings();
     std::thread::spawn(move || {
         let result = (|| {
@@ -139,6 +140,7 @@ pub fn stop(
                 &args::thumbnail_args(&out, &thumb),
                 Duration::from_secs(30),
             );
+            crate::save::write_keys(&out, &inputs);
             let bookmarks = library::marks_within(&marks, s.start_us, end_us);
             if !bookmarks.is_empty() {
                 let mut lib = library::Library::load();

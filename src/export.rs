@@ -72,6 +72,7 @@ pub fn start(
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
     eff: Effects,
     caps: Vec<rewindr::captions::Caption>,
+    keys: Vec<rewindr::keys::KeyEvent>,
 ) -> Job {
     let status = Arc::new(Mutex::new(Status {
         stage: match kind {
@@ -97,6 +98,7 @@ pub fn start(
                 info: &info,
                 range,
                 caps: &caps,
+                keys: &keys,
                 burns_dir: rewindr::config::config_dir().join("captions").join(format!(
                     "{}-{}",
                     std::process::id(),
@@ -126,21 +128,44 @@ struct Export<'a> {
     info: &'a Info,
     range: (f64, f64),
     caps: &'a [rewindr::captions::Caption],
-    /// Where caption pictures go while it runs.
+    /// Keys and clicks to overlay (empty for none).
+    keys: &'a [rewindr::keys::KeyEvent],
+    /// Where caption pictures and overlay frames go while it runs.
     burns_dir: PathBuf,
 }
 
 impl Export<'_> {
-    /// `eff` with the captions drawn for a picture of `size`.
+    /// `eff` with the captions and the keys overlay drawn for a picture of `size`.
     fn with_captions(&self, eff: &Effects, size: (u32, u32)) -> Result<Effects, String> {
-        if self.caps.is_empty() {
-            return Ok(eff.clone());
+        let mut eff = eff.clone();
+        if !self.caps.is_empty() {
+            eff.burns = render_burns(self.caps, self.range, eff.speed, size, &self.burns_dir)?;
         }
-        let burns = render_burns(self.caps, self.range, eff.speed, size, &self.burns_dir)?;
-        Ok(Effects {
-            burns,
-            ..eff.clone()
-        })
+        if !self.keys.is_empty() {
+            const FPS: u32 = 15;
+            let overlay = rewindr::keys::size_for(size.1);
+            let path = self.burns_dir.join("keys.rgba");
+            std::fs::create_dir_all(&self.burns_dir).map_err(|e| e.to_string())?;
+            let accent = crate::gui::theme::accent_rgb();
+            rewindr::keys::write_stream(
+                self.keys,
+                self.range,
+                eff.speed,
+                FPS,
+                overlay,
+                accent,
+                include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+                &path,
+            )
+            .map_err(|e| e.to_string())?;
+            eff.keys = Some(media::OverlayVideo {
+                path,
+                width: overlay.0,
+                height: overlay.1,
+                fps: FPS,
+            });
+        }
+        Ok(eff)
     }
 }
 

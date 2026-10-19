@@ -85,6 +85,7 @@ pub enum Msg {
     SessionAuto(bool),
     ChatTrack(bool),
     ChatApp(String),
+    InputOverlay(bool),
     Voice(bool),
     VoiceInstalled(Result<(), String>),
     Phrase(String),
@@ -299,6 +300,10 @@ impl State {
             }
             Msg::ChatTrack(on) => {
                 s.chat_track = on;
+                return changed;
+            }
+            Msg::InputOverlay(on) => {
+                s.input_overlay = on;
                 return changed;
             }
             Msg::ChatApp(t) => {
@@ -749,6 +754,21 @@ impl State {
                 s.quality.bitrate(ow as u64 * oh as u64, s.fps) as f64 * s.codec.bitrate_factor();
             bps * 3600.0 / 8.0 / 1e9
         };
+        if cfg!(windows) {
+            sections = sections.push(section(
+                "Overlay",
+                vec![setting(
+                    "Keys and clicks",
+                    Some(
+                        "Remembers the gaming keys you press (WASD, QERF, Space, Shift, Ctrl, Tab, \
+                         1-4) and your mouse buttons while recording, so copies can show them. \
+                         Nothing else you type is kept."
+                            .into(),
+                    ),
+                    switch(s.input_overlay, Msg::InputOverlay),
+                )],
+            ));
+        }
         sections = sections.push(section(
             "Sessions",
             vec![

@@ -73,6 +73,12 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     )
 }
 
+/// The accent as 8-bit red, green and blue.
+pub fn accent_rgb() -> [u8; 3] {
+    let v = ACCENT_RGB.load(Ordering::Relaxed);
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
 pub fn accent() -> Color {
     rgb(ACCENT_RGB.load(Ordering::Relaxed))
 }

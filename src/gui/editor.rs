@@ -134,6 +134,7 @@ pub enum Msg {
     DeleteCaption(usize),
     BurnCaptions(bool),
     RevealSrt,
+    ShowKeys(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +213,11 @@ pub struct Editor {
     pub captions: Vec<rewindr::captions::Caption>,
     /// Burn the captions into copies.
     burn_captions: bool,
+    /// Keys and clicks recorded with the clip, and whether copies show them.
+    keys: Vec<rewindr::keys::KeyEvent>,
+    show_keys: bool,
+    /// Overlay pictures already drawn, by which keys are down.
+    key_pictures: std::cell::RefCell<std::collections::HashMap<u32, image::Handle>>,
     caption_job: Option<export::CaptionJob>,
 }
 
@@ -276,6 +282,9 @@ impl Editor {
                     .unwrap_or_default(),
                 burn_captions: true,
                 caption_job: None,
+                keys: crate::save::read_keys(&clip_path),
+                show_keys: true,
+                key_pictures: Default::default(),
             },
             strip,
         ))
@@ -330,9 +339,46 @@ impl Editor {
             || self.caption_job.is_some()
     }
 
-    /// Copies get something beyond a plain cut: a style, or captions burned in.
+    /// Uses these keys and clicks for the overlay (the window self-test's).
+    pub fn use_keys(&mut self, keys: Vec<rewindr::keys::KeyEvent>) {
+        self.keys = keys;
+        self.show_keys = true;
+    }
+
+    /// Copies get something beyond a plain cut: a style, captions or the keys overlay.
     fn styled(&self) -> bool {
-        !self.effects.is_plain() || (self.burn_captions && !self.captions.is_empty())
+        !self.effects.is_plain()
+            || (self.burn_captions && !self.captions.is_empty())
+            || (self.show_keys && !self.keys.is_empty())
+    }
+
+    /// The keys copies show.
+    fn keys_for_copies(&self) -> Vec<rewindr::keys::KeyEvent> {
+        if self.show_keys {
+            self.keys.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The overlay picture for the keys down at the playhead (drawn once per combination).
+    fn keys_now(&self) -> Option<image::Handle> {
+        if !self.show_keys || self.keys.is_empty() {
+            return None;
+        }
+        let mask = rewindr::keys::state_at(&self.keys, self.player.position);
+        let mut cache = self.key_pictures.borrow_mut();
+        let h = cache.entry(mask).or_insert_with(|| {
+            let size = rewindr::keys::size_for(720);
+            let rgba = rewindr::keys::render(
+                mask,
+                size,
+                theme::accent_rgb(),
+                include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
+            );
+            image::Handle::from_rgba(size.0, size.1, rgba)
+        });
+        Some(h.clone())
     }
 
     /// The captions copies get.
@@ -537,6 +583,7 @@ impl Editor {
                 }
             }
             Msg::BurnCaptions(on) => self.burn_captions = on,
+            Msg::ShowKeys(on) => self.show_keys = on,
             Msg::RevealSrt => {
                 let p = self.clip.with_extension("srt");
                 if p.exists() {
@@ -712,10 +759,7 @@ impl Editor {
         self.player.release_file();
         let effect = match std::fs::rename(&self.clip, &to) {
             Ok(()) => {
-                let _ = std::fs::rename(
-                    crate::save::thumb_for(&self.clip),
-                    crate::save::thumb_for(&to),
-                );
+                crate::save::move_sidecars(&self.clip, &to);
                 let from = std::mem::replace(&mut self.clip, to.clone());
                 self.player.clip = to.clone();
                 self.name = stem(&to);
@@ -779,6 +823,7 @@ impl Editor {
             self.encoders.clone(),
             self.effects.clone(),
             self.captions_for_copies(),
+            self.keys_for_copies(),
         ));
         Effect::None
     }
@@ -899,6 +944,16 @@ impl Editor {
             None => text("Loading...").color(MUTED).into(),
         };
         let mut monitor = stack![container(picture).center(Fill)];
+        if let Some(k) = self.keys_now() {
+            monitor = monitor.push(
+                container(image(k).width(206))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(iced::alignment::Horizontal::Left)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(16),
+            );
+        }
         if let Some(line) = self.caption_now() {
             monitor = monitor.push(
                 container(
@@ -1424,6 +1479,21 @@ impl Editor {
                     slider(0.0..=2.0, eff.chat_volume, Msg::ChatVolume)
                         .step(0.05_f32)
                         .style(theme::volume_slider)
+                ]
+                .align_y(Alignment::Center),
+            );
+        }
+        if !self.keys.is_empty() {
+            body = body.push(
+                row![
+                    text("Show keys and clicks")
+                        .size(12)
+                        .color(TEXT_2)
+                        .width(Fill),
+                    toggler(self.show_keys)
+                        .on_toggle(Msg::ShowKeys)
+                        .size(18)
+                        .style(theme::toggle)
                 ]
                 .align_y(Alignment::Center),
             );

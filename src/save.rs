@@ -35,6 +35,59 @@ pub fn thumb_for(clip: &Path) -> PathBuf {
     thumbs_dir().join(format!("{name}.jpg"))
 }
 
+/// Where a clip's keys and clicks are kept (for the overlay).
+pub fn keys_for(clip: &Path) -> PathBuf {
+    let name = clip
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    thumbs_dir().join(format!("{name}.keys.json"))
+}
+
+/// The files that belong with a clip: its thumbnail, banner picture, keys and captions.
+pub fn sidecars(clip: &Path) -> Vec<PathBuf> {
+    let mut v = vec![thumb_for(clip), keys_for(clip), clip.with_extension("srt")];
+    if let Some(stem) = clip.file_stem() {
+        v.push(thumbs_dir().join(format!("hero-{}.jpg", stem.to_string_lossy())));
+    }
+    v
+}
+
+/// Moves a clip's companion files along with it.
+pub fn move_sidecars(from: &Path, to: &Path) {
+    for (a, b) in sidecars(from).into_iter().zip(sidecars(to)) {
+        if a.exists() {
+            let _ = std::fs::rename(a, b);
+        }
+    }
+}
+
+/// Removes a clip's companion files.
+pub fn remove_sidecars(clip: &Path) {
+    for p in sidecars(clip) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Writes the overlay events for a clip, if there are any.
+pub fn write_keys(clip: &Path, events: &[rewindr::keys::KeyEvent]) {
+    if events.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(thumbs_dir());
+    if let Ok(text) = serde_json::to_string(events) {
+        let _ = std::fs::write(keys_for(clip), text);
+    }
+}
+
+/// A clip's overlay events, if it has any.
+pub fn read_keys(clip: &Path) -> Vec<rewindr::keys::KeyEvent> {
+    std::fs::read_to_string(keys_for(clip))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
 /// `<title> 2026-10-18 14-30-05.mp4` in `dir`, not overwriting anything.
 pub fn clip_path(dir: &Path, title: Option<&str>) -> PathBuf {
     let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
@@ -231,6 +284,7 @@ pub fn save_inner(
     )
     .ok()
     .map(|_| thumb);
+    write_keys(&out, &shared.inputs_within(start, end));
     let marks: Vec<i64> = shared.marks.lock().unwrap().iter().copied().collect();
     let marks = library::marks_within(&marks, start, end);
     if !marks.is_empty() {

@@ -100,6 +100,8 @@ pub struct Shared {
     /// Marked moments (wall-clock µs), oldest first, for as long as the buffer (or a session)
     /// could hold them.
     pub marks: Mutex<std::collections::VecDeque<i64>>,
+    /// Overlay keys and clicks (wall-clock µs, key, down), oldest first, kept like marks.
+    pub inputs: Mutex<std::collections::VecDeque<(i64, u8, bool)>>,
     /// The session being recorded, and whether one should be.
     pub session: Mutex<Option<crate::session::Session>>,
     pub session_wanted: AtomicBool,
@@ -122,9 +124,52 @@ impl Shared {
             saving: AtomicBool::new(false),
             voice_tap: Default::default(),
             marks: Mutex::default(),
+            inputs: Mutex::default(),
             session: Mutex::new(None),
             session_wanted: AtomicBool::new(false),
         })
+    }
+
+    /// From when events are still worth keeping: the buffer's reach, or a session's start.
+    fn keep_since(&self, now: i64) -> i64 {
+        let keep = self.settings().buffer_seconds() as i64 * 1_000_000;
+        self.session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(now - keep, |s| s.start_us.min(now - keep))
+    }
+
+    /// A key or click for the overlay, kept only while recording.
+    pub fn input(&self, at: i64, key: u8, down: bool) {
+        let live = {
+            let st = self.status.lock().unwrap();
+            st.recording && !self.paused.load(Ordering::Relaxed)
+        };
+        if !live {
+            return;
+        }
+        let since = self.keep_since(at);
+        let mut q = self.inputs.lock().unwrap();
+        q.push_back((at, key, down));
+        while q.front().is_some_and(|e| e.0 < since) {
+            q.pop_front();
+        }
+    }
+
+    /// The overlay events between `start` and `end` (wall clock), timed from `start`.
+    pub fn inputs_within(&self, start: i64, end: i64) -> Vec<rewindr::keys::KeyEvent> {
+        self.inputs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| (start..=end).contains(&e.0))
+            .map(|e| rewindr::keys::KeyEvent {
+                t: (e.0 - start) as f64 / 1e6,
+                key: e.1,
+                down: e.2,
+            })
+            .collect()
     }
 
     /// Marks this moment; saved clips that hold it show it on their timeline. Returns how many

@@ -500,6 +500,12 @@ impl App {
                                     end: 2.0,
                                     text: "Self test caption".into(),
                                 }];
+                                let key = |t: f64, key: u8, down: bool| rewindr::keys::KeyEvent {
+                                    t,
+                                    key,
+                                    down,
+                                };
+                                ed.use_keys(vec![key(0.7, 1, true), key(1.4, 1, false)]);
                             }
                             let effect = ed.update(editor::Msg::Export(k));
                             return self.editor_effect(effect);
@@ -708,7 +714,7 @@ impl App {
                     *error = Some(format!("Couldn't rename: {e}"));
                     return Task::none();
                 }
-                let _ = std::fs::rename(crate::save::thumb_for(path), crate::save::thumb_for(&to));
+                crate::save::move_sidecars(path, &to);
                 let mut l = Library::load();
                 l.renamed(path, &to);
                 let _ = l.save();
@@ -769,7 +775,7 @@ impl App {
                                 .map(|i| i.duration)
                                 .sum();
                             return self.finish_test(check_montage(&path, want).map(|_| {
-                                "played, then saved a trimmed copy, a GIF, a vertical copy, slow motion, a styled square copy with a caption, and a montage".into()
+                                "played, then saved a trimmed copy, a GIF, a vertical copy, slow motion, a styled square copy with a caption and the keys overlay, and a montage".into()
                             }));
                         }
                         self.selecting = false;
@@ -803,10 +809,7 @@ impl App {
                     match std::fs::remove_file(p) {
                         Ok(()) => {
                             gone += 1;
-                            let _ = std::fs::remove_file(crate::save::thumb_for(p));
-                            if let Some(h) = library::hero_path(p) {
-                                let _ = std::fs::remove_file(h);
-                            }
+                            crate::save::remove_sidecars(p);
                             l.set_favorite(p, false);
                             l.set_link(p, None);
                             l.set_markers(p, Vec::new());

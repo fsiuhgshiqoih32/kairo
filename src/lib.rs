@@ -5,6 +5,7 @@ pub mod args;
 pub mod art;
 pub mod captions;
 pub mod config;
+pub mod keys;
 pub mod library;
 pub mod media;
 pub mod mp4;
