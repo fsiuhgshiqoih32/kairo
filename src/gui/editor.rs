@@ -21,7 +21,7 @@ use iced::{
 use kairo::args::Encoder;
 use kairo::library;
 use kairo::media::{self, Info, format_time};
-use kairo::overlays::{self, ANIMS, COLORS, Item, STICKERS};
+use kairo::overlays::{self, ANIMS, COLORS, Item};
 
 use super::icons::{Icon, icon, icon_filled};
 use super::library::{ClipItem, tip};
@@ -148,7 +148,6 @@ pub enum Msg {
     /// Text being typed for a new text item.
     StampText(String),
     AddText,
-    AddSticker(&'static str),
     PickStamp(Option<usize>),
     /// Dragged on the picture: its new middle.
     MoveStamp(usize, f32, f32),
@@ -274,33 +273,21 @@ pub struct Editor {
     /// Overlay pictures already drawn, by which keys are down.
     key_pictures: std::cell::RefCell<std::collections::HashMap<u32, image::Handle>>,
     caption_job: Option<export::CaptionJob>,
-    /// Text and stickers (kept beside the clip), and the one being changed.
+    /// Text over the clip (kept beside it), and the one being changed.
     stamps: Vec<Item>,
     stamp_picked: Option<usize>,
     stamp_text: String,
     /// Their pictures on the monitor, by what they look like.
     stamp_pictures: StampPictures,
-    /// The sticker buttons' pictures.
-    sticker_icons: Vec<image::Handle>,
 }
 
-/// Text and sticker pictures for the monitor, by what they look like, with their sizes.
+/// Text pictures for the monitor, by what they look like, with their sizes.
 type StampPictures =
     std::cell::RefCell<std::collections::HashMap<String, (image::Handle, (u32, u32))>>;
 
-/// Text and stickers are drawn for the monitor as if the picture were this tall.
+/// Text is drawn for the monitor as if the picture were this tall.
 const STAMP_REF_H: u32 = 720;
 const FONT_BOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
-
-/// A sticker's button picture, about 26 pixels tall.
-fn sticker_icon(id: &str) -> image::Handle {
-    let mut it = Item::sticker(id, 0.0, 1.0);
-    it.size = 0.05;
-    match it.picture(520, 400, FONT_BOLD) {
-        Some(p) => image::Handle::from_rgba(p.width, p.height, p.rgba),
-        None => image::Handle::from_rgba(1, 1, vec![0; 4]),
-    }
-}
 
 impl Editor {
     pub fn open(
@@ -372,7 +359,6 @@ impl Editor {
                 stamp_picked: None,
                 stamp_text: String::new(),
                 stamp_pictures: Default::default(),
-                sticker_icons: STICKERS.iter().map(|s| sticker_icon(s.id)).collect(),
             },
             strip,
         ))
@@ -406,7 +392,7 @@ impl Editor {
         self.markers = marks;
     }
 
-    /// Shows these text and stickers, one picked (for previews; not saved with the clip).
+    /// Shows this text, one item picked (for previews; not saved with the clip).
     #[cfg(test)]
     pub fn show_stamps(&mut self, stamps: Vec<Item>, picked: Option<usize>) {
         self.stamps = stamps;
@@ -440,8 +426,7 @@ impl Editor {
         self.show_keys = true;
     }
 
-    /// Copies get something beyond a plain cut: a style, captions, text and stickers or the keys
-    /// overlay.
+    /// Copies get something beyond a plain cut: a style, captions, text or the keys overlay.
     fn styled(&self) -> bool {
         !self.effects.is_plain()
             || (self.burn_captions && !self.captions.is_empty())
@@ -462,10 +447,7 @@ impl Editor {
 
     /// An item's picture for the monitor, drawn once for each look.
     fn stamp_picture(&self, item: &Item) -> Option<(image::Handle, (u32, u32))> {
-        let key = format!(
-            "{}|{}|{}|{:.4}",
-            item.text, item.sticker, item.color, item.size
-        );
+        let key = format!("{}|{}|{:.4}", item.text, item.color, item.size);
         let mut cache = self.stamp_pictures.borrow_mut();
         if let Some(v) = cache.get(&key) {
             return Some(v.clone());
@@ -808,12 +790,6 @@ impl Editor {
                     self.stamp_text.clear();
                     self.save_stamps();
                 }
-            }
-            Msg::AddSticker(id) => {
-                let (a, b) = self.new_stamp_span();
-                self.stamps.push(Item::sticker(id, a, b));
-                self.stamp_picked = Some(self.stamps.len() - 1);
-                self.save_stamps();
             }
             Msg::PickStamp(i) => self.stamp_picked = i.filter(|i| *i < self.stamps.len()),
             Msg::MoveStamp(i, x, y) => {
@@ -1665,8 +1641,7 @@ impl Editor {
         )
     }
 
-    /// Text and stickers: add them at the playhead, drag them on the picture, pick how they come
-    /// in and go out.
+    /// Text: add it at the playhead, drag it on the picture, pick how it comes in and goes out.
     fn stamps_panel(&self) -> Element<'_, Msg> {
         let add = row![
             text_input("Type some text", &self.stamp_text)
@@ -1682,17 +1657,7 @@ impl Editor {
         ]
         .spacing(6)
         .align_y(Alignment::Center);
-        let mut stickers = row![].spacing(4);
-        for (s, img) in STICKERS.iter().zip(&self.sticker_icons) {
-            stickers = stickers.push(tip(
-                button(image(img.clone()).height(22))
-                    .padding(Padding::from([5, 6]))
-                    .style(theme::ghost)
-                    .on_press(Msg::AddSticker(s.id)),
-                s.name,
-            ));
-        }
-        let mut body = column![add, stickers.wrap().vertical_spacing(2)].spacing(10);
+        let mut body = column![add].spacing(10);
         if !self.stamps.is_empty() {
             let mut list = column![].spacing(4);
             for (i, it) in self.stamps.iter().enumerate() {
@@ -1734,16 +1699,14 @@ impl Editor {
             body = body.push(list);
         }
         if let Some(it) = self.stamp_picked.and_then(|i| self.stamps.get(i)) {
-            let mut edit = column![].spacing(8);
-            if it.is_text() {
-                edit = edit.push(
-                    text_input("Text", &it.text)
-                        .on_input(Msg::StampWords)
-                        .size(12)
-                        .padding(Padding::from([6, 8]))
-                        .style(theme::input),
-                );
-            }
+            let mut edit = column![
+                text_input("Text", &it.text)
+                    .on_input(Msg::StampWords)
+                    .size(12)
+                    .padding(Padding::from([6, 8]))
+                    .style(theme::input)
+            ]
+            .spacing(8);
             let small = |label: &'static str, m: Msg| {
                 button(text(label).size(11).font(MEDIUM))
                     .padding(Padding::from([5, 8]))
@@ -1826,7 +1789,7 @@ impl Editor {
             .size(11)
             .color(theme::muted()),
         );
-        panel("Text and stickers", body)
+        panel("Text", body)
     }
 
     /// Speed, look, fades, music and the mix: applied to every copy made below.
@@ -2725,7 +2688,7 @@ impl canvas::Program<Msg> for Strip<'_> {
     }
 }
 
-/// Text or a sticker on the monitor.
+/// Text on the monitor.
 struct Shown {
     index: usize,
     handle: image::Handle,
@@ -2738,7 +2701,7 @@ struct Shown {
     dim: bool,
 }
 
-/// Text and stickers over the picture, where they can be picked and dragged.
+/// Text over the picture, where it can be picked and dragged.
 struct StampLayer {
     items: Vec<Shown>,
     video: (f32, f32),

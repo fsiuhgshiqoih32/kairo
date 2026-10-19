@@ -96,7 +96,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
-== Lucide icons (assets/icons, and the sticker shapes in src/overlays.rs) ==
+== Lucide icons (assets/icons) ==
 
 ISC License
 

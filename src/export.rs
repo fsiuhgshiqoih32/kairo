@@ -385,10 +385,10 @@ pub fn render_burns(
     Ok(out)
 }
 
-/// Frames per second of text and stickers coming in and going out.
+/// Frames per second of text coming in and going out.
 const STAMP_FPS: u32 = 60;
 
-/// Text and stickers for an export: each drawn for `out_size`, written as raw RGBA into `dir`
+/// Text for an export: each item drawn for `out_size`, written as raw RGBA into `dir`
 /// and placed in the export's timeline, with its animation in and out (when it starts and ends
 /// inside the export) as frames of their own.
 pub fn render_stamps(
@@ -631,7 +631,7 @@ pub fn encode_with(
 mod tests {
     use super::*;
 
-    /// Burns text and an animated sticker into a copy of a made-up clip, and keeps a few frames
+    /// Burns animated text into a copy of a made-up clip, and keeps a few frames
     /// to look at: `KAIRO_SNAPSHOTS=<dir> cargo test -- --ignored export::tests::stamps`.
     /// Needs ffmpeg.
     #[test]
@@ -668,9 +668,9 @@ mod tests {
         let info = ffmpeg::probe_clip(&ff, &clip).expect("probe");
         let mut words = kairo::overlays::Item::text("What a clutch", 0.5, 3.5);
         words.color = 1;
-        let mut star = kairo::overlays::Item::sticker("star", 1.0, 3.5);
+        let mut star = kairo::overlays::Item::text("GG", 1.0, 3.5);
         star.anim = "slide".into();
-        (star.x, star.y) = (0.8, 0.3);
+        (star.x, star.y, star.size) = (0.8, 0.3, 0.14);
         let burns_dir = dir.join("stamps-work");
         let mut eff = Effects {
             stamps: vec![words, star],

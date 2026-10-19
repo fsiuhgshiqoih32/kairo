@@ -1,14 +1,11 @@
-//! Text and stickers laid over a clip in the editor and burned into copies, with how they come
-//! in and go out: a pop, a slide or a blur, drawn with motion blur.
-//!
-//! The sticker shapes are Lucide icons (ISC; see THIRD-PARTY-NOTICES.txt), filled and outlined.
+//! Text laid over a clip in the editor and burned into copies, with how it comes in and goes
+//! out: a pop, a slide or a blur, drawn with motion blur.
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 use serde::{Deserialize, Serialize};
 
 use crate::captions::{Picture, render_colored};
 
-/// The colours text and stickers come in.
+/// The colours text comes in.
 pub const COLORS: [(&str, [u8; 3]); 7] = [
     ("White", [255, 255, 255]),
     ("Yellow", [255, 214, 10]),
@@ -18,124 +15,6 @@ pub const COLORS: [(&str, [u8; 3]); 7] = [
     ("Blue", [10, 132, 255]),
     ("Purple", [191, 90, 242]),
 ];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Look {
-    /// Words on a coloured pill.
-    Badge(&'static str),
-    /// A shape filled with the colour, outlined in white.
-    Fill(&'static str),
-    /// A ring, for circling something.
-    Ring(&'static str),
-}
-
-pub struct Sticker {
-    pub id: &'static str,
-    pub name: &'static str,
-    /// Its colour when added (`COLORS` index).
-    pub color: usize,
-    look: Look,
-}
-
-const STAR: &str = r#"<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>"#;
-const HEART: &str = r#"<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/>"#;
-const FLAME: &str = r#"<path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4"/>"#;
-const ZAP: &str = r#"<path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z"/>"#;
-const CROWN: &str = r#"<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z"/><path d="M5 21h14"/>"#;
-const THUMBS_UP: &str = r#"<path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>"#;
-const ARROW: &str = r#"<path d="M13.207 19.793a.707.707 0 0 1-1.207-.5V16a1 1 0 0 0-1-1H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h6a1 1 0 0 0 1-1V4.707a.707.707 0 0 1 1.207-.5l6.94 6.94a1.207 1.207 0 0 1 0 1.707z"/>"#;
-const CIRCLE: &str = r#"<circle cx="12" cy="12" r="10"/>"#;
-
-pub const STICKERS: [Sticker; 14] = [
-    Sticker {
-        id: "gg",
-        name: "GG",
-        color: 2,
-        look: Look::Badge("GG"),
-    },
-    Sticker {
-        id: "clutch",
-        name: "Clutch",
-        color: 3,
-        look: Look::Badge("CLUTCH"),
-    },
-    Sticker {
-        id: "ace",
-        name: "Ace",
-        color: 6,
-        look: Look::Badge("ACE"),
-    },
-    Sticker {
-        id: "no-way",
-        name: "No way",
-        color: 5,
-        look: Look::Badge("NO WAY"),
-    },
-    Sticker {
-        id: "ez",
-        name: "EZ",
-        color: 4,
-        look: Look::Badge("EZ"),
-    },
-    Sticker {
-        id: "wow",
-        name: "Wow",
-        color: 1,
-        look: Look::Badge("WOW"),
-    },
-    Sticker {
-        id: "star",
-        name: "Star",
-        color: 1,
-        look: Look::Fill(STAR),
-    },
-    Sticker {
-        id: "heart",
-        name: "Heart",
-        color: 3,
-        look: Look::Fill(HEART),
-    },
-    Sticker {
-        id: "flame",
-        name: "Flame",
-        color: 2,
-        look: Look::Fill(FLAME),
-    },
-    Sticker {
-        id: "zap",
-        name: "Lightning",
-        color: 1,
-        look: Look::Fill(ZAP),
-    },
-    Sticker {
-        id: "crown",
-        name: "Crown",
-        color: 1,
-        look: Look::Fill(CROWN),
-    },
-    Sticker {
-        id: "thumbs-up",
-        name: "Thumbs up",
-        color: 5,
-        look: Look::Fill(THUMBS_UP),
-    },
-    Sticker {
-        id: "arrow",
-        name: "Arrow",
-        color: 3,
-        look: Look::Fill(ARROW),
-    },
-    Sticker {
-        id: "circle",
-        name: "Circle",
-        color: 3,
-        look: Look::Ring(CIRCLE),
-    },
-];
-
-pub fn sticker(id: &str) -> Option<&'static Sticker> {
-    STICKERS.iter().find(|s| s.id == id)
-}
 
 /// How an item comes in and goes out: id and name.
 pub const ANIMS: [(&str, &str); 4] = [
@@ -149,14 +28,11 @@ pub const ANIMS: [(&str, &str); 4] = [
 pub const IN_SECONDS: f64 = 0.4;
 pub const OUT_SECONDS: f64 = 0.3;
 
-/// Text or a sticker over part of a clip.
+/// Text over part of a clip.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Item {
-    /// The words, for text.
     pub text: String,
-    /// The sticker (`STICKERS` id), for a sticker.
-    pub sticker: String,
     /// When it shows, in seconds of the clip.
     pub start: f64,
     pub end: f64,
@@ -175,7 +51,6 @@ impl Default for Item {
     fn default() -> Self {
         Item {
             text: String::new(),
-            sticker: String::new(),
             start: 0.0,
             end: 3.0,
             x: 0.5,
@@ -197,34 +72,9 @@ impl Item {
         }
     }
 
-    pub fn sticker(id: &str, start: f64, end: f64) -> Item {
-        let s = sticker(id);
-        let badge = s.is_some_and(|s| matches!(s.look, Look::Badge(_)));
-        Item {
-            sticker: id.to_string(),
-            start,
-            end,
-            x: 0.78,
-            y: 0.26,
-            size: if badge { 0.1 } else { 0.16 },
-            color: s.map_or(0, |s| s.color),
-            ..Default::default()
-        }
-    }
-
-    pub fn is_text(&self) -> bool {
-        self.sticker.is_empty()
-    }
-
     /// What the editor's list calls it.
     pub fn label(&self) -> String {
-        if self.is_text() {
-            self.text.clone()
-        } else {
-            sticker(&self.sticker)
-                .map_or("Sticker", |s| s.name)
-                .to_string()
-        }
+        self.text.clone()
     }
 
     pub fn shows_at(&self, t: f64) -> bool {
@@ -235,14 +85,7 @@ impl Item {
     pub fn picture(&self, frame_h: u32, max_w: u32, font: &[u8]) -> Option<Picture> {
         let px = (self.size.clamp(0.02, 0.5) * frame_h as f32).max(8.0);
         let rgb = COLORS.get(self.color).map_or([255; 3], |c| c.1);
-        if self.is_text() {
-            return render_colored(&self.text, max_w, px, font, rgb);
-        }
-        match sticker(&self.sticker)?.look {
-            Look::Badge(words) => badge(words, px.round() as u32, rgb, font),
-            Look::Fill(shape) => shape_picture(shape, px.round() as u32, rgb, true),
-            Look::Ring(shape) => shape_picture(shape, px.round() as u32, rgb, false),
-        }
+        render_colored(&self.text, max_w, px, font, rgb)
     }
 
     /// How long its coming in and going out last when it shows for `shown` seconds.
@@ -332,123 +175,6 @@ pub fn pose(anim: &str, u: f32, leaving: bool) -> Pose {
         },
         _ => Pose::SETTLED,
     }
-}
-
-/// Words on a pill of `rgb` with a white edge, `h` pixels tall.
-fn badge(words: &str, h: u32, rgb: [u8; 3], font: &[u8]) -> Option<Picture> {
-    let font = FontRef::try_from_slice(font).ok()?;
-    let h = h.max(12) as f32;
-    let sf = font.as_scaled(PxScale::from(h * 0.56));
-    let mut text_w = 0.0;
-    let mut prev = None;
-    for c in words.chars() {
-        let id = sf.glyph_id(c);
-        if let Some(p) = prev {
-            text_w += sf.kern(p, id);
-        }
-        text_w += sf.h_advance(id);
-        prev = Some(id);
-    }
-    let w = (text_w + h * 0.9).ceil() as usize;
-    let hh = h.ceil() as usize;
-    let edge = (h * 0.07).max(2.0);
-    let r = h / 2.0;
-    let mut rgba = vec![0u8; w * hh * 4];
-    // The pill: white out to the edge, the colour inside it.
-    for y in 0..hh {
-        for x in 0..w {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let cx = px.clamp(r, w as f32 - r);
-            let d = ((px - cx).powi(2) + (py - r).powi(2)).sqrt() - r;
-            let outer = (0.5 - d).clamp(0.0, 1.0);
-            if outer <= 0.0 {
-                continue;
-            }
-            let inner = (0.5 - (d + edge)).clamp(0.0, 1.0);
-            let k = (y * w + x) * 4;
-            for (i, c) in rgb.iter().enumerate() {
-                rgba[k + i] = (255.0 * (1.0 - inner) + *c as f32 * inner).round() as u8;
-            }
-            rgba[k + 3] = (outer * 255.0).round() as u8;
-        }
-    }
-    // The words in white.
-    let mut x = (w as f32 - text_w) / 2.0;
-    let baseline = (h + sf.ascent() + sf.descent()) / 2.0;
-    let mut prev = None;
-    for c in words.chars() {
-        let id = sf.glyph_id(c);
-        if let Some(p) = prev {
-            x += sf.kern(p, id);
-        }
-        let glyph = id.with_scale_and_position(sf.scale(), point(x, baseline));
-        if let Some(o) = font.outline_glyph(glyph) {
-            let b = o.px_bounds();
-            o.draw(|gx, gy, cov| {
-                let (px, py) = (b.min.x as i32 + gx as i32, b.min.y as i32 + gy as i32);
-                if (0..w as i32).contains(&px) && (0..hh as i32).contains(&py) {
-                    let k = (py as usize * w + px as usize) * 4;
-                    for i in 0..3 {
-                        let c = rgba[k + i] as f32;
-                        rgba[k + i] = (c + (255.0 - c) * cov).round() as u8;
-                    }
-                }
-            });
-        }
-        x += sf.h_advance(id);
-        prev = Some(id);
-    }
-    Some(Picture {
-        width: w as u32,
-        height: hh as u32,
-        rgba,
-    })
-}
-
-/// A Lucide shape `h` pixels tall: filled with `rgb` and outlined in white, or (`filled` false)
-/// a coloured ring with a white edge.
-fn shape_picture(shape: &str, h: u32, rgb: [u8; 3], filled: bool) -> Option<Picture> {
-    let c = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
-    let (under, over) = if filled {
-        (
-            r##"fill="#fff" stroke="#fff" stroke-width="4.2""##.to_string(),
-            format!(r#"fill="{c}" stroke="{c}" stroke-width="1.8""#),
-        )
-    } else {
-        (
-            r##"fill="none" stroke="#fff" stroke-width="4.6""##.to_string(),
-            format!(r#"fill="none" stroke="{c}" stroke-width="2.4""#),
-        )
-    };
-    let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2.5 -2.5 29 29" width="29" height="29"><g {under} stroke-linecap="round" stroke-linejoin="round">{shape}</g><g {over} stroke-linecap="round" stroke-linejoin="round">{shape}</g></svg>"#
-    );
-    let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).ok()?;
-    let side = h.max(8);
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(side, side)?;
-    let k = side as f32 / 29.0;
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(k, k),
-        &mut pixmap.as_mut(),
-    );
-    Some(Picture {
-        width: side,
-        height: side,
-        rgba: unpremultiply(pixmap.take()),
-    })
-}
-
-fn unpremultiply(mut rgba: Vec<u8>) -> Vec<u8> {
-    for p in rgba.chunks_exact_mut(4) {
-        let a = p[3] as u32;
-        if a > 0 && a < 255 {
-            for c in &mut p[..3] {
-                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-    }
-    rgba
 }
 
 /// A picture's colours premultiplied by alpha, as floats, blurred by `radius` pixels (a box
@@ -686,8 +412,11 @@ fn bilinear(src: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
 pub fn load(path: &std::path::Path) -> Vec<Item> {
     std::fs::read(path)
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|b| serde_json::from_slice::<Vec<Item>>(&b).ok())
         .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.text.trim().is_empty())
+        .collect()
 }
 
 pub fn save(path: &std::path::Path, items: &[Item]) -> std::io::Result<()> {
@@ -709,39 +438,23 @@ mod tests {
 
     const FONT: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
 
-    /// Every sticker, and the frames of each animation, on one sheet:
+    /// Each animation's frames on one sheet:
     /// `KAIRO_SNAPSHOTS=<dir> cargo test --lib -- --ignored overlays::tests::sheet`.
     #[test]
     #[ignore]
     fn sheet() {
         let dir = std::path::PathBuf::from(std::env::var_os("KAIRO_SNAPSHOTS").expect("dir"));
-        let (w, h) = (1280u32, 1100u32);
+        let (w, h) = (1280u32, 800u32);
         let mut sheet = image::RgbaImage::from_pixel(w, h, image::Rgba([40, 44, 52, 255]));
         let mut paste = |p: &Picture, x: i64, y: i64| {
             let img = image::RgbaImage::from_raw(p.width, p.height, p.rgba.clone()).expect("rgba");
             image::imageops::overlay(&mut sheet, &img, x, y);
         };
-        let (mut x, mut y) = (20i64, 20i64);
-        for s in &STICKERS {
-            let p = Item::sticker(s.id, 0.0, 3.0)
-                .picture(720, 1200, FONT)
-                .expect(s.id);
-            if x + p.width as i64 > w as i64 - 20 {
-                x = 20;
-                y += 140;
-            }
-            paste(&p, x, y);
-            x += p.width as i64 + 24;
-        }
-        let mut text = Item::text("What a clutch", 0.0, 3.0);
-        text.color = 1;
-        paste(&text.picture(720, 1200, FONT).expect("text"), 20, y + 150);
-        y += 260;
-        let star = Item::sticker("star", 0.0, 3.0)
-            .picture(720, 1200, FONT)
-            .expect("star");
+        let mut gg = Item::text("GG", 0.0, 3.0);
+        (gg.color, gg.size) = (1, 0.14);
+        let pic = gg.picture(720, 1200, FONT).expect("text");
         for (row, anim) in ["pop", "slide", "blur"].into_iter().enumerate() {
-            let m = animate(&star, anim, false, (640.0, 60.0), (1280, 120), 0.4, 60).expect(anim);
+            let m = animate(&pic, anim, false, (640.0, 60.0), (1280, 120), 0.4, 60).expect(anim);
             let n = (m.width * m.height * 4) as usize;
             for (k, f) in [3usize, 6, 9, 12, 23].into_iter().enumerate() {
                 let frame = Picture {
@@ -750,29 +463,10 @@ mod tests {
                     rgba: m.rgba[f * n..(f + 1) * n].to_vec(),
                 };
                 let fx = if anim == "slide" { m.x as i64 / 3 } else { 0 };
-                paste(&frame, 20 + k as i64 * 250 + fx, y + row as i64 * 260);
+                paste(&frame, 20 + k as i64 * 250 + fx, 20 + row as i64 * 260);
             }
         }
-        sheet.save(dir.join("stickers.png")).expect("save");
-    }
-
-    #[test]
-    fn every_sticker_draws() {
-        for s in &STICKERS {
-            let item = Item::sticker(s.id, 0.0, 3.0);
-            let p = item.picture(720, 1200, FONT).expect(s.id);
-            assert!(p.width > 10 && p.height > 10, "{}", s.id);
-            assert_eq!(p.rgba.len(), (p.width * p.height * 4) as usize);
-            let opaque = p.rgba.chunks(4).filter(|px| px[3] > 200).count();
-            assert!(
-                opaque > (p.width * p.height / 10) as usize,
-                "{} is mostly empty",
-                s.id
-            );
-        }
-        let mut ids: Vec<_> = STICKERS.iter().map(|s| s.id).collect();
-        ids.dedup();
-        assert_eq!(ids.len(), STICKERS.len());
+        sheet.save(dir.join("text-animations.png")).expect("save");
     }
 
     #[test]
@@ -815,8 +509,9 @@ mod tests {
 
     #[test]
     fn coming_in_is_drawn_with_motion_blur() {
-        let item = Item::sticker("star", 0.0, 3.0);
-        let pic = item.picture(720, 1200, FONT).expect("star");
+        let mut item = Item::text("GG", 0.0, 3.0);
+        item.size = 0.16;
+        let pic = item.picture(720, 1200, FONT).expect("text");
         let m =
             animate(&pic, "slide", false, (900.0, 200.0), (1280, 720), 0.4, 60).expect("frames");
         assert_eq!(m.frames, 24);

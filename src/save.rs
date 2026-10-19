@@ -44,15 +44,14 @@ pub fn keys_for(clip: &Path) -> PathBuf {
     thumbs_dir().join(format!("{name}.keys.json"))
 }
 
-/// Where a clip's text and stickers are kept.
+/// Where a clip's text overlays are kept.
 pub fn stamps_for(clip: &Path) -> PathBuf {
     keys_for(clip)
         .with_extension("")
         .with_extension("stamps.json")
 }
 
-/// The files that belong with a clip: its thumbnail, banner picture, keys, captions, and text
-/// and stickers.
+/// The files that belong with a clip: its thumbnail, banner picture, keys, captions and text.
 pub fn sidecars(clip: &Path) -> Vec<PathBuf> {
     let mut v = vec![
         thumb_for(clip),

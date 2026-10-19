@@ -326,7 +326,7 @@ pub struct Music {
 }
 
 /// A picture to lay over the export: raw RGBA in a file, shown from `start` to `end` (seconds
-/// into the export). Captions sit at the bottom; text and stickers at their own place.
+/// into the export). Captions sit at the bottom; text at its own place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Burn {
     pub path: std::path::PathBuf,
@@ -371,7 +371,7 @@ pub struct Effects {
     pub burns: Vec<Burn>,
     /// The keys-and-clicks overlay (made for the export just before it runs).
     pub keys: Option<OverlayVideo>,
-    /// Text and stickers (drawn into `burns` just before it runs).
+    /// Text (drawn into `burns` just before it runs).
     pub stamps: Vec<crate::overlays::Item>,
 }
 
