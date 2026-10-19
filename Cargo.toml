@@ -15,8 +15,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 clap = { version = "4", features = ["derive"] }
 cpal = "0.18"
 dirs = "6"
-eframe = { version = "0.37", features = ["glow"] }
 global-hotkey = "0.9"
+iced = { version = "0.14", features = ["image", "svg", "canvas", "advanced", "tokio"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
 opener = { version = "0.9", features = ["reveal"] }
@@ -27,7 +27,6 @@ tao = "0.37"
 tiny-skia = "0.11"
 toml = "1"
 tray-icon = "0.26"
-winit = "0.30"
 auto-launch = "0.6"
 ureq = { version = "3", features = ["json"] }
 self-replace = "1.5"
@@ -74,7 +73,7 @@ winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
-egui_kittest = { version = "0.37", features = ["wgpu", "eframe", "snapshot"] }
+iced_test = "0.14"
 
 [profile.release]
 lto = true

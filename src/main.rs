@@ -5,24 +5,19 @@ mod app;
 mod audio;
 mod autostart;
 mod daemon;
-mod editor;
 mod export;
 mod ffmpeg;
+mod gui;
 mod hotkey;
 mod log;
-mod notify;
 mod platform;
 mod player;
 mod recorder;
 mod save;
 mod selftest;
 mod single_instance;
-#[cfg(test)]
-mod snapshots;
 mod tray;
-mod ui;
 mod updater;
-mod window;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -41,6 +36,9 @@ struct Cli {
     /// Check that recording and saving work on this machine, then exit.
     #[arg(long)]
     self_test: bool,
+    /// Check that the window plays and exports a clip (hidden), then exit.
+    #[arg(long, hide = true)]
+    ui_self_test: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -90,8 +88,13 @@ enum Cmd {
 fn main() {
     platform::init_process();
     let cli = Cli::parse();
-    if cli.self_test {
-        match selftest::run() {
+    if cli.self_test || cli.ui_self_test {
+        let result = if cli.ui_self_test {
+            gui::self_test()
+        } else {
+            selftest::run()
+        };
+        match result {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("self-test failed: {e}");
@@ -104,22 +107,25 @@ fn main() {
         None | Some(Cmd::Window { .. }) | Some(Cmd::Daemon) | Some(Cmd::Edit { .. })
     );
     let result = match cli.command {
-        None => daemon::ensure_running().and_then(|_| window::run(false)),
+        None => daemon::ensure_running().and_then(|_| gui::run(None, false)),
         Some(Cmd::Daemon) => daemon::run(),
-        Some(Cmd::Window { wait }) => window::run(wait),
+        Some(Cmd::Window { wait }) => gui::run(None, wait),
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
-        Some(Cmd::Edit { clip }) => editor::run(clip),
+        Some(Cmd::Edit { clip }) => {
+            let clip = std::path::absolute(&clip).unwrap_or(clip);
+            gui::run(Some(clip), false)
+        }
         Some(Cmd::Notify {
             clip,
             seconds,
             error,
         }) => match (clip, error) {
-            (Some(clip), _) => notify::run(notify::Message::Saved { clip, seconds }),
-            (None, Some(e)) => notify::run(notify::Message::Failed(e)),
+            (Some(clip), _) => gui::toast::run(gui::toast::Message::Saved { clip, seconds }),
+            (None, Some(e)) => gui::toast::run(gui::toast::Message::Failed(e)),
             (None, None) => Err("notify needs --clip or --error".into()),
         },
         Some(Cmd::TestRecord { seconds, save }) => test_record(seconds, save),

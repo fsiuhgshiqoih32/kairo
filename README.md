@@ -60,7 +60,8 @@ ffmpeg captures the screen (Windows Graphics Capture, Desktop Duplication or GDI
 AVFoundation on macOS, X11 on Linux), encodes it with a keyframe every second, and streams
 MPEG-TS stamped with wall-clock time into Rewindr. Rewindr cuts the stream at keyframes and
 keeps the last N seconds in a ring buffer. Sound is captured separately (WASAPI loopback on
-Windows, the PulseAudio/PipeWire monitor on Linux, plus the microphone) and stamped with the
+Windows, ScreenCaptureKit on macOS, the PulseAudio/PipeWire monitor on Linux, plus the
+microphone) and stamped with the
 same clock. On save, the video is written from the keyframe just before the cut, the matching
 sound beside it, and ffmpeg joins them into an MP4.
 
@@ -83,10 +84,14 @@ cargo build --release
 Rewindr needs an `ffmpeg` next to the program or on `PATH` (or set `REWINDR_FFMPEG`).
 `packaging/ffmpeg/build.sh` builds the small one the releases ship.
 
-The windows can be rendered to PNG files without opening them, for checking the UI:
-`REWINDR_HOME=<folder with Clips/> REWINDR_SNAPSHOTS=<out> cargo test -- --ignored snapshots`.
+The window is built with [iced](https://iced.rs). Its screens can be rendered to PNG files
+without opening a window, for checking the UI:
+`REWINDR_HOME=<folder with Clips/ and thumbs/> REWINDR_SNAPSHOTS=<out> cargo test -- --ignored gui::preview`.
+`rewindr --ui-self-test` runs the real window, hidden, on a generated clip: it must show the
+first frame and the filmstrip, play, and save a trimmed copy (CI runs it on all three systems).
 
 ## License
 
 Rewindr is MIT licensed. The bundled ffmpeg is FFmpeg with x264, under the GNU GPL (see
-`FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` in each package).
+`FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` in each package). The window uses the Inter
+typeface (SIL Open Font License) and Lucide icons (ISC); see `THIRD-PARTY-NOTICES.txt`.

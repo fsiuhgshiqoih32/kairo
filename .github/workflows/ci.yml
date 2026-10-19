@@ -78,6 +78,14 @@ jobs:
         if: env.REWINDR_FFMPEG != '' && runner.os != 'Linux'
         run: cargo run --locked -- --self-test
 
+      - name: Window self-test
+        if: env.REWINDR_FFMPEG != '' && runner.os != 'Linux'
+        run: cargo run --locked -- --ui-self-test
+
       - name: Self-test (Xvfb)
         if: env.REWINDR_FFMPEG != '' && runner.os == 'Linux'
         run: xvfb-run -a -s "-screen 0 1280x800x24" cargo run --locked -- --self-test
+
+      - name: Window self-test (Xvfb)
+        if: env.REWINDR_FFMPEG != '' && runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1280x800x24" cargo run --locked -- --ui-self-test

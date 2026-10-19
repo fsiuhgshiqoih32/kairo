@@ -165,3 +165,8 @@ pub fn copy_files(paths: &[std::path::PathBuf]) -> Result<(), String> {
 pub fn work_area() -> Option<(i32, i32, u32, u32)> {
     None
 }
+
+/// Showing a window without focus isn't done here; the caller shows it normally.
+pub fn show_without_focus(_raw: u64) -> bool {
+    false
+}

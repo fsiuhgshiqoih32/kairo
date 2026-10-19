@@ -150,3 +150,15 @@ pub fn working_encoders(ffmpeg: &Path) -> Vec<Encoder> {
         .filter(|e| encoder_works(ffmpeg, *e).is_ok())
         .collect()
 }
+
+/// What ffmpeg says about a clip: length, picture size, frame rate, sound tracks.
+pub fn probe_clip(ff: &Path, clip: &Path) -> Result<rewindr::media::Info, String> {
+    let out = command(ff)
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(clip)
+        .output()
+        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    rewindr::media::parse_info(&String::from_utf8_lossy(&out.stderr))
+        .ok_or_else(|| format!("{} isn't a video Rewindr can open.", clip.display()))
+}

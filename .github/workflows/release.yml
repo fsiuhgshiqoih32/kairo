@@ -79,7 +79,7 @@ jobs:
           $name = "rewindr-v$($env:VERSION)-windows-x64"
           gh release download $env:FFMPEG_TAG --pattern ffmpeg-windows-x64.zip --dir ff
           Expand-Archive ff/ffmpeg-windows-x64.zip -DestinationPath $name
-          Copy-Item target/release/rewindr.exe, README.md, LICENSE $name
+          Copy-Item target/release/rewindr.exe, README.md, LICENSE, THIRD-PARTY-NOTICES.txt $name
           Remove-Item Env:REWINDR_FFMPEG -ErrorAction SilentlyContinue
           $env:REWINDR_HOME = "$PWD/selftest-home"
           # A windowed program: PowerShell doesn't wait for it unless told to.
@@ -125,7 +125,7 @@ jobs:
           unzip -o ff/ffmpeg-macos.zip -d ff
           cp ff/ffmpeg "$app/Contents/MacOS/ffmpeg"
           chmod +x "$app/Contents/MacOS/ffmpeg"
-          cp ff/FFMPEG-LICENSE.txt ff/FFMPEG-SOURCE.txt LICENSE README.md "$app/Contents/Resources/"
+          cp ff/FFMPEG-LICENSE.txt ff/FFMPEG-SOURCE.txt LICENSE README.md THIRD-PARTY-NOTICES.txt "$app/Contents/Resources/"
           sed "s/VERSION/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
           iconset=Rewindr.iconset
           mkdir "$iconset"
@@ -176,7 +176,7 @@ jobs:
           gh release download "$FFMPEG_TAG" --pattern ffmpeg-linux-x86_64.zip --dir ff
           unzip -o ff/ffmpeg-linux-x86_64.zip -d "$name"
           chmod +x "$name/ffmpeg"
-          cp target/release/rewindr README.md LICENSE packaging/linux/rewindr.desktop "$name/"
+          cp target/release/rewindr README.md LICENSE THIRD-PARTY-NOTICES.txt packaging/linux/rewindr.desktop "$name/"
           cp assets/icon.png "$name/rewindr.png"
           REWINDR_HOME="$PWD/selftest-home" xvfb-run -a -s "-screen 0 1280x800x24" "$name/rewindr" --self-test
           tar czf "$name.tar.gz" "$name"

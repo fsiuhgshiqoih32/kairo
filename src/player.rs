@@ -282,7 +282,6 @@ impl Player {
         p
     }
 
-    #[cfg(test)]
     pub fn has_pending_still(&self) -> bool {
         self.still.is_some() || self.still_wanted.is_some()
     }

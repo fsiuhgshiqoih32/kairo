@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **A new window.** Rewindr's window is rebuilt from scratch with iced: a sidebar with your games
+  and what's being recorded, clip cards grouped by day with hover actions (copy, show, rename,
+  delete), and a one-click "Save last 30 s" button.
+- **The editor lives in the window now**: a larger player, a filmstrip timeline with dimmed
+  cut-off parts and grab handles, start/end readouts, loop playback, and Share to Discord or a
+  trimmed copy from a side panel. All the keyboard shortcuts still work.
+- **Redesigned settings**, grouped into Replay, Video, Sound, Saving and Rewindr, with toggles
+  and choice buttons instead of drop-downs where it's quicker.
+- **A new "Clip saved" card** with the thumbnail and Open, Copy and Show buttons. On Windows it
+  appears without taking focus from your game.
+- **macOS: desktop audio.** Clips now include game and app sound on macOS 13 and later, captured
+  with ScreenCaptureKit (it uses the Screen Recording permission), like on Windows and Linux.
+- Opening a clip while the window is already open shows it there instead of doing nothing.
+
 ## 0.1.1
 
 - Pressing F8 while recording is paused now says so, instead of saving a split second of old

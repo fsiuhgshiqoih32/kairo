@@ -235,3 +235,36 @@ pub fn work_area() -> Option<(i32, i32, u32, u32)> {
         )
     })
 }
+
+/// Shows a hidden window without activating it, so a game keeps the focus and the keyboard.
+/// Clicks on it don't activate it either.
+pub fn show_without_focus(raw: u64) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW,
+    };
+    let hwnd = raw as usize as windows_sys::Win32::Foundation::HWND;
+    if hwnd.is_null() {
+        return false;
+    }
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            ex | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize,
+        );
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    true
+}
