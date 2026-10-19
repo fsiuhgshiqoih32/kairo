@@ -351,9 +351,9 @@ impl App {
         for (label, clips) in groups {
             let cards = clips.into_iter().map(|c| self.card(c, now));
             let g = grid(cards)
-                .fluid(340)
-                .spacing(18)
-                .height(grid::Sizing::AspectRatio(1.3));
+                .fluid(480)
+                .spacing(22)
+                .height(grid::Sizing::AspectRatio(1.32));
             body = body.push(if label.is_empty() {
                 column![g]
             } else {
@@ -391,7 +391,7 @@ impl App {
         let tag = |i: Icon, label: String| {
             container(
                 row![
-                    icon(i, 12.0, theme::ink()),
+                    icon(i, 12.0, theme::ON_IMAGE),
                     text(label).size(11).font(SEMIBOLD)
                 ]
                 .spacing(5)

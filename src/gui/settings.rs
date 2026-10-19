@@ -294,6 +294,11 @@ impl State {
         }
     }
 
+    /// "Start with the computer", when this system can.
+    pub(super) fn autostart_state(&self) -> Option<bool> {
+        self.launcher.is_some().then_some(self.autostart)
+    }
+
     pub fn update(&mut self, s: &mut Settings, msg: Msg) -> (Task<Msg>, Effect) {
         let changed = (Task::none(), Effect::Changed);
         match msg {
@@ -738,7 +743,7 @@ impl State {
     }
 
     /// The button that shows a shortcut and, when clicked, waits for a new one.
-    fn key_capture<'a>(
+    pub(super) fn key_capture<'a>(
         &'a self,
         target: Target,
         spec: &'a str,
@@ -1656,7 +1661,7 @@ impl State {
     }
 }
 
-fn switch<'a>(on: bool, msg: impl Fn(bool) -> Msg + 'a) -> Element<'a, Msg> {
+pub(super) fn switch<'a>(on: bool, msg: impl Fn(bool) -> Msg + 'a) -> Element<'a, Msg> {
     toggler(on)
         .on_toggle(msg)
         .size(22)

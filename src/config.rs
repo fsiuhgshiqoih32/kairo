@@ -228,6 +228,8 @@ pub struct Settings {
     pub seen_version: String,
     /// "dark", "light", or "system" to follow the computer's setting.
     pub look: String,
+    /// The first-start setup was done (or skipped).
+    pub setup_done: bool,
 }
 
 impl Default for Settings {
@@ -269,6 +271,7 @@ impl Default for Settings {
             share_hotkey: String::new(),
             seen_version: String::new(),
             look: "dark".into(),
+            setup_done: false,
             input_overlay: false,
         }
     }

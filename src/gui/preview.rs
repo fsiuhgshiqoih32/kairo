@@ -206,6 +206,13 @@ fn preview() {
     let first = app.clips[0].path.clone();
     app.hero = super::library::hero_picture(&first, 6.0).map(|h| (first, h));
     shoot(app.view(), "iced-library", size);
+    // The first-start setup.
+    for step in [0, 1, 3, 4] {
+        app.welcome = Some(step);
+        shoot(app.view(), &format!("iced-welcome-{step}"), size);
+    }
+    app.welcome = None;
+
     // The light look.
     theme::set_light(true);
     shoot(app.view(), "iced-light-library", size);

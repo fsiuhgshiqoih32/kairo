@@ -8,6 +8,7 @@ mod settings;
 mod stats;
 pub mod theme;
 pub mod toast;
+mod welcome;
 mod widgets;
 
 #[cfg(test)]
@@ -120,6 +121,10 @@ pub struct App {
     pub loaded: bool,
     /// The card the pointer is over, and where across it (0 to 1).
     scrub: Option<(PathBuf, f32)>,
+    /// When the pointer last moved over the hovered card: resting on it plays the preview.
+    scrub_moved: Option<Instant>,
+    /// The first-start setup's step, while it's showing.
+    welcome: Option<usize>,
     /// Keyframe pictures for hover previews, most recent last.
     strips: HashMap<PathBuf, Vec<image::Handle>>,
     strip_order: Vec<PathBuf>,
@@ -218,6 +223,12 @@ pub enum Message {
     /// The folders changed: their new signature and contents.
     Rescanned(Option<Box<Scan>>),
     Scrub(PathBuf, f32),
+    /// Moves a resting hover preview on by a frame.
+    HoverTick,
+    /// A step of the first-start setup.
+    WelcomeStep(usize),
+    /// The first-start setup is finished (or skipped).
+    WelcomeDone,
     ScrubEnd(PathBuf),
     Strip(PathBuf, Vec<image::Handle>),
     Share(PathBuf),
@@ -280,6 +291,8 @@ impl App {
                 shots: Vec::new(),
                 loaded: false,
                 scrub: None,
+                scrub_moved: None,
+                welcome: None,
                 strips: HashMap::new(),
                 strip_order: Vec::new(),
                 strip_loading: HashSet::new(),
@@ -339,12 +352,10 @@ impl App {
         (app, Task::batch(all))
     }
 
-    /// The first time a version runs after an update, show what it brings (once).
+    /// The first start of a fresh install shows the setup; the first start after an update
+    /// shows what the version brings. Each happens once.
     fn whats_new(&mut self, updating: bool) {
         let current = crate::updater::current_version();
-        if self.settings.seen_version == current {
-            return;
-        }
         // Before 0.3.0 nothing remembered the version: an older settings file means this
         // copy was updated rather than freshly installed.
         let upgraded = !self.settings.seen_version.is_empty()
@@ -353,6 +364,17 @@ impl App {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age > Duration::from_secs(600));
+        if !self.settings.setup_done {
+            if upgraded || std::env::var_os("KAIRO_NO_WELCOME").is_some() {
+                self.settings.setup_done = true;
+                self.changed_at = Some(Instant::now());
+            } else if !updating {
+                self.welcome = Some(0);
+            }
+        }
+        if self.settings.seen_version == current {
+            return;
+        }
         if upgraded
             && !updating
             && let Some(notes) =
@@ -840,6 +862,7 @@ impl App {
             Message::Scrub(p, f) => {
                 let start = !self.strips.contains_key(&p) && self.strip_loading.insert(p.clone());
                 self.scrub = Some((p.clone(), f));
+                self.scrub_moved = Some(Instant::now());
                 if start {
                     return Task::perform(
                         background(move || (p.clone(), preview_strip(&p))),
@@ -850,6 +873,29 @@ impl App {
             Message::ScrubEnd(p) => {
                 if self.scrub.as_ref().is_some_and(|(s, _)| *s == p) {
                     self.scrub = None;
+                    self.scrub_moved = None;
+                }
+            }
+            Message::WelcomeStep(i) => {
+                self.welcome = Some(i.min(welcome::STEPS - 1));
+                self.setup.capturing_key = None;
+            }
+            Message::WelcomeDone => {
+                self.welcome = None;
+                self.setup.capturing_key = None;
+                self.settings.setup_done = true;
+                self.changed_at = Some(Instant::now());
+            }
+            Message::HoverTick => {
+                let resting = self
+                    .scrub_moved
+                    .is_some_and(|t| t.elapsed() >= HOVER_PLAY_AFTER);
+                if let Some((p, f)) = &mut self.scrub
+                    && resting
+                    && let Some(n) = self.strips.get(p).map(Vec::len).filter(|n| *n > 1)
+                {
+                    let next = *f + 1.0 / n as f32;
+                    *f = if next >= 1.0 { 0.0 } else { next };
                 }
             }
             Message::Strip(p, frames) => {
@@ -1342,6 +1388,10 @@ impl App {
         if self.montage.is_some() {
             subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::MontageTick));
         }
+        if self.scrub.is_some() {
+            // The hovered card's preview plays at about ten times speed.
+            subs.push(iced::time::every(HOVER_FRAME).map(|_| Message::HoverTick));
+        }
         if self.editor.as_ref().is_some_and(|e| e.busy()) {
             // A timer rather than the window's frames, so playback runs while it's hidden too.
             subs.push(
@@ -1364,6 +1414,9 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        if let Some(step) = self.welcome {
+            return self.welcome_view(step);
+        }
         let page: Element<'_, Message> = match (self.page, &self.editor) {
             (Page::Editor, Some(e)) => {
                 let item = self.clips.iter().find(|c| c.path == e.clip);
@@ -2321,7 +2374,7 @@ fn nav_item<'a>(
     ]
     .spacing(11)
     .align_y(Alignment::Center);
-    if let Some(n) = count {
+    if let Some(n) = count.filter(|n| *n > 0) {
         r = r.push(text(n.to_string()).size(12).color(theme::muted()));
     }
     button(r)
@@ -2329,6 +2382,10 @@ fn nav_item<'a>(
         .width(Fill)
         .style(theme::nav(active))
 }
+
+/// How long the pointer rests on a card before its preview plays, and how fast it plays.
+const HOVER_PLAY_AFTER: Duration = Duration::from_millis(350);
+const HOVER_FRAME: Duration = Duration::from_millis(110);
 
 /// Small keyframe pictures of a clip, for the hover preview.
 fn preview_strip(clip: &Path) -> Vec<image::Handle> {
@@ -2502,6 +2559,7 @@ pub fn self_test() -> Result<(), String> {
     unsafe {
         std::env::set_var("KAIRO_HOME", &home);
         std::env::set_var("KAIRO_NO_UPDATE_CHECK", "1");
+        std::env::set_var("KAIRO_NO_WELCOME", "1");
     }
     let ff = crate::ffmpeg::path()?;
     let clip = clips.join("Self test 2026-01-01 00-00-00.mp4");
