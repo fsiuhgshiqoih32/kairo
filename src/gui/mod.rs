@@ -1444,7 +1444,7 @@ impl App {
                 column![
                     self.top_bar(),
                     self.setup
-                        .view(&self.settings, self.report.as_ref(), used)
+                        .view(&self.settings, self.report.as_ref(), used, &self.games)
                         .map(Message::Settings)
                 ]
                 .into()
@@ -2040,6 +2040,7 @@ impl App {
         let live = s.is_some_and(|s| s.recording && !s.paused);
         let (dot, label) = match s {
             None => (theme::muted(), "Not running"),
+            Some(s) if s.waiting => (theme::muted(), "Waiting for a game"),
             Some(s) if s.paused => (theme::GOLD, "Paused"),
             Some(s) if s.recording => (theme::GREEN, "Recording"),
             Some(s) if s.error.is_some() => (theme::accent(), "Can't record"),

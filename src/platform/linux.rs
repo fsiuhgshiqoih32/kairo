@@ -132,8 +132,23 @@ pub fn foreground_title() -> Option<String> {
 
 pub fn hide_console(_cmd: &mut Command) {}
 
-pub fn play_saved_sound() {
-    play_wav("kairo-saved.wav", super::saved_sound_wav);
+/// Games-only recording can't tell games apart here.
+pub fn game_in_front() -> Option<bool> {
+    None
+}
+
+pub fn play_builtin(kind: &'static str) {
+    let path = std::env::temp_dir().join(format!("kairo-{kind}.wav"));
+    if !path.exists() {
+        let _ = std::fs::write(&path, super::save_sound_wav(kind));
+    }
+    play_sound_file(&path);
+}
+
+pub fn play_sound_file(path: &std::path::Path) {
+    if Command::new("paplay").arg(path).spawn().is_err() {
+        let _ = Command::new("aplay").arg("-q").arg(path).spawn();
+    }
 }
 
 pub fn play_marker_sound() {

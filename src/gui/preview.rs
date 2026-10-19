@@ -221,6 +221,24 @@ fn preview() {
     app.filter = Filter::All;
     app.page = Page::Settings;
     shoot(app.view(), "iced-light-settings", size);
+    app.settings.game_rules = vec![
+        kairo::config::GameRule {
+            game: "Red Eclipse".into(),
+            clip_seconds: 60,
+            quality: Some(kairo::config::Quality::High),
+            hotkey: String::new(),
+            kind: "game".into(),
+        },
+        kairo::config::GameRule {
+            game: "Banking".into(),
+            kind: "never".into(),
+            ..Default::default()
+        },
+    ];
+    theme::set_light(false);
+    shoot(app.view(), "iced-games", (1280.0, 3900.0));
+    theme::set_light(true);
+    app.settings.game_rules.clear();
     app.page = Page::Library;
     let t = toast::Toast::new(toast::Message::Saved {
         clip: app.clips[0].path.clone(),

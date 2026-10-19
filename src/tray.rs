@@ -159,7 +159,9 @@ impl Tray {
         self.session
             .set_enabled(status.recording || status.session.is_some());
         let active = status.recording && !status.paused;
-        let tip = if status.paused {
+        let tip = if status.waiting {
+            "Kairo - waiting for a game".to_string()
+        } else if status.paused {
             "Kairo - paused".to_string()
         } else if status.recording {
             match hotkey {

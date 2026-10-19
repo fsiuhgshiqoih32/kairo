@@ -7,7 +7,7 @@
 //! - `capture_sources(monitor)`: ways to capture a screen, best first.
 //! - `foreground_title()`: the active window's title, for naming clips.
 //! - `hide_console(cmd)`: start a child process without a console window.
-//! - `play_saved_sound()`: a short sound when a clip is saved.
+//! - `play_builtin(kind)`, `play_sound_file(path)`: the save sound (see `play_save_sound`).
 
 #[cfg(windows)]
 mod windows;
@@ -83,6 +83,45 @@ pub fn saved_sound_wav() -> Vec<u8> {
     chime(&[(880.0, 0.07), (1318.5, 0.11)])
 }
 
+/// One of the built-in save sounds (`kairo::config::SAVE_SOUNDS`) as a WAV.
+pub fn save_sound_wav(kind: &str) -> Vec<u8> {
+    match kind {
+        "click" => chime(&[(2093.0, 0.012), (1568.0, 0.02)]),
+        "pop" => chime(&[(784.0, 0.04), (523.25, 0.06)]),
+        "bell" => chime(&[(1046.5, 0.07), (1318.5, 0.07), (1568.0, 0.14)]),
+        _ => saved_sound_wav(),
+    }
+}
+
+/// A WAV file of the user's for the save sound, if it looks like one (and isn't huge).
+pub fn custom_sound(file: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(file.trim());
+    let meta = std::fs::metadata(&p).ok()?;
+    if !meta.is_file() || meta.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let mut head = [0u8; 12];
+    use std::io::Read;
+    std::fs::File::open(&p).ok()?.read_exact(&mut head).ok()?;
+    (&head[..4] == b"RIFF" && &head[8..12] == b"WAVE").then_some(p)
+}
+
+/// Plays the save sound picked in Settings.
+pub fn play_save_sound(kind: &str, file: &str) {
+    if kind == "custom"
+        && let Some(p) = custom_sound(file)
+    {
+        play_sound_file(&p);
+        return;
+    }
+    let kind = kairo::config::SAVE_SOUNDS
+        .iter()
+        .map(|(k, _)| *k)
+        .find(|k| *k == kind)
+        .unwrap_or("chime");
+    play_builtin(kind);
+}
+
 /// A single short, high blip: a moment was marked.
 #[allow(dead_code)]
 pub fn marker_sound_wav() -> Vec<u8> {
@@ -149,6 +188,24 @@ pub fn clean_title(title: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_sounds_are_wavs() {
+        for (kind, _) in kairo::config::SAVE_SOUNDS {
+            let wav = save_sound_wav(kind);
+            assert_eq!(&wav[..4], b"RIFF", "{kind}");
+            assert_eq!(&wav[8..12], b"WAVE", "{kind}");
+            assert!(wav.len() > 1000, "{kind} is too short");
+        }
+        assert!(custom_sound("no such file.wav").is_none());
+    }
+
+    #[test]
+    fn looks_for_a_game_without_crashing() {
+        // Whatever is in front while the tests run; it only has to answer.
+        let _ = game_in_front();
+        let _ = prefers_light();
+    }
 
     #[test]
     fn titles() {

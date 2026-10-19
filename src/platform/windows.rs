@@ -4,14 +4,16 @@ use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{LPARAM, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MONITORINFOEXW, MonitorFromWindow,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowTextW, MB_ICONERROR, MB_OK, MONITORINFOF_PRIMARY, MessageBoxW,
+    GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    MB_ICONERROR, MB_OK, MONITORINFOF_PRIMARY, MessageBoxW,
 };
 
 use kairo::args::Source;
@@ -167,20 +169,130 @@ pub fn foreground_title() -> Option<String> {
     }
 }
 
+/// Programs that go full screen without being games: browsers, video players, the shell.
+const NOT_GAMES: [&str; 14] = [
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "opera.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    "vlc.exe",
+    "mpc-hc64.exe",
+    "mpc-be64.exe",
+    "potplayermini64.exe",
+    "explorer.exe",
+    "applicationframehost.exe",
+    "powerpnt.exe",
+    "kairo.exe",
+];
+
+/// Whether a game seems to be in front: a window that covers its whole screen (full screen or
+/// borderless), and isn't a browser, video player or the desktop. `None` if it can't tell.
+pub fn game_in_front() -> Option<bool> {
+    // SAFETY: plain Win32 queries on the foreground window; every buffer is sized as passed.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return Some(false);
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+        let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+        if [
+            "Progman",
+            "WorkerW",
+            "Shell_TrayWnd",
+            "Shell_SecondaryTrayWnd",
+        ]
+        .contains(&class.as_str())
+        {
+            return Some(false);
+        }
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut r) == 0 {
+            return None;
+        }
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        let m = mi.rcMonitor;
+        if r.left > m.left || r.top > m.top || r.right < m.right || r.bottom < m.bottom {
+            return Some(false);
+        }
+        let exe = window_exe(hwnd).unwrap_or_default().to_lowercase();
+        Some(!NOT_GAMES.iter().any(|n| exe.ends_with(n)))
+    }
+}
+
+/// The program file behind a window.
+unsafe fn window_exe(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    let mut pid = 0u32;
+    // SAFETY: the caller passes a live window handle; the process handle is closed below.
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
 pub fn hide_console(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
-pub fn play_saved_sound() {
-    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
-    play_wav(WAV.get_or_init(super::saved_sound_wav));
-}
-
 pub fn play_marker_sound() {
     static WAV: OnceLock<Vec<u8>> = OnceLock::new();
     play_wav(WAV.get_or_init(super::marker_sound_wav));
+}
+
+/// A built-in save sound, made once and kept for the life of the process.
+pub fn play_builtin(kind: &'static str) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static MADE: OnceLock<Mutex<HashMap<&'static str, &'static [u8]>>> = OnceLock::new();
+    let wav = *MADE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(kind)
+        .or_insert_with(|| Box::leak(super::save_sound_wav(kind).into_boxed_slice()));
+    play_wav(wav);
+}
+
+/// Plays a WAV file.
+pub fn play_sound_file(path: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: SND_FILENAME copies the NUL-terminated path before returning.
+    unsafe {
+        PlaySoundW(
+            wide.as_ptr(),
+            null_mut(),
+            SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
+        )
+    };
 }
 
 fn play_wav(wav: &'static [u8]) {

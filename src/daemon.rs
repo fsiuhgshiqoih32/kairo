@@ -224,6 +224,15 @@ pub fn run() -> Result<(), String> {
     let mut last_tidy: Option<Instant> = None;
     // Updates: a first look a few minutes after starting, then every few hours.
     let mut next_update_check = Instant::now() + FIRST_UPDATE_CHECK;
+    // Games-only recording and per-game settings: the main settings as saved, the window in
+    // front, and whether Kairo paused itself (as opposed to the user pausing).
+    let mut base = settings.clone();
+    let mut front: Option<String> = None;
+    let mut last_look = Instant::now();
+    let mut no_game_since: Option<Instant> = None;
+    let mut auto_paused = false;
+    // The user resumed while Kairo waited: leave it be until a game shows up.
+    let mut hold = false;
     let update_found: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut threads = Some(threads);
     let _lock = lock;
@@ -299,6 +308,8 @@ pub fn run() -> Result<(), String> {
                 mtime = m;
                 match config::load(&path) {
                     Ok(s) => {
+                        base = s.clone();
+                        let s = base.for_game(front.as_deref());
                         hotkey.set(&s.hotkey);
                         shot_key.set(&s.screenshot_hotkey);
                         mark_key.set(&s.marker_hotkey);
@@ -324,6 +335,57 @@ pub fn run() -> Result<(), String> {
             }
             if let Some(seconds) = take_save_request() {
                 start_save(&shared, seconds, false);
+            }
+            if last_look.elapsed() >= Duration::from_secs(2) {
+                last_look = Instant::now();
+                let title = game_title();
+                if title != front {
+                    let before = base.for_game(front.as_deref());
+                    let now = base.for_game(title.as_deref());
+                    front = title;
+                    if now != before {
+                        hotkey.set(&now.hotkey);
+                        shared.apply(now);
+                    }
+                }
+                let rule = base.rule_for(front.as_deref()).cloned();
+                let private = rule.as_ref().is_some_and(|r| r.kind == "never");
+                let want = !private
+                    && (base.record_when != "games"
+                        || rule.as_ref().is_some_and(|r| r.kind == "game")
+                        || platform::game_in_front().unwrap_or(true));
+                let in_session = shared.session.lock().unwrap().is_some();
+                let paused = shared.paused.load(Ordering::SeqCst);
+                if auto_paused && !paused {
+                    // Resumed from the tray or a shortcut while waiting.
+                    auto_paused = false;
+                    hold = true;
+                }
+                if want {
+                    no_game_since = None;
+                    hold = false;
+                    if auto_paused {
+                        shared.paused.store(false, Ordering::SeqCst);
+                        auto_paused = false;
+                        info!("a game is in front: recording again");
+                    }
+                } else if !in_session && !hold && !paused {
+                    let since = *no_game_since.get_or_insert_with(Instant::now);
+                    // A private app stops the replay at once; no game, after a while.
+                    if private || since.elapsed() >= NO_GAME_GRACE {
+                        shared.paused.store(true, Ordering::SeqCst);
+                        auto_paused = true;
+                        info!(
+                            "{}",
+                            if private {
+                                "a private app is in front: paused"
+                            } else {
+                                "no game in front: paused"
+                            }
+                        );
+                    }
+                }
+                shared.status.lock().unwrap().waiting = auto_paused;
             }
             if Instant::now() >= next_update_check {
                 next_update_check = Instant::now() + UPDATE_EVERY;
@@ -422,6 +484,9 @@ pub fn run() -> Result<(), String> {
     })
 }
 
+/// How long no game may be in front before games-only recording pauses.
+const NO_GAME_GRACE: Duration = Duration::from_secs(20);
+
 /// When the first look for updates happens, and how often after that.
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(3 * 60);
 const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
@@ -470,7 +535,7 @@ fn start_screenshot(shared: &Arc<Shared>) {
         .and_then(|t| platform::clean_title(&t))
         .filter(|t| t != "Kairo");
     if settings.sound && shared.status.lock().unwrap().recording {
-        platform::play_saved_sound();
+        platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
     }
     let shared = shared.clone();
     std::thread::spawn(move || {
@@ -579,7 +644,7 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
         .and_then(|t| platform::clean_title(&t))
         .filter(|t| t != "Kairo");
     if settings.sound && shared.status.lock().unwrap().recording {
-        platform::play_saved_sound();
+        platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
     }
     let shared = shared.clone();
     std::thread::spawn(move || {

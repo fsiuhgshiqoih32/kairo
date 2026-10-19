@@ -125,6 +125,38 @@ pub struct QuickSave {
 /// At most this many quick saves.
 pub const MAX_QUICK_SAVES: usize = 3;
 
+/// Settings for one game, found by the start of its window title: "Minecraft" also matches
+/// "Minecraft 26.3". Empty or zero fields keep the main settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameRule {
+    pub game: String,
+    /// How much a clip of it holds; 0 keeps the usual length.
+    pub clip_seconds: u32,
+    /// Its own quality, or the usual one.
+    pub quality: Option<Quality>,
+    /// Its own save shortcut; empty keeps the usual one.
+    pub hotkey: String,
+    /// "" (as usual), "game" (always counts as a game) or "never" (no replay while it's in
+    /// front, for private apps).
+    pub kind: String,
+}
+
+impl GameRule {
+    pub fn matches(&self, title: &str) -> bool {
+        let g = self.game.trim().to_lowercase();
+        !g.is_empty() && title.trim().to_lowercase().starts_with(&g)
+    }
+}
+
+/// The save sounds Kairo has built in, with their names; "custom" plays a file instead.
+pub const SAVE_SOUNDS: [(&str, &str); 4] = [
+    ("chime", "Chime"),
+    ("click", "Click"),
+    ("pop", "Pop"),
+    ("bell", "Bell"),
+];
+
 /// Where the replay buffer keeps finished video.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -230,6 +262,15 @@ pub struct Settings {
     pub look: String,
     /// The first-start setup was done (or skipped).
     pub setup_done: bool,
+    /// When to keep a replay: "always" (the desktop too) or "games" (only while a game is in
+    /// front).
+    pub record_when: String,
+    /// The sound when a clip is saved: one of `SAVE_SOUNDS`, or "custom" for `save_sound_file`.
+    pub save_sound: String,
+    /// A WAV file of your own, for "custom".
+    pub save_sound_file: String,
+    /// Settings for particular games.
+    pub game_rules: Vec<GameRule>,
 }
 
 impl Default for Settings {
@@ -272,6 +313,10 @@ impl Default for Settings {
             seen_version: String::new(),
             look: "dark".into(),
             setup_done: false,
+            record_when: "always".into(),
+            save_sound: "chime".into(),
+            save_sound_file: String::new(),
+            game_rules: Vec::new(),
             input_overlay: false,
         }
     }
@@ -282,6 +327,8 @@ pub const DEFAULT_VOICE_PHRASE: &str = "clip that";
 pub const SHARE_EXPIRIES: [&str; 4] = ["forever", "72h", "24h", "1h"];
 pub const MAX_CLIP_SECONDS: u32 = 1200;
 pub const MAX_POST_ROLL: u32 = 15;
+/// At most this many games with their own settings.
+pub const MAX_GAME_RULES: usize = 24;
 
 impl Settings {
     /// Brings out-of-range values back into range.
@@ -323,6 +370,45 @@ impl Settings {
         if !ACCENTS.contains(&self.accent.as_str()) {
             self.accent = "orange".into();
         }
+        if !["always", "games"].contains(&self.record_when.as_str()) {
+            self.record_when = "always".into();
+        }
+        if self.save_sound != "custom" && !SAVE_SOUNDS.iter().any(|(k, _)| *k == self.save_sound) {
+            self.save_sound = "chime".into();
+        }
+        self.game_rules.truncate(MAX_GAME_RULES);
+        for r in &mut self.game_rules {
+            r.hotkey = r.hotkey.trim().to_string();
+            if r.clip_seconds != 0 {
+                r.clip_seconds = r.clip_seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
+            }
+            if !["", "game", "never"].contains(&r.kind.as_str()) {
+                r.kind.clear();
+            }
+        }
+    }
+
+    /// The rule for the window titled `title`, if one matches.
+    pub fn rule_for(&self, title: Option<&str>) -> Option<&GameRule> {
+        let t = title?;
+        self.game_rules.iter().find(|r| r.matches(t))
+    }
+
+    /// These settings with the matching game's own length, quality and shortcut.
+    pub fn for_game(&self, title: Option<&str>) -> Settings {
+        let mut s = self.clone();
+        if let Some(r) = self.rule_for(title) {
+            if r.clip_seconds != 0 {
+                s.clip_seconds = r.clip_seconds;
+            }
+            if let Some(q) = r.quality {
+                s.quality = q;
+            }
+            if !r.hotkey.is_empty() {
+                s.hotkey = r.hotkey.clone();
+            }
+        }
+        s
     }
 
     /// The most the replay buffer can hold at `bitrate`, in bytes: encoders run up to 1.5 times
@@ -494,6 +580,51 @@ pub fn normalize_phrase(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn games_get_their_own_settings() {
+        let mut s = Settings {
+            game_rules: vec![
+                GameRule {
+                    game: "Minecraft".into(),
+                    clip_seconds: 60,
+                    quality: Some(Quality::High),
+                    hotkey: "F7".into(),
+                    kind: "game".into(),
+                },
+                GameRule {
+                    game: "Bank".into(),
+                    kind: "never".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        s.sanitize();
+        let mc = s.for_game(Some("Minecraft 26.3"));
+        assert_eq!(
+            (mc.clip_seconds, mc.quality, mc.hotkey.as_str()),
+            (60, Quality::High, "F7")
+        );
+        assert_eq!(
+            s.rule_for(Some("minecraft")).map(|r| r.kind.as_str()),
+            Some("game")
+        );
+        // Unmatched windows, and a rule that only marks the app, keep the main settings.
+        let other = s.for_game(Some("Red Eclipse"));
+        assert_eq!((other.clip_seconds, other.hotkey.as_str()), (30, "F8"));
+        let bank = s.for_game(Some("Bank of Somewhere"));
+        assert_eq!(bank.clip_seconds, 30);
+        assert_eq!(s.rule_for(None), None);
+        // Out-of-range values come back in range; unknown kinds are cleared.
+        s.game_rules[0].clip_seconds = 99_999;
+        s.game_rules[1].kind = "weird".into();
+        s.record_when = "sometimes".into();
+        s.sanitize();
+        assert_eq!(s.game_rules[0].clip_seconds, MAX_CLIP_SECONDS);
+        assert_eq!(s.game_rules[1].kind, "");
+        assert_eq!(s.record_when, "always");
+    }
 
     #[test]
     fn round_trip_and_defaults() {

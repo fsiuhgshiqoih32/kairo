@@ -44,6 +44,8 @@ pub fn now_us() -> i64 {
 pub struct Status {
     pub recording: bool,
     pub paused: bool,
+    /// Paused because no game is in front (games-only), or a private app is.
+    pub waiting: bool,
     pub encoder: Option<String>,
     /// "H.264" or "H.265".
     pub codec: Option<String>,

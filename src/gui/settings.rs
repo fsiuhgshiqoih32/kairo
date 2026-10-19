@@ -12,8 +12,9 @@ use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
 use kairo::args::{self, Encoder};
 use kairo::config::{
-    ACCENTS, MAX_CLIP_SECONDS, MAX_QUICK_SAVES, MIN_CLIP_SECONDS, Quality, QuickSave, Resolution,
-    SHARE_EXPIRIES, Settings, Storage, VideoCodec, normalize_phrase,
+    ACCENTS, GameRule, MAX_CLIP_SECONDS, MAX_GAME_RULES, MAX_QUICK_SAVES, MIN_CLIP_SECONDS,
+    Quality, QuickSave, Resolution, SAVE_SOUNDS, SHARE_EXPIRIES, Settings, Storage, VideoCodec,
+    normalize_phrase,
 };
 
 use super::icons::{Icon, icon};
@@ -59,6 +60,8 @@ pub struct State {
     webhook_busy: bool,
     webhook_problem: Option<String>,
     pub update: Updates,
+    /// A game's name as typed, to add it to the games with their own settings.
+    new_game: String,
 }
 
 /// A shortcut in the settings.
@@ -70,6 +73,8 @@ pub enum Target {
     Session,
     /// Save a clip and copy a share link.
     Share,
+    /// A game's own save shortcut, by its place in the list.
+    Game(usize),
     /// A quick save, by its place in the list.
     Quick(usize),
 }
@@ -93,6 +98,20 @@ pub enum Msg {
     ShareOff,
     /// Open a version's release notes.
     OpenNotes(String),
+    RecordWhen(&'static str),
+    SaveSound(&'static str),
+    PickSound,
+    SoundPicked(Option<PathBuf>),
+    PlaySound,
+    NewGameText(String),
+    /// Adds a game: the one named, or the typed name.
+    AddGame(Option<String>),
+    RemoveGame(usize),
+    GameName(usize, String),
+    GameSeconds(usize, u32),
+    GameQuality(usize, Option<Quality>),
+    GameKind(usize, &'static str),
+    GameKeyOff(usize),
     SessionAuto(bool),
     ChatTrack(bool),
     ChatApp(String),
@@ -184,6 +203,7 @@ impl State {
                 capturing_key: None,
                 hotkey_problem: None,
                 clip_text: settings.clip_seconds.to_string(),
+                new_game: String::new(),
                 quick_texts: settings
                     .quick_saves
                     .iter()
@@ -264,6 +284,12 @@ impl State {
                 .enumerate()
                 .map(|(i, q)| (Target::Quick(i), &q.hotkey)),
         )
+        .chain(
+            s.game_rules
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (Target::Game(i), &r.hotkey)),
+        )
         .any(|(t, k)| t != target && k.eq_ignore_ascii_case(&spec));
         if taken {
             self.hotkey_problem = Some((target, format!("{spec} is already another shortcut.")));
@@ -277,6 +303,11 @@ impl State {
                     Target::Marker => s.marker_hotkey = spec,
                     Target::Session => s.session_hotkey = spec,
                     Target::Share => s.share_hotkey = spec,
+                    Target::Game(i) => {
+                        if let Some(r) = s.game_rules.get_mut(i) {
+                            r.hotkey = spec;
+                        }
+                    }
                     Target::Quick(i) => {
                         if let Some(q) = s.quick_saves.get_mut(i) {
                             q.hotkey = spec;
@@ -292,6 +323,202 @@ impl State {
                 Effect::None
             }
         }
+    }
+
+    /// Which sound plays when a clip is saved, with a button to hear it.
+    fn sound_row<'a>(&'a self, s: &'a Settings) -> Element<'a, Msg> {
+        let mut options: Vec<(&'static str, String)> = SAVE_SOUNDS
+            .iter()
+            .map(|(k, name)| (*k, name.to_string()))
+            .collect();
+        options.push(("custom", "Your own".to_string()));
+        let picked = SAVE_SOUNDS
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(std::iter::once("custom"))
+            .find(|k| *k == s.save_sound)
+            .unwrap_or("chime");
+        let mut controls = row![
+            segmented(options, picked, Msg::SaveSound),
+            icon_button(Icon::Volume, "Play", theme::ink_2())
+                .style(theme::secondary)
+                .on_press(Msg::PlaySound),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if s.save_sound == "custom" {
+            controls = controls.push(
+                button(text("Choose...").size(13).font(MEDIUM))
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::ghost)
+                    .on_press(Msg::PickSound),
+            );
+        }
+        let note = if s.save_sound == "custom" {
+            std::path::Path::new(&s.save_sound_file)
+                .file_name()
+                .map(|n| format!("Plays {}.", n.to_string_lossy()))
+        } else {
+            Some("Built in, or a WAV file of your own.".into())
+        };
+        setting("Save sound", note, controls)
+    }
+
+    /// Games with their own length, quality and shortcut, or marked as a game or private.
+    fn games_rows<'a>(
+        &'a self,
+        s: &'a Settings,
+        report: Option<&'a Report>,
+        known: &'a [(String, usize)],
+    ) -> Vec<Element<'a, Msg>> {
+        let _ = report;
+        let mut rows: Vec<Element<'a, Msg>> = vec![
+            text(
+                "Give a game its own clip length, quality or save shortcut. Kairo finds it by the \
+                 start of its window title, so \"Minecraft\" also covers \"Minecraft 26.3\". \
+                 \"Never record\" keeps no replay while that app is in front.",
+            )
+            .size(13)
+            .color(theme::muted())
+            .into(),
+        ];
+        rows[0] = container(rows.remove(0))
+            .padding(Padding::from([14, 18]))
+            .into();
+        for (i, r) in s.game_rules.iter().enumerate() {
+            let top = row![
+                text_input("Game", &r.game)
+                    .on_input(move |t| Msg::GameName(i, t))
+                    .padding(Padding::from([8, 10]))
+                    .size(14)
+                    .width(Length::Fixed(220.0))
+                    .style(theme::input),
+                Space::new().width(Fill),
+                segmented(
+                    vec![
+                        ("", "As usual".to_string()),
+                        ("game", "Always a game".to_string()),
+                        ("never", "Never record".to_string()),
+                    ],
+                    match r.kind.as_str() {
+                        "game" => "game",
+                        "never" => "never",
+                        _ => "",
+                    },
+                    move |k| Msg::GameKind(i, k),
+                ),
+                icon_button(Icon::Trash, "Remove", theme::ink_2())
+                    .style(theme::danger_ghost)
+                    .on_press(Msg::RemoveGame(i)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+            let lengths = [0u32, 15, 30, 60, 120, 300];
+            let length = lengths
+                .iter()
+                .copied()
+                .min_by_key(|l| l.abs_diff(r.clip_seconds))
+                .unwrap_or(0);
+            let mut key_row = row![self.key_capture(Target::Game(i), &r.hotkey, None)]
+                .spacing(6)
+                .align_y(Alignment::Start);
+            if !r.hotkey.is_empty() {
+                key_row = key_row.push(
+                    button(text("Usual").size(13).font(MEDIUM))
+                        .padding(Padding::from([9, 10]))
+                        .style(theme::ghost)
+                        .on_press(Msg::GameKeyOff(i)),
+                );
+            }
+            let bottom = row![
+                column![
+                    text("Length").size(12).color(theme::muted()),
+                    segmented(
+                        lengths
+                            .iter()
+                            .map(|l| (
+                                *l,
+                                if *l == 0 {
+                                    "Usual".to_string()
+                                } else {
+                                    seconds_label(*l)
+                                }
+                            ))
+                            .collect(),
+                        length,
+                        move |v| Msg::GameSeconds(i, v),
+                    ),
+                ]
+                .spacing(4),
+                column![
+                    text("Quality").size(12).color(theme::muted()),
+                    segmented(
+                        vec![
+                            (None, "Usual".to_string()),
+                            (Some(Quality::Low), "Low".to_string()),
+                            (Some(Quality::Medium), "Medium".to_string()),
+                            (Some(Quality::High), "High".to_string()),
+                        ],
+                        r.quality,
+                        move |q| Msg::GameQuality(i, q),
+                    ),
+                ]
+                .spacing(4),
+                Space::new().width(Fill),
+                column![text("Save key").size(12).color(theme::muted()), key_row]
+                    .spacing(4)
+                    .align_x(Alignment::End),
+            ]
+            .spacing(14)
+            .align_y(Alignment::End);
+            rows.push(
+                container(column![top, bottom].spacing(12))
+                    .padding(Padding::from([14, 18]))
+                    .width(Fill)
+                    .into(),
+            );
+        }
+        if s.game_rules.len() < MAX_GAME_RULES {
+            let suggestions: Vec<String> = known
+                .iter()
+                .map(|(g, _)| g.clone())
+                .filter(|g| !s.game_rules.iter().any(|r| r.game.eq_ignore_ascii_case(g)))
+                .collect();
+            let mut add = row![
+                text_input("A game's name", &self.new_game)
+                    .on_input(Msg::NewGameText)
+                    .on_submit(Msg::AddGame(None))
+                    .padding(Padding::from([8, 10]))
+                    .size(14)
+                    .width(Length::Fixed(220.0))
+                    .style(theme::input),
+                button(text("Add").size(13).font(SEMIBOLD))
+                    .padding(Padding::from([8, 14]))
+                    .style(theme::secondary)
+                    .on_press_maybe(
+                        (!self.new_game.trim().is_empty()).then_some(Msg::AddGame(None))
+                    ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if !suggestions.is_empty() {
+                add = add.push(Space::new().width(Fill)).push(
+                    pick_list(suggestions, None::<String>, |g| Msg::AddGame(Some(g)))
+                        .placeholder("From your clips")
+                        .text_size(13)
+                        .padding(Padding::from([7, 12]))
+                        .style(theme::pick)
+                        .menu_style(theme::menu),
+                );
+            }
+            rows.push(
+                container(add)
+                    .padding(Padding::from([14, 18]))
+                    .width(Fill)
+                    .into(),
+            );
+        }
+        rows
     }
 
     /// "Start with the computer", when this system can.
@@ -325,6 +552,104 @@ impl State {
                 return changed;
             }
             Msg::OpenNotes(url) => return (Task::none(), Effect::OpenUrl(url)),
+            Msg::RecordWhen(v) => {
+                s.record_when = v.into();
+                return changed;
+            }
+            Msg::SaveSound(k) => {
+                s.save_sound = k.into();
+                if k == "custom" && platform::custom_sound(&s.save_sound_file).is_none() {
+                    return self.update(s, Msg::PickSound);
+                }
+                platform::play_save_sound(&s.save_sound, &s.save_sound_file);
+                return changed;
+            }
+            Msg::PickSound => {
+                return (
+                    Task::perform(
+                        background(|| {
+                            rfd::FileDialog::new()
+                                .add_filter("WAV sound", &["wav"])
+                                .pick_file()
+                        }),
+                        Msg::SoundPicked,
+                    ),
+                    Effect::None,
+                );
+            }
+            Msg::SoundPicked(Some(p)) => {
+                let file = p.display().to_string();
+                if platform::custom_sound(&file).is_some() {
+                    s.save_sound_file = file;
+                    s.save_sound = "custom".into();
+                    platform::play_save_sound(&s.save_sound, &s.save_sound_file);
+                    return changed;
+                }
+            }
+            Msg::SoundPicked(None) => {
+                if s.save_sound == "custom" && platform::custom_sound(&s.save_sound_file).is_none()
+                {
+                    s.save_sound = "chime".into();
+                    return changed;
+                }
+            }
+            Msg::PlaySound => platform::play_save_sound(&s.save_sound, &s.save_sound_file),
+            Msg::NewGameText(t) => self.new_game = t,
+            Msg::AddGame(name) => {
+                let name = name.unwrap_or_else(|| std::mem::take(&mut self.new_game));
+                let name = name.trim().to_string();
+                if !name.is_empty()
+                    && s.game_rules.len() < MAX_GAME_RULES
+                    && !s
+                        .game_rules
+                        .iter()
+                        .any(|r| r.game.eq_ignore_ascii_case(&name))
+                {
+                    s.game_rules.push(GameRule {
+                        game: name,
+                        ..Default::default()
+                    });
+                    return changed;
+                }
+            }
+            Msg::RemoveGame(i) => {
+                if i < s.game_rules.len() {
+                    s.game_rules.remove(i);
+                    self.capturing_key = None;
+                    return changed;
+                }
+            }
+            Msg::GameName(i, t) => {
+                if let Some(r) = s.game_rules.get_mut(i) {
+                    r.game = t;
+                    return changed;
+                }
+            }
+            Msg::GameSeconds(i, v) => {
+                if let Some(r) = s.game_rules.get_mut(i) {
+                    r.clip_seconds = v;
+                    return changed;
+                }
+            }
+            Msg::GameQuality(i, q) => {
+                if let Some(r) = s.game_rules.get_mut(i) {
+                    r.quality = q;
+                    return changed;
+                }
+            }
+            Msg::GameKind(i, k) => {
+                if let Some(r) = s.game_rules.get_mut(i) {
+                    r.kind = k.into();
+                    return changed;
+                }
+            }
+            Msg::GameKeyOff(i) => {
+                if let Some(r) = s.game_rules.get_mut(i) {
+                    r.hotkey.clear();
+                    self.capturing_key = None;
+                    return changed;
+                }
+            }
             Msg::SessionOff => {
                 s.session_hotkey.clear();
                 self.capturing_key = None;
@@ -758,7 +1083,13 @@ impl State {
                     .color(theme::accent())
             ]
         } else if spec.is_empty() {
-            row![text("Off").font(SEMIBOLD).size(14).color(theme::muted())]
+            // A game's own key falls back to the usual one.
+            let off = if matches!(target, Target::Game(_)) {
+                "Usual"
+            } else {
+                "Off"
+            };
+            row![text(off).font(SEMIBOLD).size(14).color(theme::muted())]
         } else {
             spec.split('+')
                 .fold(row![].spacing(4), |r, k| r.push(keycap(k)))
@@ -798,6 +1129,7 @@ impl State {
         s: &'a Settings,
         report: Option<&'a Report>,
         used: u64,
+        known_games: &'a [(String, usize)],
     ) -> Element<'a, Msg> {
         let mut sections = column![].spacing(26).max_width(780);
         if let Some(u) = &self.update.available {
@@ -956,6 +1288,28 @@ impl State {
             "Replay",
             vec![
                 setting(
+                    "Keep a replay",
+                    Some(if cfg!(windows) {
+                        "Only in games pauses the replay when no game has been in front for 20 \
+                         seconds: a full-screen window, or a game you mark below."
+                            .into()
+                    } else {
+                        "Only in games needs Windows; elsewhere Kairo always keeps a replay.".into()
+                    }),
+                    segmented(
+                        vec![
+                            ("always", "Always, desktop too".to_string()),
+                            ("games", "Only in games".to_string()),
+                        ],
+                        if s.record_when == "games" {
+                            "games"
+                        } else {
+                            "always"
+                        },
+                        Msg::RecordWhen,
+                    ),
+                ),
+                setting(
                     "Save shortcut",
                     Some("Works everywhere, even in full-screen games.".into()),
                     key_col,
@@ -1074,6 +1428,8 @@ impl State {
             }
             _ => None,
         };
+        sections = sections.push(section("Games", self.games_rows(s, report, known_games)));
+
         let mut voice_rows = vec![setting(
             "Voice clipping",
             Some(
@@ -1380,6 +1736,7 @@ impl State {
                 self.channel_row(s),
                 setting("Notification", Some("A small card in the corner when a clip is saved.".into()), switch(s.notify, Msg::Notify)),
                 setting("Sound", Some("A short tone when a clip is saved.".into()), switch(s.sound, Msg::Sound)),
+                self.sound_row(s),
             ],
         ));
 
