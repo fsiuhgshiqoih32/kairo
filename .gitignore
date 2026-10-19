@@ -2,3 +2,5 @@
 /dist
 *.mp4
 *.ts
+# The README demo is the one video kept in the repo.
+!docs/media/*.mp4
