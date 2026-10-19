@@ -67,6 +67,12 @@ test -s "$dir/effects.mp4"
 "$ff" "${q[@]}" -i "$dir/clip.mp4" -t 1 -vf "reverse,hue=s=0,curves=preset=vintage,gblur=sigma=2,drawbox=x=10:y=10:w=50:h=20:color=white@0.5:t=fill" -af "areverse,dynaudnorm,lowpass=f=8000" -map 0:v:0 -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/reverse.mp4"
 test -s "$dir/reverse.mp4"
 
+step "captions: raw RGBA pictures laid over the picture for their time"
+"$ff" "${q[@]}" -f lavfi -i "color=c=white@0.6:s=120x40,format=rgba" -frames:v 1 -f rawvideo -pix_fmt rgba "$dir/cap.rgba"
+test "$(wc -c < "$dir/cap.rgba")" -eq $((120 * 40 * 4))
+"$ff" "${q[@]}" -i "$dir/clip.mp4" -f rawvideo -pix_fmt rgba -video_size 120x40 -i "$dir/cap.rgba" -filter_complex "[0:v][1:v]overlay=x=(W-w)/2:y=H-h-H/14:enable='between(t,0.5,1.5)'[v]" -map "[v]" -map 0:a:0 -c:v libx264 -b:v 300k -c:a aac -f mp4 "$dir/captioned.mp4"
+test -s "$dir/captioned.mp4"
+
 step "screenshot: one frame of the stream as JPEG"
 "$ff" "${q[@]}" -i "$dir/video.ts" -vf "select=eq(n\,80)" -frames:v 1 -q:v 2 -update 1 "$dir/shot.jpg"
 test -s "$dir/shot.jpg"

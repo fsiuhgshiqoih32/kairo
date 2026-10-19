@@ -85,7 +85,7 @@ common=(
   --enable-gpl --enable-libx264
   --enable-protocol=file,pipe
   --enable-indev=lavfi
-  --enable-demuxer=mov,mpegts,wav,matroska,image2,mp3,ogg,flac,aac
+  --enable-demuxer=mov,mpegts,wav,matroska,image2,mp3,ogg,flac,aac,rawvideo
   --enable-muxer=mp4,mov,mpegts,rawvideo,pcm_f32le,pcm_s16le,wav,image2,gif,null,flac
   --enable-decoder=h264,hevc,aac,pcm_f32le,pcm_s16le,pcm_s32le,pcm_s24le,rawvideo,bmp,mjpeg,png,wrapped_avframe,mp3,mp3float,flac,vorbis,opus,alac
   --enable-encoder=libx264,aac,mjpeg,gif,rawvideo,pcm_f32le,pcm_s16le,wrapped_avframe,flac
