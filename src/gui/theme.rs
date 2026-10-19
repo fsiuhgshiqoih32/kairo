@@ -45,7 +45,8 @@ pub const FONTS: [&[u8]; 4] = [
 ];
 
 /// The accent colour picked in Settings (`set_accent`), as 0xRRGGBB.
-static ACCENT_RGB: AtomicU32 = AtomicU32::new(ACCENT_COLORS[0]);
+/// Starts as orange, the default, for windows that never read the settings.
+static ACCENT_RGB: AtomicU32 = AtomicU32::new(ACCENT_COLORS[1]);
 
 /// The colours behind `kairo::config::ACCENTS`, in the same order.
 pub const ACCENT_COLORS: [u32; 8] = [

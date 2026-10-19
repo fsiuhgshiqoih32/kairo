@@ -5,6 +5,12 @@ sound in memory. Press **F8** and the last 30 seconds are saved as an MP4, like 
 ShadowPlay. It's free and open source (MIT), with no account and no ads. Nothing is uploaded
 unless you ask for a share link.
 
+<p align="center">
+  <img src="docs/media/kairo-demo.webp" width="100%"
+       alt="Kairo in action: F8 saves the last 30 seconds of a Minecraft session, the clip opens in the editor, and a share link comes with a QR code">
+</p>
+<p align="center"><a href="docs/media/kairo-demo.mp4">Watch the demo in full quality (MP4, 31 s)</a></p>
+
 - **Always ready, light on games.** The replay is captured and encoded on the GPU (NVIDIA
   NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox), with x264 as a
   fallback. It lives in memory, or for long buffers in a scratch file the system caches in spare
@@ -35,6 +41,14 @@ unless you ask for a share link.
 - **Keys and clicks overlay** (Windows): show the gaming keys and mouse buttons you pressed over
   a clip.
 
+## Screenshots
+
+| The library | The editor |
+| --- | --- |
+| ![The library: the latest clip as a banner over cards grouped by day, with games and tags in the sidebar](docs/media/library.jpg) | ![The editor: the clip with its filmstrip, trim handles and moment flags, next to share, tags, trim and captions panels](docs/media/editor.jpg) |
+| **A share link** | **Settings** |
+| ![A share link dialog with the link, a Copy button and a QR code for phones](docs/media/share-link.jpg) | ![Settings: overlay, session recording and replay options with the save shortcut](docs/media/settings.jpg) |
+
 ## Download
 
 Get the package for your system from the
@@ -45,6 +59,9 @@ included, so there is nothing else to install.
   without administrator rights, adds it to the Start menu, and uninstalls from Settings > Apps.
   The installer isn't code-signed, so Windows may say it protected your PC: choose More info,
   then Run anyway. Or unzip `kairo-…-windows-x64-portable.zip` anywhere and run `kairo.exe`.
+
+  <img src="docs/media/installer.png" width="480"
+       alt="The Kairo installer: install folder, desktop shortcut and start with Windows switches, and an Install button">
 - **macOS 11+ (Apple silicon and Intel):** unzip `kairo-…-macos-universal.zip` and move
   `Kairo.app` to Applications. It isn't notarized: the first time, right-click it and choose
   Open. Then allow Screen Recording in System Settings > Privacy & Security.

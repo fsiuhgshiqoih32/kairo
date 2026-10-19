@@ -78,7 +78,7 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                     _ => Vec::new(),
                 },
                 link: (i == 3).then(|| kairo::library::Link {
-                    url: "https://files.catbox.moe/k3x9qa.mp4".into(),
+                    url: "https://files.catbox.moe/kairo-demo.mp4".into(),
                     created: 0,
                     expires: None,
                 }),
@@ -223,7 +223,7 @@ fn preview() {
     );
     theme::set_accent("gold");
     shoot(app.view(), "iced-library-gold", size);
-    theme::set_accent("red");
+    theme::set_accent(&kairo::config::Settings::default().accent);
     shoot_at(app.view(), "iced-library-hover", size, Some((560.0, 230.0)));
     app.dialog = Some(super::Dialog::Delete(vec![app.clips[3].path.clone()]));
     shoot(app.view(), "iced-delete", size);
