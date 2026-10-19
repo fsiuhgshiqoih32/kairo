@@ -12,8 +12,8 @@ use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
 use rewindr::args::{self, Encoder};
 use rewindr::config::{
-    MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings, Storage,
-    normalize_phrase,
+    ACCENTS, MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, Quality, Resolution, SHARE_EXPIRIES, Settings,
+    Storage, normalize_phrase,
 };
 
 use super::icons::{Icon, icon};
@@ -85,6 +85,7 @@ pub enum Msg {
     Resolution(Resolution),
     Quality(Quality),
     Storage(Storage),
+    Accent(&'static str),
     Encoder(Choice),
     Encoders(Vec<Encoder>),
     DesktopAudio(bool),
@@ -391,6 +392,11 @@ impl State {
                     return changed;
                 }
             }
+            Msg::Accent(name) => {
+                s.accent = name.into();
+                theme::set_accent(name);
+                return changed;
+            }
             Msg::Storage(v) => {
                 s.replay_storage = v;
                 return changed;
@@ -501,7 +507,7 @@ impl State {
                 text("Press a key")
                     .font(SEMIBOLD)
                     .size(14)
-                    .color(theme::ACCENT)
+                    .color(theme::accent())
             ]
         } else if spec.is_empty() {
             row![text("Off").font(SEMIBOLD).size(14).color(MUTED)]
@@ -533,7 +539,7 @@ impl State {
             col = col.push(
                 text(n)
                     .size(12)
-                    .color(if capturing { MUTED } else { theme::ACCENT }),
+                    .color(if capturing { MUTED } else { theme::accent() }),
             );
         }
         col.into()
@@ -631,8 +637,8 @@ impl State {
         };
         let listening = report.map(|r| (&r.status.voice, &r.status.voice_error));
         let status = match (&self.voice_problem, listening) {
-            (Some(p), _) => Some((theme::ACCENT, p.clone())),
-            (None, Some((_, Some(e)))) if s.voice_clip => Some((theme::ACCENT, e.clone())),
+            (Some(p), _) => Some((theme::accent(), p.clone())),
+            (None, Some((_, Some(e)))) if s.voice_clip => Some((theme::accent(), e.clone())),
             (None, Some((Some(phrase), _))) if s.voice_clip => {
                 Some((theme::GREEN, format!("Listening for \"{phrase}\" now.")))
             }
@@ -946,9 +952,47 @@ impl State {
             )],
         ));
 
+        let swatches =
+            ACCENTS
+                .iter()
+                .zip(theme::ACCENT_COLORS)
+                .fold(row![].spacing(9), |r, (name, rgb)| {
+                    let selected = s.accent == *name;
+                    let c = theme::rgb(rgb);
+                    r.push(
+                        button(Space::new().width(22).height(22))
+                            .padding(0)
+                            .style(move |_, st| button::Style {
+                                background: Some(c.into()),
+                                border: iced::Border {
+                                    color: if selected {
+                                        TEXT
+                                    } else if matches!(st, button::Status::Hovered) {
+                                        theme::alpha(TEXT, 0.45)
+                                    } else {
+                                        iced::Color::TRANSPARENT
+                                    },
+                                    width: if selected { 3.0 } else { 2.0 },
+                                    radius: 999.0.into(),
+                                },
+                                shadow: iced::Shadow {
+                                    color: theme::alpha(c, if selected { 0.6 } else { 0.0 }),
+                                    offset: iced::Vector::ZERO,
+                                    blur_radius: 12.0,
+                                },
+                                ..Default::default()
+                            })
+                            .on_press(Msg::Accent(name)),
+                    )
+                });
         sections = sections.push(section(
             "Rewindr",
             vec![
+                setting(
+                    "Accent colour",
+                    Some("Buttons, highlights and the glow around clips.".into()),
+                    swatches,
+                ),
                 setting(
                     "Start with the computer",
                     None,

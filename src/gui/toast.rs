@@ -57,6 +57,9 @@ pub fn run(msg: Message) -> Result<(), String> {
     if platform::is_wayland() {
         return system_notification(&msg);
     }
+    if let Ok(s) = rewindr::config::load(&rewindr::config::default_path()) {
+        theme::set_accent(&s.accent);
+    }
     let mut settings = window::Settings {
         size: Size::new(W, H),
         resizable: false,
@@ -258,7 +261,7 @@ impl Toast {
         let body: Element<'_, Msg> = match &self.msg {
             Message::Failed(e) => column![
                 row![
-                    dot(theme::ACCENT),
+                    dot(theme::accent()),
                     text("Couldn't save").font(BOLD).size(14),
                     Space::new().width(Fill),
                     close
@@ -373,7 +376,7 @@ impl Toast {
                         .clip(true),
                         text(line)
                             .size(11)
-                            .color(if ok { MUTED } else { theme::ACCENT }),
+                            .color(if ok { MUTED } else { theme::accent() }),
                         Space::new().height(Fill),
                         bottom,
                     ]

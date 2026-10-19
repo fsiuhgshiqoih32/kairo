@@ -127,6 +127,31 @@ fn shot_thumb(path: &Path, modified: Option<SystemTime>) -> PathBuf {
     if saved { thumb } else { path.to_path_buf() }
 }
 
+/// Where the banner picture of `clip` goes.
+pub fn hero_path(clip: &Path) -> Option<PathBuf> {
+    let stem = clip.file_stem()?.to_string_lossy().to_string();
+    Some(crate::save::thumbs_dir().join(format!("hero-{stem}.jpg")))
+}
+
+/// A big picture from `at` seconds into a clip for the library's banner, made once in the
+/// thumbnails folder (the card thumbnails are too small to blow up).
+pub fn hero_picture(clip: &Path, at: f64) -> Option<image::Handle> {
+    let out = hero_path(clip)?;
+    let clip_time = std::fs::metadata(clip).and_then(|m| m.modified()).ok();
+    let made = std::fs::metadata(&out).and_then(|m| m.modified()).ok();
+    if made.is_none() || made < clip_time {
+        let ff = crate::ffmpeg::path().ok()?;
+        let _ = std::fs::create_dir_all(crate::save::thumbs_dir());
+        crate::ffmpeg::run(
+            &ff,
+            &rewindr::args::hero_args(clip, at, &out),
+            std::time::Duration::from_secs(20),
+        )
+        .ok()?;
+    }
+    out.exists().then(|| image::Handle::from_path(out))
+}
+
 /// A number that changes when a file in `dirs` is added, removed, renamed or rewritten, or when
 /// `file` changes. Cheap enough to check every few seconds instead of reloading everything.
 pub fn folder_signature(dirs: &[&Path], file: &Path) -> u64 {
@@ -248,6 +273,12 @@ impl App {
         .align_y(Alignment::Center);
 
         let now = self.now.unwrap_or_else(SystemTime::now);
+        // The newest clip gets the banner on the plain list of everything.
+        let newest = (self.filter == Filter::All
+            && self.search.trim().is_empty()
+            && self.sort == Sort::Newest)
+            .then(|| shown.first().copied())
+            .flatten();
         let by_time = matches!(self.sort, Sort::Newest | Sort::Oldest);
         let mut groups: Vec<(String, Vec<&ClipItem>)> = Vec::new();
         for c in shown {
@@ -262,6 +293,9 @@ impl App {
             }
         }
         let mut body = column![].spacing(28);
+        if let Some(c) = newest {
+            body = body.push(self.hero(c, now));
+        }
         if groups.is_empty() && self.loaded {
             let what = match (&self.filter, self.search.trim()) {
                 (_, q) if !q.is_empty() => format!("No clips match \"{q}\"."),
@@ -423,6 +457,128 @@ impl App {
             .style(theme::card)
             .on_press(Message::Open(c.path.clone()));
         hover(base, self.actions(&c.path, c.link.is_some(), true))
+    }
+
+    /// The newest clip, big: a banner across the top of the library.
+    fn hero<'a>(&'a self, c: &'a ClipItem, now: SystemTime) -> Element<'a, Message> {
+        let picture = self
+            .hero
+            .as_ref()
+            .filter(|(p, _)| *p == c.path)
+            .map(|(_, h)| h.clone())
+            .or_else(|| c.thumb.clone());
+        let picture: Element<'a, Message> = match picture {
+            Some(h) => image(h)
+                .width(Fill)
+                .height(Fill)
+                .content_fit(ContentFit::Cover)
+                .border_radius(16.0)
+                .into(),
+            None => container(Space::new())
+                .width(Fill)
+                .height(Fill)
+                .style(theme::well)
+                .into(),
+        };
+        // Dark on the left for the words, clear on the right for the picture.
+        let shade = container(Space::new().width(Fill).height(Fill)).style(|_| container::Style {
+            background: Some(
+                iced::gradient::Linear::new(iced::Degrees(90.0))
+                    .add_stop(0.0, theme::alpha(theme::BG, 0.95))
+                    .add_stop(0.45, theme::alpha(theme::BG, 0.6))
+                    .add_stop(1.0, theme::alpha(theme::BG, 0.0))
+                    .into(),
+            ),
+            border: iced::Border {
+                radius: 16.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let pill = container(
+            text("LATEST CLIP")
+                .size(11)
+                .font(BOLD)
+                .color(theme::on_accent()),
+        )
+        .padding(Padding::from([3, 9]))
+        .style(|_| container::Style {
+            background: Some(theme::accent().into()),
+            border: iced::Border {
+                radius: 999.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let p = c.path.clone();
+        let link = if c.link.is_some() {
+            icon_button(Icon::Link, "Copy the link", TEXT)
+                .style(theme::secondary)
+                .on_press(Message::ShowLink(p.clone()))
+        } else {
+            icon_button(Icon::Share, "Get a share link", TEXT)
+                .style(theme::secondary)
+                .on_press(Message::Share(p.clone()))
+        };
+        let words = column![
+            pill,
+            container(
+                text(c.title())
+                    .font(BOLD)
+                    .size(30)
+                    .wrapping(text::Wrapping::None)
+            )
+            .clip(true),
+            text(format!(
+                "{}  ·  {}  ·  {}",
+                when(c.modified, now),
+                duration(c.duration),
+                human_size(c.size)
+            ))
+            .size(14)
+            .color(TEXT_2),
+            Space::new().height(8),
+            row![
+                icon_button(Icon::Play, "Watch", theme::on_accent())
+                    .style(theme::primary)
+                    .on_press(Message::Open(p.clone())),
+                link,
+                icon_button(Icon::Copy, "Copy file", TEXT)
+                    .style(theme::secondary)
+                    .on_press(Message::Copy(p)),
+            ]
+            .spacing(10),
+        ]
+        .spacing(8)
+        .max_width(620);
+        let mut layers = stack![
+            picture,
+            shade,
+            container(words)
+                .width(Fill)
+                .height(Fill)
+                .padding(30)
+                .align_y(Vertical::Bottom),
+        ];
+        if let Some(u) = self.upload_progress(&c.path) {
+            layers = layers.push(uploading(u.0, u.1));
+        }
+        container(layers)
+            .height(320)
+            .style(|_| container::Style {
+                border: iced::Border {
+                    color: theme::alpha(theme::accent(), 0.35),
+                    width: 1.0,
+                    radius: 17.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: theme::alpha(theme::accent(), 0.18),
+                    offset: iced::Vector::new(0.0, 12.0),
+                    blur_radius: 44.0,
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     /// The buttons that appear over a card's corner when the pointer is on it.
@@ -594,7 +750,7 @@ impl App {
         if self.settings.voice_clip {
             tips = tips.push(
                 row![
-                    icon(Icon::Mic, 15.0, theme::ACCENT),
+                    icon(Icon::Mic, 15.0, theme::accent()),
                     text(format!("Or just say \"{}\".", self.settings.voice_phrase))
                         .size(14)
                         .color(TEXT_2),
@@ -615,7 +771,7 @@ impl App {
                             radius: 14.0.into()
                         },
                         shadow: iced::Shadow {
-                            color: theme::alpha(theme::ACCENT, 0.25),
+                            color: theme::alpha(theme::accent(), 0.25),
                             offset: iced::Vector::new(0.0, 6.0),
                             blur_radius: 30.0,
                         },
@@ -760,7 +916,7 @@ impl canvas::Program<Message> for Scrubber {
         frame.fill_rectangle(
             Point::new(10.0, bounds.height - 3.0),
             Size::new((bounds.width - 20.0) * f, 3.0),
-            theme::ACCENT,
+            theme::accent(),
         );
         vec![frame.into_geometry()]
     }

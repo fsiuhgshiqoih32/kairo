@@ -773,7 +773,11 @@ impl Editor {
                 button(icon(
                     Icon::Repeat,
                     16.0,
-                    if self.looping { theme::ACCENT } else { TEXT_2 }
+                    if self.looping {
+                        theme::accent()
+                    } else {
+                        TEXT_2
+                    }
                 ))
                 .padding(8)
                 .style(if self.looping {
@@ -1489,8 +1493,8 @@ impl canvas::Program<Msg> for Timeline {
             Point::new(xi, track.y + track.height),
             Size::new(xo - xi, 3.0),
         );
-        f.fill(&frame_top, theme::ACCENT);
-        f.fill(&frame_bottom, theme::ACCENT);
+        f.fill(&frame_top, theme::accent());
+        f.fill(&frame_bottom, theme::accent());
         for (x, left) in [(xi - HANDLE_W, true), (xo, false)] {
             let r = Rectangle {
                 x,
@@ -1505,7 +1509,7 @@ impl canvas::Program<Msg> for Timeline {
             };
             f.fill(
                 &Shape::rounded_rectangle(r.position(), r.size(), radius),
-                theme::ACCENT,
+                theme::accent(),
             );
             let cx = r.x + r.width / 2.0;
             for dx in [-2.0, 2.0] {

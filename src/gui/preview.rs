@@ -133,7 +133,20 @@ fn preview() {
     app.clips = sample(now);
     app.loaded = true;
     app.report = Some(report());
+    // The banner's big picture, made the way the window makes it.
+    let first = app.clips[0].path.clone();
+    app.hero = super::library::hero_picture(&first, 6.0).map(|h| (first, h));
     shoot(app.view(), "iced-library", size);
+    theme::set_accent("purple");
+    shoot_at(
+        app.view(),
+        "iced-library-purple",
+        size,
+        Some((560.0, 560.0)),
+    );
+    theme::set_accent("gold");
+    shoot(app.view(), "iced-library-gold", size);
+    theme::set_accent("red");
     shoot_at(app.view(), "iced-library-hover", size, Some((560.0, 230.0)));
     app.dialog = Some(super::Dialog::Delete(app.clips[3].path.clone()));
     shoot(app.view(), "iced-delete", size);

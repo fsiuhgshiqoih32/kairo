@@ -483,6 +483,30 @@ pub fn save_args(video: &Path, audio: &[(&Path, &str)], out: &Path) -> Vec<Strin
 }
 
 /// A small picture of the clip's last moment, for the notification.
+/// A big still from `at` seconds into `clip`, for the library's banner.
+pub fn hero_args(clip: &Path, at: f64, out: &Path) -> Vec<String> {
+    vec![
+        s("-y"),
+        s("-hide_banner"),
+        s("-nostdin"),
+        s("-loglevel"),
+        s("error"),
+        s("-ss"),
+        format!("{:.2}", at.max(0.0)),
+        s("-i"),
+        clip.display().to_string(),
+        s("-frames:v"),
+        s("1"),
+        s("-vf"),
+        s("scale=1280:-2"),
+        s("-q:v"),
+        s("3"),
+        s("-update"),
+        s("1"),
+        out.display().to_string(),
+    ]
+}
+
 pub fn thumbnail_args(clip: &Path, out: &Path) -> Vec<String> {
     vec![
         s("-y"),

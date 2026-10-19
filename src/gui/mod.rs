@@ -125,6 +125,9 @@ pub struct App {
     ticks: u64,
     /// `library::folder_signature` of the last look at the folders.
     scan_sig: Option<u64>,
+    /// The newest clip's banner picture, and the clip it's being made for.
+    hero: Option<(PathBuf, image::Handle)>,
+    hero_loading: Option<PathBuf>,
     test: Option<SelfTest>,
     /// Exports `--ui-self-test` still has to make, after the trimmed copy.
     test_exports: Vec<editor::ExportKind>,
@@ -155,6 +158,8 @@ pub enum Message {
     Report(Option<Box<Report>>),
     Clips(Vec<ClipItem>),
     Shots(Vec<ShotItem>),
+    /// The banner picture for a clip is ready (or couldn't be made).
+    Hero(PathBuf, Option<image::Handle>),
     /// The folders changed: their new signature and contents.
     Rescanned(Option<Box<Scan>>),
     Scrub(PathBuf, f32),
@@ -207,6 +212,7 @@ fn background<T: Send + 'static>(
 
 impl App {
     pub fn new(settings: Settings) -> (Self, Task<Message>) {
+        theme::set_accent(&settings.accent);
         let (setup, tasks) = settings::State::new(&settings);
         (
             App {
@@ -234,6 +240,8 @@ impl App {
                 window: None,
                 ticks: 0,
                 scan_sig: None,
+                hero: None,
+                hero_loading: None,
                 test: None,
                 test_exports: Vec::new(),
                 test_current: None,
@@ -264,6 +272,27 @@ impl App {
             Task::perform(background(move || load_clips(&dir)), Message::Clips),
             Task::perform(background(move || load_shots(&shots)), Message::Shots),
         ])
+    }
+
+    /// Makes the banner picture for the newest clip, once.
+    fn ensure_hero(&mut self) -> Task<Message> {
+        let Some(c) = self.clips.iter().max_by_key(|c| c.modified) else {
+            return Task::none();
+        };
+        if self.hero.as_ref().is_some_and(|(p, _)| *p == c.path)
+            || self.hero_loading.as_ref() == Some(&c.path)
+        {
+            return Task::none();
+        }
+        let (path, at) = (c.path.clone(), c.duration.unwrap_or(0.0) * 0.5);
+        self.hero_loading = Some(path.clone());
+        Task::perform(
+            background(move || {
+                let h = library::hero_picture(&path, at);
+                (path, h)
+            }),
+            |(p, h)| Message::Hero(p, h),
+        )
     }
 
     /// Reloads the library if anything in its folders changed since the last look.
@@ -486,6 +515,15 @@ impl App {
             Message::Clips(c) => {
                 self.clips = c;
                 self.loaded = true;
+                return self.ensure_hero();
+            }
+            Message::Hero(p, h) => {
+                if self.hero_loading.as_ref() == Some(&p) {
+                    self.hero_loading = None;
+                }
+                if let Some(h) = h {
+                    self.hero = Some((p, h));
+                }
             }
             Message::Shots(s) => self.shots = s,
             Message::Rescanned(found) => {
@@ -495,6 +533,7 @@ impl App {
                     self.clips = clips;
                     self.shots = shots;
                     self.loaded = true;
+                    return self.ensure_hero();
                 }
             }
             Message::Scrub(p, f) => {
@@ -945,7 +984,7 @@ impl App {
                             icon(
                                 if n.ok { Icon::Check } else { Icon::Close },
                                 16.0,
-                                if n.ok { theme::GREEN } else { theme::ACCENT }
+                                if n.ok { theme::GREEN } else { theme::accent() }
                             ),
                             text(n.text.clone()).size(13).font(MEDIUM),
                         ]
@@ -983,7 +1022,7 @@ impl App {
                 ]
                 .spacing(8);
                 if let Some(e) = error {
-                    body = body.push(text(e.clone()).size(12).color(theme::ACCENT));
+                    body = body.push(text(e.clone()).size(12).color(theme::accent()));
                 }
                 dialog(
                     "Rename clip",
@@ -1199,7 +1238,7 @@ impl App {
             bottom = bottom.push(
                 button(
                     row![
-                        icon(Icon::Download, 16.0, theme::ACCENT),
+                        icon(Icon::Download, 16.0, theme::accent()),
                         column![
                             text(format!("Rewindr {} is out", u.version))
                                 .size(13)
@@ -1216,7 +1255,7 @@ impl App {
                 .style(|_, s| iced::widget::button::Style {
                     background: Some(
                         theme::alpha(
-                            theme::ACCENT,
+                            theme::accent(),
                             if matches!(s, button::Status::Hovered) {
                                 0.2
                             } else {
@@ -1227,7 +1266,7 @@ impl App {
                     ),
                     text_color: TEXT,
                     border: iced::Border {
-                        color: theme::alpha(theme::ACCENT, 0.4),
+                        color: theme::alpha(theme::accent(), 0.4),
                         width: 1.0,
                         radius: 10.0.into(),
                     },
@@ -1270,7 +1309,7 @@ impl App {
             None => (MUTED, "Not running"),
             Some(s) if s.paused => (theme::GOLD, "Paused"),
             Some(s) if s.recording => (theme::GREEN, "Recording"),
-            Some(s) if s.error.is_some() => (theme::ACCENT, "Can't record"),
+            Some(s) if s.error.is_some() => (theme::accent(), "Can't record"),
             Some(_) => (MUTED, "Starting"),
         };
         let detail = match s {
@@ -1347,7 +1386,7 @@ impl App {
         {
             let (color, line) = match (&st.voice, &st.voice_error) {
                 (Some(p), _) => (TEXT_2, format!("Listening for \"{p}\"")),
-                (None, Some(e)) => (theme::ACCENT, e.clone()),
+                (None, Some(e)) => (theme::accent(), e.clone()),
                 _ => (MUTED, String::new()),
             };
             c = c.push(
@@ -1486,7 +1525,7 @@ fn nav_item<'a>(
 ) -> iced::widget::Button<'a, Message> {
     let color = if active { TEXT } else { TEXT_2 };
     let mut r = row![
-        icon(i, 17.0, if active { theme::ACCENT } else { MUTED }),
+        icon(i, 17.0, if active { theme::accent() } else { MUTED }),
         container(
             text(label.to_string())
                 .size(14)

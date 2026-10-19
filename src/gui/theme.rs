@@ -1,5 +1,7 @@
 //! Rewindr's look: a dark charcoal UI with one accent, the red of the icon.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use iced::border::Radius;
 use iced::font::Weight;
 use iced::overlay::menu;
@@ -17,8 +19,6 @@ pub const BORDER: Color = color!(0x2a2d35);
 pub const TEXT: Color = color!(0xeceef1);
 pub const TEXT_2: Color = color!(0xa6abb5);
 pub const MUTED: Color = color!(0x737884);
-pub const ACCENT: Color = color!(0xff4f46);
-pub const ACCENT_HI: Color = color!(0xff6a62);
 pub const GOLD: Color = color!(0xffc53d);
 pub const GREEN: Color = color!(0x3dd68c);
 pub const DISCORD: Color = color!(0x5865f2);
@@ -44,13 +44,61 @@ pub const FONTS: [&[u8]; 4] = [
     include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
 ];
 
+/// The accent colour picked in Settings (`set_accent`), as 0xRRGGBB.
+static ACCENT_RGB: AtomicU32 = AtomicU32::new(ACCENT_COLORS[0]);
+
+/// The colours behind `rewindr::config::ACCENTS`, in the same order.
+pub const ACCENT_COLORS: [u32; 8] = [
+    0xff4f46, 0xff7a1a, 0xf5b301, 0x2fcf7f, 0x1fc2e0, 0x3d8bff, 0x8b5cf6, 0xf0469c,
+];
+
+/// Uses the accent named `name` (one of `rewindr::config::ACCENTS`) from now on.
+pub fn set_accent(name: &str) {
+    let i = rewindr::config::ACCENTS
+        .iter()
+        .position(|a| *a == name)
+        .unwrap_or(0);
+    ACCENT_RGB.store(ACCENT_COLORS[i], Ordering::Relaxed);
+}
+
+pub fn rgb(v: u32) -> Color {
+    Color::from_rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color::from_rgb(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
+}
+
+pub fn accent() -> Color {
+    rgb(ACCENT_RGB.load(Ordering::Relaxed))
+}
+
+/// The accent, lighter: hovered buttons.
+pub fn accent_hi() -> Color {
+    mix(accent(), Color::WHITE, 0.14)
+}
+
+/// Text on the accent: white, or near-black on the bright ones (gold, green, cyan).
+pub fn on_accent() -> Color {
+    let c = accent();
+    if 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b > 0.6 {
+        color!(0x101114)
+    } else {
+        Color::WHITE
+    }
+}
+
 pub fn theme() -> Theme {
     Theme::custom(
         "Rewindr",
         iced::theme::Palette {
             background: BG,
             text: TEXT,
-            primary: ACCENT,
+            primary: accent(),
             success: GREEN,
             warning: GOLD,
             danger: color!(0xe5484d),
@@ -166,17 +214,23 @@ fn base_button(bg: Option<Color>, text: Color, border: Color, r: f32) -> button:
 /// The main action: filled with the accent.
 pub fn primary(_: &Theme, status: button::Status) -> button::Style {
     match status {
-        button::Status::Hovered => {
-            base_button(Some(ACCENT_HI), Color::WHITE, Color::TRANSPARENT, 9.0)
-        }
+        button::Status::Hovered => button::Style {
+            // A soft glow in the accent colour.
+            shadow: Shadow {
+                color: alpha(accent(), 0.45),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 18.0,
+            },
+            ..base_button(Some(accent_hi()), on_accent(), Color::TRANSPARENT, 9.0)
+        },
         button::Status::Pressed => base_button(
-            Some(color!(0xe8443c)),
-            Color::WHITE,
+            Some(mix(accent(), Color::BLACK, 0.1)),
+            on_accent(),
             Color::TRANSPARENT,
             9.0,
         ),
         button::Status::Disabled => base_button(Some(RAISED), MUTED, Color::TRANSPARENT, 9.0),
-        button::Status::Active => base_button(Some(ACCENT), Color::WHITE, Color::TRANSPARENT, 9.0),
+        button::Status::Active => base_button(Some(accent()), on_accent(), Color::TRANSPARENT, 9.0),
     }
 }
 
@@ -231,7 +285,7 @@ pub fn danger_ghost(_: &Theme, status: button::Status) -> button::Style {
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
         let bg = match (active, status) {
-            (true, _) => Some(SURFACE_HI),
+            (true, _) => Some(alpha(accent(), 0.14)),
             (false, button::Status::Hovered | button::Status::Pressed) => Some(SURFACE),
             _ => None,
         };
@@ -268,15 +322,20 @@ pub fn card(_: &Theme, status: button::Status) -> button::Style {
         background: Some(if hovered { SURFACE_HI } else { SURFACE }.into()),
         text_color: TEXT,
         border: Border {
-            color: if hovered { color!(0x3a3e48) } else { BORDER },
+            color: if hovered {
+                alpha(accent(), 0.6)
+            } else {
+                BORDER
+            },
             width: 1.0,
             radius: radius(14.0),
         },
+        // Hovered cards glow in the accent colour.
         shadow: if hovered {
             Shadow {
-                color: alpha(Color::BLACK, 0.45),
-                offset: Vector::new(0.0, 10.0),
-                blur_radius: 26.0,
+                color: alpha(accent(), 0.28),
+                offset: Vector::new(0.0, 8.0),
+                blur_radius: 30.0,
             }
         } else {
             Shadow::default()
@@ -307,21 +366,25 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: SURFACE.into(),
         border: Border {
-            color: if focused { alpha(ACCENT, 0.7) } else { BORDER },
+            color: if focused {
+                alpha(accent(), 0.7)
+            } else {
+                BORDER
+            },
             width: 1.0,
             radius: radius(9.0),
         },
         icon: MUTED,
         placeholder: MUTED,
         value: TEXT,
-        selection: alpha(ACCENT, 0.35),
+        selection: alpha(accent(), 0.35),
     }
 }
 
 /// The clip name in the editor: plain text until hovered or focused.
 pub fn title_input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let (bg, border) = match status {
-        text_input::Status::Focused { .. } => (SURFACE, alpha(ACCENT, 0.7)),
+        text_input::Status::Focused { .. } => (SURFACE, alpha(accent(), 0.7)),
         text_input::Status::Hovered => (Color::TRANSPARENT, BORDER),
         _ => (Color::TRANSPARENT, Color::TRANSPARENT),
     };
@@ -335,7 +398,7 @@ pub fn title_input(_: &Theme, status: text_input::Status) -> text_input::Style {
         icon: MUTED,
         placeholder: MUTED,
         value: TEXT,
-        selection: alpha(ACCENT, 0.35),
+        selection: alpha(accent(), 0.35),
     }
 }
 
@@ -381,7 +444,7 @@ pub fn menu(_: &Theme) -> menu::Style {
         },
         text_color: TEXT,
         selected_text_color: Color::WHITE,
-        selected_background: alpha(ACCENT, 0.85).into(),
+        selected_background: alpha(accent(), 0.85).into(),
         shadow: Shadow {
             color: alpha(Color::BLACK, 0.5),
             offset: Vector::new(0.0, 8.0),
@@ -398,7 +461,7 @@ pub fn toggle(_: &Theme, status: toggler::Status) -> toggler::Style {
     };
     toggler::Style {
         background: if on {
-            if hovered { ACCENT_HI } else { ACCENT }
+            if hovered { accent_hi() } else { accent() }
         } else if hovered {
             color!(0x3b3f49)
         } else {
@@ -418,7 +481,7 @@ pub fn toggle(_: &Theme, status: toggler::Status) -> toggler::Style {
 
 pub fn volume_slider(theme: &Theme, status: slider::Status) -> slider::Style {
     let mut s = slider::default(theme, status);
-    s.rail.backgrounds = (ACCENT.into(), RAISED.into());
+    s.rail.backgrounds = (accent().into(), RAISED.into());
     s.rail.width = 4.0;
     s.handle.shape = slider::HandleShape::Circle { radius: 7.0 };
     s.handle.background = Color::WHITE.into();
@@ -429,7 +492,7 @@ pub fn volume_slider(theme: &Theme, status: slider::Status) -> slider::Style {
 pub fn progress(_: &Theme) -> progress_bar::Style {
     progress_bar::Style {
         background: RAISED.into(),
-        bar: ACCENT.into(),
+        bar: accent().into(),
         border: Border {
             radius: radius(3.0),
             ..Default::default()
