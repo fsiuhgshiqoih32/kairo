@@ -174,7 +174,7 @@ pub struct Settings {
     pub microphone: bool,
     /// Microphone device name; empty for the system default.
     pub microphone_device: String,
-    /// Where clips go; empty for Videos/Rewindr.
+    /// Where clips go; empty for Videos/Kairo.
     pub save_dir: String,
     /// Play a short sound when a clip is saved.
     pub sound: bool,
@@ -213,7 +213,7 @@ pub struct Settings {
     pub fresh_after_save: bool,
     /// Starts and stops recording a whole session; empty turns it off.
     pub session_hotkey: String,
-    /// Record a session from when Rewindr starts.
+    /// Record a session from when Kairo starts.
     pub session_auto: bool,
     /// Put a voice-chat app's sound on its own track, and leave it out of the game track
     /// (Windows 11).
@@ -251,7 +251,7 @@ impl Default for Settings {
             voice_phrase: DEFAULT_VOICE_PHRASE.into(),
             replay_storage: Storage::Auto,
             marker_hotkey: "F10".into(),
-            accent: "red".into(),
+            accent: "orange".into(),
             codec: VideoCodec::H264,
             quick_saves: Vec::new(),
             post_roll: 0,
@@ -309,7 +309,7 @@ impl Settings {
             self.chat_app = "Discord".into();
         }
         if !ACCENTS.contains(&self.accent.as_str()) {
-            self.accent = "red".into();
+            self.accent = "orange".into();
         }
     }
 
@@ -355,30 +355,71 @@ impl Settings {
     }
 }
 
-/// `REWINDR_HOME` keeps settings and clips in one folder (portable copies, tests).
+/// `KAIRO_HOME` keeps settings and clips in one folder (portable copies, tests).
 fn home_override() -> Option<PathBuf> {
-    std::env::var_os("REWINDR_HOME")
+    std::env::var_os("KAIRO_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
 }
+
+/// Kairo was called Rewindr until 0.2.0; its settings folder had that name.
+const OLD_NAME: &str = "rewindr";
 
 pub fn config_dir() -> PathBuf {
     if let Some(h) = home_override() {
         return h;
     }
-    dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("rewindr")
+    let base = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("kairo");
+    static MOVED: std::sync::Once = std::sync::Once::new();
+    MOVED.call_once(|| move_old_settings(&base.join(OLD_NAME), &dir));
+    dir
+}
+
+/// Moves Rewindr's settings folder to Kairo's the first time Kairo starts. If it can't be moved
+/// (a Rewindr still running holds files open), it's copied instead.
+fn move_old_settings(old: &Path, new: &Path) {
+    if new.exists() || !old.is_dir() {
+        return;
+    }
+    if std::fs::rename(old, new).is_err() {
+        let _ = copy_dir(old, new);
+    }
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let path = e.path();
+        if e.file_type()?.is_dir() {
+            copy_dir(&path, &to.join(e.file_name()))?;
+        } else {
+            let _ = std::fs::copy(&path, to.join(e.file_name()));
+        }
+    }
+    Ok(())
 }
 
 pub fn default_save_dir() -> PathBuf {
     if let Some(h) = home_override() {
         return h.join("Clips");
     }
-    dirs::video_dir()
+    let videos = dirs::video_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Rewindr")
+        .unwrap_or_else(std::env::temp_dir);
+    default_clips_in(&videos)
+}
+
+/// Videos/Kairo, or Videos/Rewindr for someone who saved clips before the rename, so their clips
+/// stay where they are.
+fn default_clips_in(videos: &Path) -> PathBuf {
+    let new = videos.join("Kairo");
+    let old = videos.join("Rewindr");
+    if !new.exists() && old.is_dir() {
+        old
+    } else {
+        new
+    }
 }
 
 pub fn default_path() -> PathBuf {
@@ -515,7 +556,7 @@ mod tests {
     #[test]
     fn voice_phrases_are_normalized() {
         assert_eq!(normalize_phrase("  Clip   THAT! "), "clip that");
-        assert_eq!(normalize_phrase("Rewindr, clip it."), "rewindr clip it");
+        assert_eq!(normalize_phrase("Kairo, clip it."), "kairo clip it");
         assert_eq!(normalize_phrase("that's it"), "that's it");
         let mut s = Settings {
             voice_phrase: "!!!".into(),
@@ -536,7 +577,7 @@ mod tests {
         assert_eq!(s.share_expiry, "forever");
         assert_eq!(s.replay_storage, Storage::Auto);
         assert_eq!(s.marker_hotkey, "F10");
-        assert_eq!(s.accent, "red");
+        assert_eq!(s.accent, "orange");
         assert_eq!(s.codec, VideoCodec::H264);
         assert!(s.quick_saves.is_empty() && s.post_roll == 0 && !s.fresh_after_save);
     }
@@ -565,5 +606,37 @@ mod tests {
         let text = toml::to_string(&s).unwrap();
         let back: Settings = toml::from_str(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn old_settings_and_clips_carry_over() {
+        let tmp = std::env::temp_dir().join(format!("kairo-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (old, new) = (tmp.join("rewindr"), tmp.join("kairo"));
+        std::fs::create_dir_all(old.join("thumbs")).unwrap();
+        std::fs::write(
+            old.join("config.toml"),
+            "clip_seconds = 45
+",
+        )
+        .unwrap();
+        std::fs::write(old.join("thumbs").join("a.jpg"), b"x").unwrap();
+        move_old_settings(&old, &new);
+        assert!(!old.exists());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "clip_seconds = 45
+"
+        );
+        assert!(new.join("thumbs").join("a.jpg").exists());
+
+        // A fresh computer gets Videos/Kairo; one with Rewindr's clips keeps that folder.
+        let videos = tmp.join("Videos");
+        assert_eq!(default_clips_in(&videos), videos.join("Kairo"));
+        std::fs::create_dir_all(videos.join("Rewindr")).unwrap();
+        assert_eq!(default_clips_in(&videos), videos.join("Rewindr"));
+        std::fs::create_dir_all(videos.join("Kairo")).unwrap();
+        assert_eq!(default_clips_in(&videos), videos.join("Kairo"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

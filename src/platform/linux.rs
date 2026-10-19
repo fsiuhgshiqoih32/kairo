@@ -4,22 +4,22 @@ use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
 
-use rewindr::args::Source;
+use kairo::args::Source;
 
 use super::Monitor;
 
 pub fn init_process() {}
 
 pub fn show_error(message: &str) {
-    eprintln!("rewindr: {message}");
+    eprintln!("kairo: {message}");
     // A desktop dialog where one of the usual tools is installed.
     for (prog, args) in [
         (
             "zenity",
-            vec!["--error", "--title=Rewindr", "--text", message],
+            vec!["--error", "--title=Kairo", "--text", message],
         ),
-        ("kdialog", vec!["--title", "Rewindr", "--error", message]),
-        ("notify-send", vec!["Rewindr", message]),
+        ("kdialog", vec!["--title", "Kairo", "--error", message]),
+        ("notify-send", vec!["Kairo", message]),
     ] {
         if Command::new(prog).args(&args).status().is_ok() {
             return;
@@ -121,11 +121,11 @@ pub fn foreground_title() -> Option<String> {
 pub fn hide_console(_cmd: &mut Command) {}
 
 pub fn play_saved_sound() {
-    play_wav("rewindr-saved.wav", super::saved_sound_wav);
+    play_wav("kairo-saved.wav", super::saved_sound_wav);
 }
 
 pub fn play_marker_sound() {
-    play_wav("rewindr-marker.wav", super::marker_sound_wav);
+    play_wav("kairo-marker.wav", super::marker_sound_wav);
 }
 
 fn play_wav(name: &str, make: fn() -> Vec<u8>) {

@@ -1,4 +1,4 @@
-//! Rewindr's platform-independent parts: settings, the replay buffer, recent audio, and the
+//! Kairo's platform-independent parts: settings, the replay buffer, recent audio, and the
 //! ffmpeg command lines. The binary adds capture, the tray, hotkeys and windows.
 
 pub mod args;

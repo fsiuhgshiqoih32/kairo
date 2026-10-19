@@ -10,8 +10,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
-use rewindr::args::{self, Encoder};
-use rewindr::config::{
+use kairo::args::{self, Encoder};
+use kairo::config::{
     ACCENTS, MAX_CLIP_SECONDS, MAX_QUICK_SAVES, MIN_CLIP_SECONDS, Quality, QuickSave, Resolution,
     SHARE_EXPIRIES, Settings, Storage, VideoCodec, normalize_phrase,
 };
@@ -160,7 +160,7 @@ impl State {
         );
         let mut tasks = vec![encoders];
         let mut update = Updates::default();
-        if settings.check_updates && std::env::var_os("REWINDR_NO_UPDATE_CHECK").is_none() {
+        if settings.check_updates && std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_none() {
             update.checking = true;
             tasks.push(check());
         }
@@ -600,7 +600,7 @@ impl State {
                     Ok(None) => {
                         self.update.message = Some((
                             format!(
-                                "Rewindr {} is the latest version.",
+                                "Kairo {} is the latest version.",
                                 updater::current_version()
                             ),
                             true,
@@ -651,12 +651,12 @@ impl State {
         let mut storage = if s.buffer_on_disk(bps) {
             format!(
                 "The last {} goes in a scratch file of up to {worst}. The system keeps it in spare memory \
-                 and frees that for games when they need it, so Rewindr itself stays small.",
+                 and frees that for games when they need it, so Kairo itself stays small.",
                 seconds_label(s.clip_seconds)
             )
         } else {
             format!(
-                "The last {} stays in Rewindr's memory: up to {worst} in busy scenes.",
+                "The last {} stays in Kairo's memory: up to {worst} in busy scenes.",
                 seconds_label(s.clip_seconds)
             )
         };
@@ -842,7 +842,7 @@ impl State {
                     session_row,
                 ),
                 setting(
-                    "Record a session when Rewindr starts",
+                    "Record a session when Kairo starts",
                     None,
                     switch(s.session_auto, Msg::SessionAuto),
                 ),
@@ -901,7 +901,7 @@ impl State {
                 setting(
                     "Clip length",
                     Some(format!(
-                        "Rewindr keeps the last {} ready to save.",
+                        "Kairo keeps the last {} ready to save.",
                         seconds_label(s.clip_seconds)
                     )),
                     column![
@@ -966,14 +966,14 @@ impl State {
                 Some((theme::GREEN, format!("Listening for \"{phrase}\" now.")))
             }
             (None, None) if s.voice_clip => {
-                Some((MUTED, "Starts listening when Rewindr runs.".into()))
+                Some((MUTED, "Starts listening when Kairo runs.".into()))
             }
             _ => None,
         };
         let mut voice_rows = vec![setting(
             "Voice clipping",
             Some(
-                "Say a phrase and Rewindr saves a clip, hands-free. The speech is recognised on this computer: \
+                "Say a phrase and Kairo saves a clip, hands-free. The speech is recognised on this computer: \
                  nothing is sent anywhere. The first time, it downloads the speech files (about 55 MB)."
                     .into(),
             ),
@@ -1102,7 +1102,7 @@ impl State {
                     Some(
                         "H.265 makes clips and the replay about a third smaller for the same \
                          picture. It needs a graphics card encoder; some apps can't play it, so \
-                         Rewindr converts clips when you share them."
+                         Kairo converts clips when you share them."
                             .into(),
                     ),
                     segmented(
@@ -1251,7 +1251,7 @@ impl State {
                     "Keep clips",
                     Some(format!(
                         "Older clips move to Recently deleted, where they wait {} days; favourites always stay.",
-                        rewindr::library::TRASH_DAYS
+                        kairo::library::TRASH_DAYS
                     )),
                     segmented(
                         vec![
@@ -1279,7 +1279,7 @@ impl State {
             ],
         ));
 
-        // Rewindr.
+        // Kairo.
         let mut updates = row![].spacing(8).align_y(Alignment::Center);
         if let Some(u) = &self.update.available {
             updates = updates.push(
@@ -1319,11 +1319,11 @@ impl State {
         let update_note = match (&self.update.message, &self.update.available) {
             (Some((m, _)), _) => m.clone(),
             (None, Some(u)) => format!(
-                "Rewindr {} is available. You have {}.",
+                "Kairo {} is available. You have {}.",
                 u.version,
                 updater::current_version()
             ),
-            (None, None) => format!("You have Rewindr {}.", updater::current_version()),
+            (None, None) => format!("You have Kairo {}.", updater::current_version()),
         };
         let expiry = SHARE_EXPIRIES
             .iter()
@@ -1386,7 +1386,7 @@ impl State {
                     )
                 });
         sections = sections.push(section(
-            "Rewindr",
+            "Kairo",
             vec![
                 setting(
                     "Accent colour",
@@ -1415,7 +1415,7 @@ impl State {
                         icon_button(Icon::Log, "Open the log", TEXT_2)
                             .style(theme::ghost)
                             .on_press(Msg::OpenLog),
-                        icon_button(Icon::Power, "Quit Rewindr", TEXT_2)
+                        icon_button(Icon::Power, "Quit Kairo", TEXT_2)
                             .style(theme::danger_ghost)
                             .on_press(Msg::Quit),
                     ]

@@ -28,8 +28,8 @@ fn draw(size: usize, template: bool, active: bool) -> Vec<u8> {
         if let Some(path) = rounded_rect(inset, inset, s - 2.0 * inset, s - 2.0 * inset, s * 0.22) {
             let (a, b) = if active {
                 (
-                    Color::from_rgba8(0xFF, 0x6A, 0x3D, 0xFF),
-                    Color::from_rgba8(0xE0, 0x2D, 0x4A, 0xFF),
+                    Color::from_rgba8(0xFF, 0x9A, 0x3C, 0xFF),
+                    Color::from_rgba8(0xF0, 0x56, 0x1E, 0xFF),
                 )
             } else {
                 (
@@ -61,31 +61,32 @@ fn draw(size: usize, template: bool, active: bool) -> Vec<u8> {
         Color::from_rgba8(255, 255, 255, 255)
     };
     paint.shader = Shader::SolidColor(fg);
-    // Two left-pointing triangles (rewind), slightly overlapping.
-    let (h, w) = if template {
-        (s * 0.56, s * 0.42)
-    } else {
-        (s * 0.42, s * 0.31)
-    };
-    let cy = s / 2.0;
-    let total = w * 2.0 - w * 0.18;
-    let left = (s - total) / 2.0;
-    for i in 0..2 {
-        let x0 = left + i as f32 * (w - w * 0.18);
-        let mut pb = PathBuilder::new();
-        pb.move_to(x0, cy);
-        pb.line_to(x0 + w, cy - h / 2.0);
-        pb.line_to(x0 + w, cy + h / 2.0);
-        pb.close();
-        if let Some(path) = pb.finish() {
-            pm.fill_path(
-                &path,
-                &paint,
-                FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
-        }
+    // A bar and a triangle pointing back at it: "go back", and a K.
+    let k = if template { 1.35 } else { 1.0 };
+    let at = |v: f32| (0.5 + (v - 0.5) * k) * s;
+    let (top, bottom) = (at(0.266), at(0.734));
+    if let Some(bar) = rounded_rect(
+        at(0.281),
+        top,
+        at(0.39) - at(0.281),
+        bottom - top,
+        (at(0.39) - at(0.281)) / 2.0,
+    ) {
+        pm.fill_path(&bar, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+    let mut pb = PathBuilder::new();
+    pb.move_to(at(0.453), s / 2.0);
+    pb.line_to(at(0.719), top);
+    pb.line_to(at(0.719), bottom);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        pm.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
     }
     let mut data = pm.take();
     for px in data.chunks_exact_mut(4) {

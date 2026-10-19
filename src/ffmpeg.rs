@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use rewindr::args::{self, Encoder};
+use kairo::args::{self, Encoder};
 
 use crate::platform;
 
@@ -16,15 +16,15 @@ fn exe_name() -> &'static str {
     }
 }
 
-/// The ffmpeg to use: `REWINDR_FFMPEG`, else the one shipped next to Rewindr, else one on PATH.
+/// The ffmpeg to use: `KAIRO_FFMPEG`, else the one shipped next to Kairo, else one on PATH.
 pub fn path() -> Result<PathBuf, String> {
-    if let Some(p) = std::env::var_os("REWINDR_FFMPEG").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("KAIRO_FFMPEG").filter(|p| !p.is_empty()) {
         let p = PathBuf::from(p);
         return if p.is_file() {
             Ok(p)
         } else {
             Err(format!(
-                "REWINDR_FFMPEG points at {}, which doesn't exist",
+                "KAIRO_FFMPEG points at {}, which doesn't exist",
                 p.display()
             ))
         };
@@ -48,7 +48,7 @@ pub fn path() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("ffmpeg is missing. It ships with Rewindr: keep ffmpeg next to the rewindr program (re-download the \
+    Err("ffmpeg is missing. It ships with Kairo: keep ffmpeg next to the kairo program (re-download the \
          release if it's gone)."
         .into())
 }
@@ -152,13 +152,13 @@ pub fn working_encoders(ffmpeg: &Path) -> Vec<Encoder> {
 }
 
 /// What ffmpeg says about a clip: length, picture size, frame rate, sound tracks.
-pub fn probe_clip(ff: &Path, clip: &Path) -> Result<rewindr::media::Info, String> {
+pub fn probe_clip(ff: &Path, clip: &Path) -> Result<kairo::media::Info, String> {
     let out = command(ff)
         .arg("-hide_banner")
         .arg("-i")
         .arg(clip)
         .output()
         .map_err(|e| format!("could not start ffmpeg: {e}"))?;
-    rewindr::media::parse_info(&String::from_utf8_lossy(&out.stderr))
-        .ok_or_else(|| format!("{} isn't a video Rewindr can open.", clip.display()))
+    kairo::media::parse_info(&String::from_utf8_lossy(&out.stderr))
+        .ok_or_else(|| format!("{} isn't a video Kairo can open.", clip.display()))
 }

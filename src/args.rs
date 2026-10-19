@@ -2,7 +2,7 @@
 //!
 //! Recording writes MPEG-TS to stdout with wall-clock timestamps (`-use_wallclock_as_timestamps 1`
 //! on the input, `-copyts` on the output), so every frame carries the Unix time it was captured.
-//! Rewindr stamps audio with the same clock, which is how the two line up when a clip is saved.
+//! Kairo stamps audio with the same clock, which is how the two line up when a clip is saved.
 
 use crate::config::VideoCodec;
 use std::path::Path;
@@ -53,7 +53,7 @@ impl Source {
     }
 }
 
-/// A video encoder Rewindr knows how to drive.
+/// A video encoder Kairo knows how to drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoder {
     /// NVIDIA.
@@ -119,7 +119,7 @@ impl Encoder {
     }
 
     /// The ffmpeg encoder for `codec`, if this kind of encoder has one (the CPU one only does
-    /// H.264 in Rewindr's ffmpeg).
+    /// H.264 in Kairo's ffmpeg).
     pub fn ffmpeg_name_for(self, codec: VideoCodec) -> Option<&'static str> {
         match codec {
             VideoCodec::H264 => Some(self.ffmpeg_name()),

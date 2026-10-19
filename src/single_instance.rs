@@ -14,7 +14,7 @@ pub struct InstanceLock(#[allow(dead_code)] File);
 
 /// `Ok(None)` means another process already holds the lock.
 pub fn acquire(name: &str) -> Result<Option<InstanceLock>, String> {
-    let dir = rewindr::config::config_dir();
+    let dir = kairo::config::config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = OpenOptions::new()
         .create(true)

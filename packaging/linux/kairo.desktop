@@ -1,15 +1,15 @@
 [Desktop Entry]
 Type=Application
-Name=Rewindr
+Name=Kairo
 Comment=Instant replay: press F8 to save the last 30 seconds
-Exec=rewindr
-Icon=rewindr
+Exec=kairo
+Icon=kairo
 Terminal=false
 Categories=AudioVideo;Video;Recorder;
 Keywords=replay;clip;record;medal;shadowplay;gaming;
-StartupWMClass=rewindr
+StartupWMClass=kairo
 Actions=save;
 
 [Desktop Action save]
 Name=Save the last 30 seconds
-Exec=rewindr save
+Exec=kairo save

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use rewindr::library::{Library, Link};
+use kairo::library::{Library, Link};
 
 use crate::log::{info, warning};
 
@@ -181,17 +181,17 @@ fn prepare(
         return Ok(None);
     }
     let (start, end) = range.unwrap_or((0.0, info.duration));
-    let plan = rewindr::media::web_plan(COPY_TARGET, end - start, &info)?;
-    let dir = rewindr::config::config_dir().join("sharing");
+    let plan = kairo::media::web_plan(COPY_TARGET, end - start, &info)?;
+    let dir = kairo::config::config_dir().join("sharing");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join(format!("{}-{}.mp4", std::process::id(), now_secs()));
     let encoder = crate::export::best_encoder(&ff, &Mutex::new(None));
-    let args = rewindr::media::share_args(
+    let args = kairo::media::share_args(
         file,
         start,
         end,
         &info,
-        &rewindr::media::Effects::default(),
+        &kairo::media::Effects::default(),
         &plan,
         encoder,
         &out,
@@ -414,7 +414,7 @@ fn post_form(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "clip.mp4".into());
     let boundary = format!(
-        "rewindr{:x}{:x}",
+        "kairo{:x}{:x}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -437,9 +437,9 @@ fn post_form(
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(180)))
         .user_agent(concat!(
-            "Rewindr/",
+            "Kairo/",
             env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/fsiuhgshiqoih32/rewindr)"
+            " (+https://github.com/fsiuhgshiqoih32/kairo)"
         ))
         .http_status_as_error(false)
         .build()
@@ -487,9 +487,9 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         .user_agent(concat!(
-            "Rewindr/",
+            "Kairo/",
             env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/fsiuhgshiqoih32/rewindr)"
+            " (+https://github.com/fsiuhgshiqoih32/kairo)"
         ))
         .http_status_as_error(false)
         .build()
@@ -712,7 +712,7 @@ mod tests {
         let (headers, body) = server.join().unwrap();
         let lower = headers.to_ascii_lowercase();
         assert!(
-            lower.contains("content-type: multipart/form-data; boundary=rewindr"),
+            lower.contains("content-type: multipart/form-data; boundary=kairo"),
             "{headers}"
         );
         assert!(

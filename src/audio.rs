@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use rewindr::config::Settings;
-use rewindr::pcm::PcmRing;
+use kairo::config::Settings;
+use kairo::pcm::PcmRing;
 
 use crate::log::{info, warning};
 use crate::recorder::{Shared, now_us};

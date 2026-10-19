@@ -1,11 +1,11 @@
 [package]
-name = "rewindr"
-version = "0.1.1"
+name = "kairo"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Instant replay for Windows, macOS and Linux: press F8 to save the last 30 seconds of your screen and sound."
 license = "MIT"
-repository = "https://github.com/fsiuhgshiqoih32/rewindr"
+repository = "https://github.com/fsiuhgshiqoih32/kairo"
 readme = "README.md"
 keywords = ["replay", "clip", "screen-recording", "gaming", "medal"]
 categories = ["multimedia::video"]
@@ -85,6 +85,12 @@ dbus-secret-service = "4"
 
 [build-dependencies]
 winresource = "0.1"
+
+# The Windows installer is its own small program (installer/); plain `cargo build` here builds
+# only Kairo.
+[workspace]
+members = [".", "installer"]
+default-members = ["."]
 
 [dev-dependencies]
 tempfile = "3"

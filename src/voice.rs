@@ -1,9 +1,9 @@
-//! Voice clipping: say a phrase ("clip that") and Rewindr saves a clip. The microphone's sound
+//! Voice clipping: say a phrase ("clip that") and Kairo saves a clip. The microphone's sound
 //! goes to Vosk, an offline speech recognizer, restricted to the phrase, so it's accurate and
 //! light enough to run during games. Nothing leaves the computer.
 //!
 //! Vosk (its library and a 40 MB English model) is downloaded once, when voice clipping is
-//! turned on, and checked against pinned SHA-256 hashes. It's loaded at run time, so Rewindr
+//! turned on, and checked against pinned SHA-256 hashes. It's loaded at run time, so Kairo
 //! runs without it.
 
 use std::ffi::{CStr, CString, c_char, c_float, c_int, c_void};
@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rewindr::config::normalize_phrase;
+use kairo::config::normalize_phrase;
 use sha2::{Digest, Sha256};
 
 use crate::log::{info, warning};
@@ -86,7 +86,7 @@ const LIB_FILE: &str = "lib/libvosk.dylib";
 const LIB_FILE: &str = "lib/libvosk.so";
 
 pub fn dir() -> PathBuf {
-    rewindr::config::config_dir().join("voice")
+    kairo::config::config_dir().join("voice")
 }
 
 pub fn available() -> bool {
@@ -105,7 +105,7 @@ pub fn install(progress: &dyn Fn(u64, u64)) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_global(Some(Duration::from_secs(900)))
-        .user_agent(concat!("Rewindr/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Kairo/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
     let root = dir();
@@ -265,7 +265,7 @@ pub fn transcribe(
     samples: &[i16],
     progress: &dyn Fn(f32),
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<Vec<rewindr::captions::Word>, String> {
+) -> Result<Vec<kairo::captions::Word>, String> {
     let engine = Engine::load(&dir())?;
     let read = |p: *const c_char| {
         if p.is_null() {
@@ -291,13 +291,13 @@ pub fn transcribe(
                 return Err("Cancelled".into());
             }
             if (engine.accept)(rec, part.as_ptr(), part.len() as c_int) == 1 {
-                words.extend(rewindr::captions::words_from_vosk(&read((engine.result)(
+                words.extend(kairo::captions::words_from_vosk(&read((engine.result)(
                     rec,
                 ))));
             }
             progress(((i + 1) * chunk).min(total) as f32 / total as f32);
         }
-        words.extend(rewindr::captions::words_from_vosk(&read((engine
+        words.extend(kairo::captions::words_from_vosk(&read((engine
             .final_result)(
             rec
         ))));
@@ -569,7 +569,7 @@ pub type Tap = Mutex<Option<SyncSender<Chunk>>>;
 
 // --- Checking it with recordings -----------------------------------------------------------
 
-/// `rewindr voice-test <phrase> +said.wav -not-said.wav ...`: downloads the recognizer if
+/// `kairo voice-test <phrase> +said.wav -not-said.wav ...`: downloads the recognizer if
 /// needed, then checks that it hears the phrase in each "+" file and not in each "-" file.
 pub fn test_files(phrase: &str, files: &[String]) -> Result<(), String> {
     if !installed() {
@@ -753,7 +753,7 @@ mod tests {
     fn reads_wav_files() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("a.wav");
-        std::fs::write(&p, rewindr::pcm::wav_f32(16_000, 1, &[0.0, 0.5, -0.5])).unwrap();
+        std::fs::write(&p, kairo::pcm::wav_f32(16_000, 1, &[0.0, 0.5, -0.5])).unwrap();
         let (s, rate, ch) = read_wav(&p).unwrap();
         assert_eq!((rate, ch), (16_000, 1));
         assert_eq!(s, vec![0.0, 0.5, -0.5]);

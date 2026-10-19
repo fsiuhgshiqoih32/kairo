@@ -1,5 +1,5 @@
 //! Keys and clicks for the overlay (Windows): low-level keyboard and mouse hooks on a thread of
-//! their own. Only the keys the overlay shows are kept, and only while Rewindr records; nothing
+//! their own. Only the keys the overlay shows are kept, and only while Kairo records; nothing
 //! else typed is seen past the hook.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -72,7 +72,7 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 
 unsafe extern "system" fn mouse(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if code >= 0 {
-        use rewindr::keys::{MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT};
+        use kairo::keys::{MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT};
         match w as u32 {
             WM_LBUTTONDOWN => record(MOUSE_LEFT, true),
             WM_LBUTTONUP => record(MOUSE_LEFT, false),
@@ -164,6 +164,6 @@ mod tests {
         for vk in [0x48, 0x49, 0x4C, 0x35, 0x39, 0x0D] {
             assert_eq!(key_id(vk), None);
         }
-        assert_eq!(rewindr::keys::KEYS[key_id(0x20).unwrap() as usize], "Space");
+        assert_eq!(kairo::keys::KEYS[key_id(0x20).unwrap() as usize], "Space");
     }
 }

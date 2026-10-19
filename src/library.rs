@@ -56,7 +56,7 @@ pub fn scan(dir: &Path) -> Vec<Clip> {
     v
 }
 
-/// The game (or app) a clip came from: its name without the date Rewindr adds and the
+/// The game (or app) a clip came from: its name without the date Kairo adds and the
 /// suffixes of copies ("(trim)", "(Discord)", "(2)").
 pub fn game_of(name: &str) -> String {
     let mut s = name.trim();
@@ -93,7 +93,8 @@ pub fn game_of(name: &str) -> String {
             break;
         }
     }
-    if s.is_empty() || s == "Rewindr" {
+    // Clips saved before the rename (Kairo was Rewindr until 0.2.0) carry the old name.
+    if s.is_empty() || s == "Kairo" || s == "Rewindr" {
         "Desktop".to_string()
     } else {
         s.to_string()
@@ -648,6 +649,7 @@ mod tests {
             game_of("VALORANT 2026-10-18 16-54-03 (trim) (Discord)"),
             "VALORANT"
         );
+        assert_eq!(game_of("Kairo 2026-10-18 16-54-03"), "Desktop");
         assert_eq!(game_of("Rewindr 2026-10-18 16-54-03"), "Desktop");
         assert_eq!(game_of("my best shot"), "my best shot");
     }

@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use rewindr::args::Source;
+use kairo::args::Source;
 
 use super::Monitor;
 
@@ -41,7 +41,7 @@ pub fn init_process() {}
 pub fn show_error(message: &str) {
     // A dialog from a background app: osascript is always there and needs no main thread.
     let script = format!(
-        "display dialog \"{}\" with title \"Rewindr\" buttons {{\"OK\"}} with icon stop",
+        "display dialog \"{}\" with title \"Kairo\" buttons {{\"OK\"}} with icon stop",
         message.replace('\\', "\\\\").replace('"', "\\\"")
     );
     let _ = Command::new("osascript").args(["-e", &script]).status();

@@ -180,7 +180,7 @@ pub fn speech_args(clip: &Path, track: usize) -> Vec<String> {
     a
 }
 
-/// Small RGBA pictures of every `every`th keyframe (one a second in Rewindr's clips), for the
+/// Small RGBA pictures of every `every`th keyframe (one a second in Kairo's clips), for the
 /// timeline.
 pub fn filmstrip_args(clip: &Path, size: (u32, u32), every: u32) -> Vec<String> {
     let mut a = head();

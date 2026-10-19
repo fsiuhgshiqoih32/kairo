@@ -1,6 +1,6 @@
 //! Updates from GitHub Releases: compare the latest release's version with this build's, download
 //! the package for this platform, check it against the release's SHA256SUMS.txt, and swap the
-//! program (and the ffmpeg beside it) in place. The caller restarts Rewindr afterwards.
+//! program (and the ffmpeg beside it) in place. The caller restarts Kairo afterwards.
 
 use std::io::Read;
 use std::path::Path;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const LATEST_RELEASE: &str = "https://api.github.com/repos/fsiuhgshiqoih32/rewindr/releases/latest";
+const LATEST_RELEASE: &str = "https://api.github.com/repos/fsiuhgshiqoih32/kairo/releases/latest";
 const CHECKSUMS: &str = "SHA256SUMS.txt";
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 
@@ -47,14 +47,16 @@ pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// The release package name ends with this for the current platform.
+/// The release package name ends with this for the current platform. (Rewindr, Kairo's name
+/// before 0.2.0, looked for `-windows-x64.zip`, `-macos.zip` and `-linux-x86_64.tar.gz`; the
+/// release workflow publishes `rewindr-…` packages under those names for its updater.)
 fn package_suffix() -> Option<&'static str> {
     if cfg!(windows) && cfg!(target_arch = "x86_64") {
-        Some("-windows-x64.zip")
+        Some("-windows-x64-portable.zip")
     } else if cfg!(target_os = "macos") {
-        Some("-macos.zip")
+        Some("-macos-universal.zip")
     } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        Some("-linux-x86_64.tar.gz")
+        Some("-linux-x86_64-portable.tar.gz")
     } else {
         None
     }
@@ -63,7 +65,7 @@ fn package_suffix() -> Option<&'static str> {
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(300)))
-        .user_agent(concat!("Rewindr/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Kairo/", env!("CARGO_PKG_VERSION")))
         .build()
         .into()
 }
@@ -144,7 +146,7 @@ pub fn install(update: &Update) -> Result<(), String> {
     if let (Some(new), Some(dir)) = (ffmpeg, exe.parent()) {
         replace_beside(&dir.join(FFMPEG), &new)?;
     }
-    let staged = std::env::temp_dir().join(format!("rewindr-update-{}", std::process::id()));
+    let staged = std::env::temp_dir().join(format!("kairo-update-{}", std::process::id()));
     std::fs::write(&staged, &program).map_err(|e| format!("could not stage the update: {e}"))?;
     make_executable(&staged);
     let result = self_replace::self_replace(&staged)
@@ -198,11 +200,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-const PROGRAM: &str = if cfg!(windows) {
-    "rewindr.exe"
-} else {
-    "rewindr"
-};
+const PROGRAM: &str = if cfg!(windows) { "kairo.exe" } else { "kairo" };
 const FFMPEG: &str = if cfg!(windows) {
     "ffmpeg.exe"
 } else {
@@ -210,7 +208,7 @@ const FFMPEG: &str = if cfg!(windows) {
 };
 
 /// True for `<dir>/<name>` in a package, including inside the macOS app bundle
-/// (`Rewindr.app/Contents/MacOS/<name>`).
+/// (`Kairo.app/Contents/MacOS/<name>`).
 fn is_named(path: &str, name: &str) -> bool {
     let path = path.replace('\\', "/");
     path == name || path.ends_with(&format!("/{name}"))
@@ -268,19 +266,45 @@ mod tests {
     #[test]
     fn finds_files_in_each_package_layout() {
         assert!(is_named(
-            &format!("rewindr-v0.2.0-windows-x64\\{PROGRAM}"),
+            &format!("kairo-v0.2.0-windows-x64\\{PROGRAM}"),
             PROGRAM
         ));
         assert!(is_named(
-            &format!("Rewindr.app/Contents/MacOS/{PROGRAM}"),
+            &format!("Kairo.app/Contents/MacOS/{PROGRAM}"),
             PROGRAM
         ));
         assert!(is_named(
-            &format!("rewindr-v0.2.0-linux-x86_64/{FFMPEG}"),
+            &format!("kairo-v0.2.0-linux-x86_64/{FFMPEG}"),
             FFMPEG
         ));
-        assert!(!is_named("rewindr-v0.2.0/rewindr.png", PROGRAM));
-        assert!(!is_named("rewindr-v0.2.0/FFMPEG-LICENSE.txt", FFMPEG));
+        assert!(!is_named("kairo-v0.2.0/kairo.png", PROGRAM));
+        assert!(!is_named("kairo-v0.2.0/FFMPEG-LICENSE.txt", FFMPEG));
+    }
+
+    #[test]
+    fn old_and_new_updaters_pick_different_packages() {
+        // Rewindr 0.1's updater takes the first asset ending in its suffix, so none of Kairo's
+        // packages may end that way, and Kairo's must skip the `rewindr-…` ones made for it.
+        for (new, old) in [
+            ("kairo-v0.2.0-windows-x64-portable.zip", "-windows-x64.zip"),
+            ("kairo-v0.2.0-windows-x64-setup.exe", "-windows-x64.zip"),
+            ("kairo-v0.2.0-macos-universal.zip", "-macos.zip"),
+            (
+                "kairo-v0.2.0-linux-x86_64-portable.tar.gz",
+                "-linux-x86_64.tar.gz",
+            ),
+        ] {
+            assert!(!new.ends_with(old), "{new}");
+        }
+        let suffix = package_suffix().unwrap_or("-none");
+        for old in [
+            "rewindr-v0.2.0-windows-x64.zip",
+            "rewindr-v0.2.0-macos.zip",
+            "rewindr-v0.2.0-linux-x86_64.tar.gz",
+            "kairo-v0.2.0-windows-x64-setup.exe",
+        ] {
+            assert!(!old.ends_with(suffix), "{old}");
+        }
     }
 
     #[test]

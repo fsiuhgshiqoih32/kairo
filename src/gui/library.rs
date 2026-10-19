@@ -15,7 +15,7 @@ use iced::{
     Alignment, Color, ContentFit, Element, Fill, Padding, Point, Rectangle, Renderer, Size, Theme,
 };
 
-use rewindr::library::{self, Library, Link};
+use kairo::library::{self, Library, Link};
 
 use super::icons::{Icon, icon, icon_filled};
 use super::theme::{self, BOLD, MEDIUM, MUTED, SEMIBOLD, TEXT, TEXT_2};
@@ -52,7 +52,7 @@ pub enum ClipKind {
 }
 
 impl ClipItem {
-    /// The card's title: the game for Rewindr's own names, or the name the user gave it.
+    /// The card's title: the game for Kairo's own names, or the name the user gave it.
     pub fn title(&self) -> &str {
         if self.name.starts_with(&self.game) {
             &self.game
@@ -86,7 +86,7 @@ pub fn load_clips(dir: &Path) -> Vec<ClipItem> {
         .map(|c| {
             let thumb = crate::save::thumb_for(&c.path);
             ClipItem {
-                duration: rewindr::mp4::duration_secs(&c.path),
+                duration: kairo::mp4::duration_secs(&c.path),
                 favorite: lib.is_favorite(&c.path),
                 link: lib.link(&c.path, now).cloned(),
                 marks: lib.markers(&c.path).len(),
@@ -157,7 +157,7 @@ pub fn hero_picture(clip: &Path, at: f64) -> Option<image::Handle> {
         let _ = std::fs::create_dir_all(crate::save::thumbs_dir());
         crate::ffmpeg::run(
             &ff,
-            &rewindr::args::hero_args(clip, at, &out),
+            &kairo::args::hero_args(clip, at, &out),
             std::time::Duration::from_secs(20),
         )
         .ok()?;
@@ -970,7 +970,7 @@ impl App {
         let mut tips = column![
             text("Your clips will show up here").font(BOLD).size(22),
             text(format!(
-                "Play as usual. When something worth keeping happens, press {key} and Rewindr saves the last {}, sound included.",
+                "Play as usual. When something worth keeping happens, press {key} and Kairo saves the last {}, sound included.",
                 seconds_label(self.settings.clip_seconds)
             ))
             .size(14)

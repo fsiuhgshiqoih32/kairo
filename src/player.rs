@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use rewindr::media::{self, Info};
+use kairo::media::{self, Info};
 
 use crate::ffmpeg;
 

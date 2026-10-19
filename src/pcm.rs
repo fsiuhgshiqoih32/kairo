@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn a_tape_keeps_everything_from_its_start_with_gaps_as_silence() {
-        let dir = std::env::temp_dir().join(format!("rewindr-tape-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kairo-tape-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.wav");
         // 1 kHz mono: 100 frames = 100 ms.

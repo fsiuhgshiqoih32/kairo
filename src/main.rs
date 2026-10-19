@@ -31,10 +31,10 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "rewindr",
+    name = "kairo",
     version,
     about = "Instant replay: press F8 to save the last 30 seconds of your screen and sound.",
-    after_help = "With no command, Rewindr starts in the background (tray icon) and opens its window."
+    after_help = "With no command, Kairo starts in the background (tray icon) and opens its window."
 )]
 struct Cli {
     /// Check that recording and saving work on this machine, then exit.
@@ -98,6 +98,12 @@ enum Cmd {
         phrase: String,
         #[arg(allow_hyphen_values = true)]
         files: Vec<String>,
+    },
+    /// Turn "start with computer" on or off (the installer uses this).
+    #[command(hide = true)]
+    Autostart {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
     /// Record for a while without the tray, then save a clip (for testing).
     #[command(hide = true)]
@@ -165,6 +171,13 @@ fn main() {
             (None, None, Some(e)) => gui::toast::run(gui::toast::Message::Failed(e)),
             (None, None, None) => Err("notify needs --clip, --screenshot or --error".into()),
         },
+        Some(Cmd::Autostart { state }) => match autostart::launcher() {
+            Some(l) => {
+                autostart::set_enabled(&l, state == "on");
+                Ok(())
+            }
+            None => Err("start with computer isn't available here".into()),
+        },
         Some(Cmd::TestRecord { seconds, save }) => test_record(seconds, save),
         Some(Cmd::VoiceTest { phrase, files }) => voice::test_files(&phrase, &files),
     };
@@ -205,7 +218,7 @@ fn captions(clip: &std::path::Path) -> Result<(), String> {
         .result
         .take()
         .unwrap_or(Ok(Vec::new()))?;
-    let srt = rewindr::captions::srt(&caps);
+    let srt = kairo::captions::srt(&caps);
     let out = clip.with_extension("srt");
     std::fs::write(&out, &srt).map_err(|e| format!("{}: {e}", out.display()))?;
     print!("{srt}");
@@ -214,7 +227,7 @@ fn captions(clip: &std::path::Path) -> Result<(), String> {
 }
 
 fn share_clip(clip: &std::path::Path, lasts: Option<String>) -> Result<(), String> {
-    let (settings, _) = rewindr::config::load_or_create(&rewindr::config::default_path());
+    let (settings, _) = kairo::config::load_or_create(&kairo::config::default_path());
     let lasts = lasts.unwrap_or(settings.share_expiry);
     let up = share::start(clip, clip, &lasts, None);
     let mut shown = String::new();
@@ -235,7 +248,7 @@ fn share_clip(clip: &std::path::Path, lasts: Option<String>) -> Result<(), Strin
 
 fn request(r: daemon::Request) -> Result<(), String> {
     if !daemon::is_running() {
-        return Err("Rewindr isn't running. Start it first (run `rewindr`).".into());
+        return Err("Kairo isn't running. Start it first (run `kairo`).".into());
     }
     daemon::request(r)
 }
@@ -243,12 +256,12 @@ fn request(r: daemon::Request) -> Result<(), String> {
 fn update() -> Result<(), String> {
     match updater::check()? {
         None => {
-            println!("Rewindr {} is up to date.", updater::current_version());
+            println!("Kairo {} is up to date.", updater::current_version());
             Ok(())
         }
         Some(u) => {
             println!(
-                "Installing Rewindr {} (this is {})...",
+                "Installing Kairo {} (this is {})...",
                 u.version,
                 updater::current_version()
             );
@@ -285,7 +298,7 @@ fn devices() -> Result<(), String> {
 }
 
 fn test_record(seconds: u64, save_secs: u32) -> Result<(), String> {
-    let (settings, warn) = rewindr::config::load_or_create(&rewindr::config::default_path());
+    let (settings, warn) = kairo::config::load_or_create(&kairo::config::default_path());
     if let Some(w) = warn {
         eprintln!("{w}");
     }

@@ -20,7 +20,7 @@ use objc2_screen_capture_kit::{
     SCStreamOutputType,
 };
 
-use rewindr::pcm::PcmRing;
+use kairo::pcm::PcmRing;
 
 use crate::recorder::{Shared, now_us};
 
@@ -52,7 +52,7 @@ pub fn counts() -> (u64, u64, u64) {
 define_class!(
     // SAFETY: NSObject has no subclassing requirements and this class doesn't implement Drop.
     #[unsafe(super(NSObject))]
-    #[name = "RewindrSystemAudioOutput"]
+    #[name = "KairoSystemAudioOutput"]
     #[ivars = Ivars]
     struct Output;
 
@@ -197,7 +197,7 @@ pub fn start(shared: Arc<Shared>) -> Result<SystemAudio, String> {
         .map_err(|_| "macOS didn't answer the request for screen content".to_string())?;
     let content = content.ok_or_else(|| {
         error.unwrap_or_else(|| {
-            "allow Rewindr in System Settings > Privacy & Security > Screen Recording".into()
+            "allow Kairo in System Settings > Privacy & Security > Screen Recording".into()
         })
     })?;
     let display = unsafe { content.displays() }
@@ -226,7 +226,7 @@ pub fn start(shared: Arc<Shared>) -> Result<SystemAudio, String> {
         SCStream::initWithFilter_configuration_delegate(SCStream::alloc(), &filter, &config, None)
     };
     let output = Output::new(shared);
-    let queue = DispatchQueue::new("io.github.fsiuhgshiqoih32.rewindr.system-audio", None);
+    let queue = DispatchQueue::new("io.github.fsiuhgshiqoih32.kairo.system-audio", None);
     let as_output = ProtocolObject::from_ref(&*output);
     for kind in [SCStreamOutputType::Audio, SCStreamOutputType::Screen] {
         unsafe {

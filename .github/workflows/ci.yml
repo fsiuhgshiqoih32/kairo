@@ -27,7 +27,7 @@ jobs:
             ffmpeg: ffmpeg-linux-x86_64.zip
     runs-on: ${{ matrix.os }}
     env:
-      REWINDR_HOME: ${{ github.workspace }}/.ci-home
+      KAIRO_HOME: ${{ github.workspace }}/.ci-home
     steps:
       - uses: actions/checkout@v5
 
@@ -55,6 +55,13 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - name: Installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo clippy --locked --all-targets -p kairo-setup -- -D warnings
+          cargo test --locked -p kairo-setup
+
       # The bundled ffmpeg is published by the ffmpeg workflow; until the first one exists,
       # the self-test is skipped.
       - name: Bundled ffmpeg
@@ -69,25 +76,25 @@ jobs:
             # Git Bash's $PWD is /d/a/...; the Windows program needs D:/a/...
             if [ "$RUNNER_OS" = Windows ]; then exe=ffmpeg.exe; dir=$(pwd -W); fi
             chmod +x "ffmpeg-bundle/$exe" || true
-            echo "REWINDR_FFMPEG=$dir/ffmpeg-bundle/$exe" >> "$GITHUB_ENV"
+            echo "KAIRO_FFMPEG=$dir/ffmpeg-bundle/$exe" >> "$GITHUB_ENV"
           else
             echo "::warning::No bundled ffmpeg release $tag yet; skipping the self-test."
           fi
 
       - name: Self-test
-        if: env.REWINDR_FFMPEG != '' && runner.os != 'Linux'
+        if: env.KAIRO_FFMPEG != '' && runner.os != 'Linux'
         run: cargo run --locked -- --self-test
 
       - name: Window self-test
-        if: env.REWINDR_FFMPEG != '' && runner.os != 'Linux'
+        if: env.KAIRO_FFMPEG != '' && runner.os != 'Linux'
         run: cargo run --locked -- --ui-self-test
 
       - name: Self-test (Xvfb)
-        if: env.REWINDR_FFMPEG != '' && runner.os == 'Linux'
+        if: env.KAIRO_FFMPEG != '' && runner.os == 'Linux'
         run: xvfb-run -a -s "-screen 0 1280x800x24" cargo run --locked -- --self-test
 
       - name: Window self-test (Xvfb)
-        if: env.REWINDR_FFMPEG != '' && runner.os == 'Linux'
+        if: env.KAIRO_FFMPEG != '' && runner.os == 'Linux'
         run: xvfb-run -a -s "-screen 0 1280x800x24" cargo run --locked -- --ui-self-test
 
       # Voice clipping: the system's speech synthesiser says the phrase (and a few other

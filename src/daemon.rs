@@ -1,5 +1,5 @@
 //! The background process: records into the replay buffer, owns the tray icon and the shortcut,
-//! and saves clips. The settings window and `rewindr save` talk to it through small files in the
+//! and saves clips. The settings window and `kairo save` talk to it through small files in the
 //! config folder.
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::MenuEvent;
 
-use rewindr::config;
+use kairo::config;
 
 use crate::hotkey::Hotkey;
 use crate::log::{error, info, warning};
@@ -122,7 +122,7 @@ enum UserEvent {
 
 pub fn run() -> Result<(), String> {
     let Some(lock) = single_instance::acquire_patiently(single_instance::DAEMON)? else {
-        println!("Rewindr is already running.");
+        println!("Kairo is already running.");
         return Ok(());
     };
     let path = config::default_path();
@@ -197,7 +197,7 @@ pub fn run() -> Result<(), String> {
     shared
         .session_wanted
         .store(settings.session_auto, Ordering::SeqCst);
-    let mut quick: Vec<Hotkey> = (0..rewindr::config::MAX_QUICK_SAVES)
+    let mut quick: Vec<Hotkey> = (0..kairo::config::MAX_QUICK_SAVES)
         .map(|_| hotkey.sibling())
         .collect();
     set_quick_keys(&mut quick, &settings);
@@ -206,6 +206,7 @@ pub fn run() -> Result<(), String> {
         .input_overlay
         .then(|| crate::platform::windows_input::start(shared.clone()))
         .and_then(|r| r.map_err(|e| warning!("{e}")).ok());
+    autostart::move_old_entry();
     let launcher = autostart::launcher();
     let mut tray: Option<Tray> = None;
     let mut mtime = config::mtime(&path);
@@ -399,7 +400,7 @@ fn start_screenshot(shared: &Arc<Shared>) {
     let settings = shared.settings();
     let title = platform::foreground_title()
         .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Rewindr");
+        .filter(|t| t != "Kairo");
     if settings.sound && shared.status.lock().unwrap().recording {
         platform::play_saved_sound();
     }
@@ -431,7 +432,7 @@ fn start_screenshot(shared: &Arc<Shared>) {
 fn game_title() -> Option<String> {
     platform::foreground_title()
         .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Rewindr")
+        .filter(|t| t != "Kairo")
 }
 
 /// Starts recording a session, or stops the one running.
@@ -506,7 +507,7 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>) {
     // The window in front when the key was pressed names the clip (usually the game).
     let title = platform::foreground_title()
         .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Rewindr");
+        .filter(|t| t != "Kairo");
     if settings.sound && shared.status.lock().unwrap().recording {
         platform::play_saved_sound();
     }

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rewindr::args;
-use rewindr::{library, pcm};
+use kairo::args;
+use kairo::{library, pcm};
 
 use crate::ffmpeg;
 use crate::log::{info, warning};
@@ -24,7 +24,7 @@ pub struct Clip {
 
 /// Where clips' small preview pictures live.
 pub fn thumbs_dir() -> PathBuf {
-    rewindr::config::config_dir().join("thumbs")
+    kairo::config::config_dir().join("thumbs")
 }
 
 pub fn thumb_for(clip: &Path) -> PathBuf {
@@ -70,7 +70,7 @@ pub fn remove_sidecars(clip: &Path) {
 }
 
 /// Writes the overlay events for a clip, if there are any.
-pub fn write_keys(clip: &Path, events: &[rewindr::keys::KeyEvent]) {
+pub fn write_keys(clip: &Path, events: &[kairo::keys::KeyEvent]) {
     if events.is_empty() {
         return;
     }
@@ -81,7 +81,7 @@ pub fn write_keys(clip: &Path, events: &[rewindr::keys::KeyEvent]) {
 }
 
 /// A clip's overlay events, if it has any.
-pub fn read_keys(clip: &Path) -> Vec<rewindr::keys::KeyEvent> {
+pub fn read_keys(clip: &Path) -> Vec<kairo::keys::KeyEvent> {
     std::fs::read_to_string(keys_for(clip))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -90,7 +90,7 @@ pub fn read_keys(clip: &Path) -> Vec<rewindr::keys::KeyEvent> {
 
 /// Moves clips past the "keep clips" age to Recently deleted, and deletes for good what's
 /// waited there for 30 days.
-pub fn tidy_folder(settings: &rewindr::config::Settings) {
+pub fn tidy_folder(settings: &kairo::config::Settings) {
     let dir = settings.save_dir();
     let now = crate::share::now_secs();
     let mut lib = library::Library::load();
@@ -122,7 +122,7 @@ pub fn clip_path(dir: &Path, title: Option<&str>) -> PathBuf {
     let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
     let base = match title {
         Some(t) => format!("{t} {stamp}"),
-        None => format!("Rewindr {stamp}"),
+        None => format!("Kairo {stamp}"),
     };
     let mut p = dir.join(format!("{base}.mp4"));
     let mut n = 2;
@@ -151,8 +151,8 @@ pub fn screenshot(shared: &Shared, title: Option<&str>) -> Result<PathBuf, Strin
         .lock()
         .unwrap()
         .snapshot(now_us())
-        .ok_or("Nothing to capture: Rewindr isn't recording.")?;
-    let work = rewindr::config::config_dir().join("saving").join(format!(
+        .ok_or("Nothing to capture: Kairo isn't recording.")?;
+    let work = kairo::config::config_dir().join("saving").join(format!(
         "{}-shot-{}",
         std::process::id(),
         now_us()
@@ -249,19 +249,19 @@ pub fn save_inner(
             if shared.status.lock().unwrap().recording {
                 "Nothing to save yet: recording only just started.".to_string()
             } else {
-                "Nothing to save: Rewindr isn't recording.".to_string()
+                "Nothing to save: Kairo isn't recording.".to_string()
             }
         })?;
     // A clip of a split second is a recording that just (re)started, not a moment worth keeping.
     if snap.end_us() - snap.start_us() < MIN_CLIP_US {
         return Err("Nothing to save yet: recording only just started.".into());
     }
-    let hevc = shared.ring.lock().unwrap().codec() == Some(rewindr::ts::Codec::Hevc);
+    let hevc = shared.ring.lock().unwrap().codec() == Some(kairo::ts::Codec::Hevc);
     let fps = settings.fps.max(1) as i64;
     let start = snap.start_us();
     let end = snap.end_us() + 1_000_000 / fps;
 
-    let work = rewindr::config::config_dir()
+    let work = kairo::config::config_dir()
         .join("saving")
         .join(format!("{}-{now}", std::process::id()));
     std::fs::create_dir_all(&work)

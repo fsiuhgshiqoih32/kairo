@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use rewindr::args::{self, Encoder, Source, VideoPlan};
-use rewindr::config::{Settings, VideoCodec};
-use rewindr::pcm::PcmRing;
-use rewindr::ring::Ring;
+use kairo::args::{self, Encoder, Source, VideoPlan};
+use kairo::config::{Settings, VideoCodec};
+use kairo::pcm::PcmRing;
+use kairo::ring::Ring;
 
 use crate::log::{info, warning};
 use crate::{ffmpeg, platform};
@@ -25,9 +25,9 @@ const MAX_BUFFER_BYTES: usize = 1536 * 1024 * 1024;
 /// Disk space a buffer on disk may use at most.
 const MAX_SPILL_BYTES: u64 = 32 << 30;
 
-/// The replay buffer's file, when it's on disk (deleted when Rewindr closes).
+/// The replay buffer's file, when it's on disk (deleted when Kairo closes).
 fn spill_path() -> std::path::PathBuf {
-    rewindr::config::config_dir()
+    kairo::config::config_dir()
         .join("buffer")
         .join(format!("replay-{}.bin", std::process::id()))
 }
@@ -160,13 +160,13 @@ impl Shared {
     }
 
     /// The overlay events between `start` and `end` (wall clock), timed from `start`.
-    pub fn inputs_within(&self, start: i64, end: i64) -> Vec<rewindr::keys::KeyEvent> {
+    pub fn inputs_within(&self, start: i64, end: i64) -> Vec<kairo::keys::KeyEvent> {
         self.inputs
             .lock()
             .unwrap()
             .iter()
             .filter(|e| (start..=end).contains(&e.0))
-            .map(|e| rewindr::keys::KeyEvent {
+            .map(|e| kairo::keys::KeyEvent {
                 t: (e.0 - start) as f64 / 1e6,
                 key: e.1,
                 down: e.2,

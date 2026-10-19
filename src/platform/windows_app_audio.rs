@@ -1,7 +1,7 @@
 //! Voice chat on its own track (Windows 11): WASAPI process loopback captures one app's sound
 //! (and its child processes) and, separately, everything except that app. The first fills the
 //! chat ring; the second takes the place of plain desktop audio, so the game track leaves chat
-//! out. When the app isn't running, the "everything except" capture leaves out only Rewindr.
+//! out. When the app isn't running, the "everything except" capture leaves out only Kairo.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -32,7 +32,7 @@ use ::windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerfor
 use ::windows::Win32::System::Variant::VT_BLOB;
 use ::windows::core::{HRESULT, IUnknown, Interface, Ref, implement};
 
-use rewindr::pcm::PcmRing;
+use kairo::pcm::PcmRing;
 
 use crate::log::{info, warning};
 use crate::recorder::{Shared, now_us};
@@ -286,7 +286,7 @@ fn ensure_ring(slot: &Mutex<Option<PcmRing>>, keep_us: i64) {
 pub fn start(shared: Arc<Shared>, app: String) -> Result<Split, String> {
     // SAFETY: COM on this thread, for the first activation.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    // Probe: everything but Rewindr itself.
+    // Probe: everything but Kairo itself.
     drop(Capture::open(
         std::process::id(),
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,

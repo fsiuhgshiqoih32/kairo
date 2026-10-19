@@ -4,7 +4,7 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem}
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::recorder::Status;
-use rewindr::art;
+use kairo::art;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -58,7 +58,7 @@ impl Tray {
             autostart.unwrap_or(false),
             None,
         );
-        let quit = MenuItem::new("Quit Rewindr", true, None);
+        let quit = MenuItem::new("Quit Kairo", true, None);
         let menu = Menu::new();
         menu.append_items(&[
             &save,
@@ -74,7 +74,7 @@ impl Tray {
         .map_err(|e| e.to_string())?;
         let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Rewindr");
+            .with_tooltip("Kairo");
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon(true)?);
         #[cfg(not(target_os = "macos"))]
@@ -131,16 +131,16 @@ impl Tray {
             .set_enabled(status.recording || status.session.is_some());
         let active = status.recording && !status.paused;
         let tip = if status.paused {
-            "Rewindr - paused".to_string()
+            "Kairo - paused".to_string()
         } else if status.recording {
             match hotkey {
-                Some(k) => format!("Rewindr - press {k} to save the last {seconds} s"),
-                None => "Rewindr - recording".to_string(),
+                Some(k) => format!("Kairo - press {k} to save the last {seconds} s"),
+                None => "Kairo - recording".to_string(),
             }
         } else if let Some(e) = &status.error {
-            format!("Rewindr - {}", e.chars().take(100).collect::<String>())
+            format!("Kairo - {}", e.chars().take(100).collect::<String>())
         } else {
-            "Rewindr - starting".to_string()
+            "Kairo - starting".to_string()
         };
         let state = (active, tip.clone());
         if self.shown.as_ref() != Some(&state) {

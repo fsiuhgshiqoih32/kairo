@@ -18,9 +18,9 @@ use iced::{
     Size, Task, Theme,
 };
 
-use rewindr::args::Encoder;
-use rewindr::library;
-use rewindr::media::{self, Info, format_time};
+use kairo::args::Encoder;
+use kairo::library;
+use kairo::media::{self, Info, format_time};
 
 use super::icons::{Icon, icon, icon_filled};
 use super::library::{ClipItem, tip};
@@ -159,7 +159,7 @@ pub enum ExportKind {
 /// The window's view of the clip's share link, for the Share panel.
 pub struct ShareView {
     pub progress: Option<(String, f32)>,
-    pub link: Option<rewindr::library::Link>,
+    pub link: Option<kairo::library::Link>,
     /// The connected Discord channel's webhook name, if one is connected.
     pub channel: Option<String>,
     /// How much of the clip has gone to the channel, while it's sending.
@@ -240,11 +240,11 @@ pub struct Editor {
     /// Speed, look, fades, music and the mix, for every copy made from here.
     pub effects: media::Effects,
     /// What's said in the clip (saved as an .srt beside it).
-    pub captions: Vec<rewindr::captions::Caption>,
+    pub captions: Vec<kairo::captions::Caption>,
     /// Burn the captions into copies.
     burn_captions: bool,
     /// Keys and clicks recorded with the clip, and whether copies show them.
-    keys: Vec<rewindr::keys::KeyEvent>,
+    keys: Vec<kairo::keys::KeyEvent>,
     show_keys: bool,
     /// Overlay pictures already drawn, by which keys are down.
     key_pictures: std::cell::RefCell<std::collections::HashMap<u32, image::Handle>>,
@@ -254,7 +254,7 @@ pub struct Editor {
 impl Editor {
     pub fn open(
         clip: PathBuf,
-        settings: &rewindr::config::Settings,
+        settings: &kairo::config::Settings,
     ) -> Result<(Editor, Task<Msg>), String> {
         let discord_mb = settings.discord_mb;
         let ff = ffmpeg::path()?;
@@ -310,7 +310,7 @@ impl Editor {
                 mark_key: settings.marker_hotkey.clone(),
                 effects: media::Effects::default(),
                 captions: std::fs::read_to_string(clip_path.with_extension("srt"))
-                    .map(|t| rewindr::captions::parse_srt(&t))
+                    .map(|t| kairo::captions::parse_srt(&t))
                     .unwrap_or_default(),
                 burn_captions: true,
                 caption_job: None,
@@ -372,7 +372,7 @@ impl Editor {
     }
 
     /// Uses these keys and clicks for the overlay (the window self-test's).
-    pub fn use_keys(&mut self, keys: Vec<rewindr::keys::KeyEvent>) {
+    pub fn use_keys(&mut self, keys: Vec<kairo::keys::KeyEvent>) {
         self.keys = keys;
         self.show_keys = true;
     }
@@ -385,7 +385,7 @@ impl Editor {
     }
 
     /// The keys copies show.
-    fn keys_for_copies(&self) -> Vec<rewindr::keys::KeyEvent> {
+    fn keys_for_copies(&self) -> Vec<kairo::keys::KeyEvent> {
         if self.show_keys {
             self.keys.clone()
         } else {
@@ -398,11 +398,11 @@ impl Editor {
         if !self.show_keys || self.keys.is_empty() {
             return None;
         }
-        let mask = rewindr::keys::state_at(&self.keys, self.player.position);
+        let mask = kairo::keys::state_at(&self.keys, self.player.position);
         let mut cache = self.key_pictures.borrow_mut();
         let h = cache.entry(mask).or_insert_with(|| {
-            let size = rewindr::keys::size_for(720);
-            let rgba = rewindr::keys::render(
+            let size = kairo::keys::size_for(720);
+            let rgba = kairo::keys::render(
                 mask,
                 size,
                 theme::accent_rgb(),
@@ -414,7 +414,7 @@ impl Editor {
     }
 
     /// The captions copies get.
-    fn captions_for_copies(&self) -> Vec<rewindr::captions::Caption> {
+    fn captions_for_copies(&self) -> Vec<kairo::captions::Caption> {
         if self.burn_captions {
             self.captions.clone()
         } else {
@@ -428,7 +428,7 @@ impl Editor {
         if self.captions.is_empty() {
             let _ = std::fs::remove_file(path);
         } else {
-            let _ = std::fs::write(path, rewindr::captions::srt(&self.captions));
+            let _ = std::fs::write(path, kairo::captions::srt(&self.captions));
         }
     }
 

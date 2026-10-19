@@ -1,4 +1,4 @@
-//! Rewindr's look: a dark charcoal UI with one accent, the red of the icon.
+//! Kairo's look: a dark charcoal UI with one accent, the red of the icon.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -47,14 +47,14 @@ pub const FONTS: [&[u8]; 4] = [
 /// The accent colour picked in Settings (`set_accent`), as 0xRRGGBB.
 static ACCENT_RGB: AtomicU32 = AtomicU32::new(ACCENT_COLORS[0]);
 
-/// The colours behind `rewindr::config::ACCENTS`, in the same order.
+/// The colours behind `kairo::config::ACCENTS`, in the same order.
 pub const ACCENT_COLORS: [u32; 8] = [
     0xff4f46, 0xff7a1a, 0xf5b301, 0x2fcf7f, 0x1fc2e0, 0x3d8bff, 0x8b5cf6, 0xf0469c,
 ];
 
-/// Uses the accent named `name` (one of `rewindr::config::ACCENTS`) from now on.
+/// Uses the accent named `name` (one of `kairo::config::ACCENTS`) from now on.
 pub fn set_accent(name: &str) {
-    let i = rewindr::config::ACCENTS
+    let i = kairo::config::ACCENTS
         .iter()
         .position(|a| *a == name)
         .unwrap_or(0);
@@ -100,7 +100,7 @@ pub fn on_accent() -> Color {
 
 pub fn theme() -> Theme {
     Theme::custom(
-        "Rewindr",
+        "Kairo",
         iced::theme::Palette {
             background: BG,
             text: TEXT,

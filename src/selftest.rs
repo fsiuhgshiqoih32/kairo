@@ -1,23 +1,23 @@
-//! `rewindr --self-test`: checks on this machine that ffmpeg runs, an encoder works, the replay
+//! `kairo --self-test`: checks on this machine that ffmpeg runs, an encoder works, the replay
 //! buffer fills, and a saved clip has video and sound. Uses a temporary folder for everything.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use rewindr::args::{Source, VideoPlan};
-use rewindr::pcm::PcmRing;
+use kairo::args::{Source, VideoPlan};
+use kairo::pcm::PcmRing;
 
 use crate::recorder::{self, Shared, now_us};
 use crate::{ffmpeg, platform, save};
 
 pub fn run() -> Result<(), String> {
     let started = Instant::now();
-    let home = std::env::temp_dir().join(format!("rewindr-selftest-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("kairo-selftest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
     // Safe: nothing else runs yet.
-    unsafe { std::env::set_var("REWINDR_HOME", &home) };
+    unsafe { std::env::set_var("KAIRO_HOME", &home) };
 
     let ff = ffmpeg::path()?;
     println!(
@@ -37,7 +37,7 @@ pub fn run() -> Result<(), String> {
     let encoder = *encoders.first().ok_or("no encoder works")?;
 
     // 1. The whole path with a test picture and a test tone: encoder, buffer, cut, mux.
-    let mut settings = rewindr::config::Settings {
+    let mut settings = kairo::config::Settings {
         fps: 30,
         ..Default::default()
     };
@@ -47,7 +47,7 @@ pub fn run() -> Result<(), String> {
     let plan = VideoPlan {
         source: Source::Test { w: 320, h: 240 },
         encoder,
-        codec: rewindr::config::VideoCodec::H264,
+        codec: kairo::config::VideoCodec::H264,
         fps: 30,
         src_size: (320, 240),
         max_height: None,
@@ -85,7 +85,7 @@ pub fn run() -> Result<(), String> {
         .recv_timeout(Duration::from_secs(60))
         .map_err(|_| "the session wasn't joined")??;
     let info = probe(&ff, &session)?;
-    let marks = rewindr::library::Library::load().markers(&session).to_vec();
+    let marks = kairo::library::Library::load().markers(&session).to_vec();
     println!(
         "session: {} ({secs:.1} s, marks {marks:?}): {info}",
         session.display()
@@ -127,9 +127,7 @@ pub fn run() -> Result<(), String> {
     if clip.thumbnail.is_none() {
         return Err("no thumbnail".into());
     }
-    let marks = rewindr::library::Library::load()
-        .markers(&clip.path)
-        .to_vec();
+    let marks = kairo::library::Library::load().markers(&clip.path).to_vec();
     println!("marks in the clip: {marks:?}");
     if marks.len() != 1 || !(0.0..=clip.seconds).contains(&marks[0]) {
         return Err(format!(
@@ -138,14 +136,14 @@ pub fn run() -> Result<(), String> {
     }
     // H.265 too, where this encoder has it (hardware only): saved tagged hvc1.
     if encoder
-        .ffmpeg_name_for(rewindr::config::VideoCodec::Hevc)
+        .ffmpeg_name_for(kairo::config::VideoCodec::Hevc)
         .is_some()
     {
         let shared = Shared::new(settings.clone());
         let plan = VideoPlan {
             source: Source::Test { w: 320, h: 240 },
             encoder,
-            codec: rewindr::config::VideoCodec::Hevc,
+            codec: kairo::config::VideoCodec::Hevc,
             fps: 30,
             src_size: (320, 240),
             max_height: None,
@@ -168,7 +166,7 @@ pub fn run() -> Result<(), String> {
     if (w, h) != (320, 240) {
         return Err(format!("the screenshot is {w}x{h}, not 320x240"));
     }
-    if std::env::var_os("REWINDR_SELFTEST_NO_SCREEN").is_some() {
+    if std::env::var_os("KAIRO_SELFTEST_NO_SCREEN").is_some() {
         let _ = std::fs::remove_dir_all(&home);
         println!(
             "self-test passed without the screen in {:.1} s",
@@ -194,7 +192,7 @@ pub fn run() -> Result<(), String> {
         let plan = VideoPlan {
             source: source.clone(),
             encoder,
-            codec: rewindr::config::VideoCodec::H264,
+            codec: kairo::config::VideoCodec::H264,
             fps: 30,
             src_size: (monitor.w, monitor.h),
             max_height: Some(720),
@@ -230,7 +228,7 @@ pub fn run() -> Result<(), String> {
 /// Screen Recording permission (as on CI) it can't start, which is reported, not failed.
 #[cfg(target_os = "macos")]
 fn system_audio_check() {
-    let shared = Shared::new(rewindr::config::Settings::default());
+    let shared = Shared::new(kairo::config::Settings::default());
     match crate::platform::macos_audio::start(shared.clone()) {
         Ok(capture) => {
             // Something to hear: ScreenCaptureKit may send nothing while the Mac is silent.

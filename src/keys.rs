@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn a_stream_has_a_frame_per_tick_of_the_export() {
         let font = include_bytes!("../assets/fonts/Inter-Bold.ttf");
-        let dir = std::env::temp_dir().join(format!("rewindr-keys-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kairo-keys-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("k.rgba");
         let ev = [e(1.0, 4, true), e(1.5, 4, false)];

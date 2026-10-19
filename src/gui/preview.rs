@@ -1,6 +1,6 @@
 //! Renders the windows to PNG files without opening them, to check how they look:
 //!
-//! `REWINDR_HOME=<folder with Clips/ and thumbs/> REWINDR_SNAPSHOTS=<out dir> cargo test -- --ignored gui::preview`
+//! `KAIRO_HOME=<folder with Clips/ and thumbs/> KAIRO_SNAPSHOTS=<out dir> cargo test -- --ignored gui::preview`
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use crate::daemon::Report;
 use crate::recorder::Status;
 
 fn out(name: &str) -> PathBuf {
-    let dir = PathBuf::from(std::env::var("REWINDR_SNAPSHOTS").expect("set REWINDR_SNAPSHOTS"));
+    let dir = PathBuf::from(std::env::var("KAIRO_SNAPSHOTS").expect("set KAIRO_SNAPSHOTS"));
     std::fs::create_dir_all(&dir).unwrap();
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
         if e.file_name()
@@ -37,8 +37,8 @@ fn settings() -> iced::Settings {
 
 /// Sample cards: the fixture's thumbnails under several game names, so the layout shows its range.
 fn sample(now: SystemTime) -> Vec<ClipItem> {
-    let real = super::load_clips(&rewindr::config::default_save_dir());
-    assert!(!real.is_empty(), "put clips in REWINDR_HOME/Clips");
+    let real = super::load_clips(&kairo::config::default_save_dir());
+    assert!(!real.is_empty(), "put clips in KAIRO_HOME/Clips");
     let games = [
         ("Minecraft", ClipKind::Clip, 30.3, 3, false),
         ("VALORANT", ClipKind::Clip, 30.1, 21, true),
@@ -77,7 +77,7 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                     6 => vec!["Clutch".into(), "Ranked".into()],
                     _ => Vec::new(),
                 },
-                link: (i == 3).then(|| rewindr::library::Link {
+                link: (i == 3).then(|| kairo::library::Link {
                     url: "https://files.catbox.moe/k3x9qa.mp4".into(),
                     created: 0,
                     expires: None,
@@ -132,14 +132,14 @@ fn shoot_at<'a, M: 'a>(
 /// A burned-in caption over a frame of the fixture clip, as exports draw it.
 fn caption_sample() {
     let font = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
-    let cap = rewindr::captions::render(
+    let cap = kairo::captions::render(
         "Two behind the wall, watch out on the left",
         1700,
         62.0,
         font,
     )
     .expect("caption");
-    let real = super::load_clips(&rewindr::config::default_save_dir());
+    let real = super::load_clips(&kairo::config::default_save_dir());
     let frame = real
         .iter()
         .find_map(|c| image::open(crate::save::thumb_for(&c.path)).ok())
@@ -164,10 +164,10 @@ fn caption_sample() {
 /// The keys-and-clicks overlay with W, A, Shift and the left button down, over a frame.
 fn keys_sample() {
     let font = include_bytes!("../../assets/fonts/Inter-Bold.ttf");
-    let size = rewindr::keys::size_for(1080);
-    let mask = (1 << 1) | (1 << 4) | (1 << 8) | (1 << rewindr::keys::MOUSE_LEFT);
-    let pic = rewindr::keys::render(mask, size, [255, 79, 70], font);
-    let real = super::load_clips(&rewindr::config::default_save_dir());
+    let size = kairo::keys::size_for(1080);
+    let mask = (1 << 1) | (1 << 4) | (1 << 8) | (1 << kairo::keys::MOUSE_LEFT);
+    let pic = kairo::keys::render(mask, size, [255, 79, 70], font);
+    let real = super::load_clips(&kairo::config::default_save_dir());
     let frame = real
         .iter()
         .find_map(|c| image::open(crate::save::thumb_for(&c.path)).ok())
@@ -190,13 +190,13 @@ fn keys_sample() {
 }
 
 #[test]
-#[ignore = "renders the windows to PNGs; needs REWINDR_HOME with clips and REWINDR_SNAPSHOTS"]
+#[ignore = "renders the windows to PNGs; needs KAIRO_HOME with clips and KAIRO_SNAPSHOTS"]
 fn preview() {
     caption_sample();
     keys_sample();
     let size = (1280.0, 800.0);
     let now = SystemTime::now();
-    let (mut app, _) = App::new(rewindr::config::Settings::default());
+    let (mut app, _) = App::new(kairo::config::Settings::default());
     app.now = Some(now);
     app.clips = sample(now);
     app.index_clips();
@@ -242,7 +242,7 @@ fn preview() {
         .iter()
         .skip(4)
         .enumerate()
-        .map(|(i, c)| rewindr::library::Trashed {
+        .map(|(i, c)| kairo::library::Trashed {
             path: c.path.clone(),
             from: c.path.clone(),
             deleted: unix(now) - [3_600, 86_400 * 4, 86_400 * 29 + 7_200][i % 3],
@@ -298,7 +298,7 @@ fn preview() {
     ed.settle((2.5, 9.0), 5.5);
     ed.show_marks(vec![3.4, 7.1, 11.0]);
     shoot(app.view(), "iced-editor", size);
-    app.settings.discord_channel = "Rewindr".into();
+    app.settings.discord_channel = "Kairo".into();
     shoot(app.view(), "iced-editor-channel", (1280.0, 1400.0));
     app.page = Page::Settings;
     shoot(app.view(), "iced-settings-channel", (1280.0, 2600.0));

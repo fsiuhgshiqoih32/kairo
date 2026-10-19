@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowTextW, MB_ICONERROR, MB_OK, MONITORINFOF_PRIMARY, MessageBoxW,
 };
 
-use rewindr::args::Source;
+use kairo::args::Source;
 
 use super::Monitor;
 
@@ -29,7 +29,7 @@ pub fn init_process() {
 
 pub fn show_error(message: &str) {
     let text = wide(message);
-    let title = wide("Rewindr");
+    let title = wide("Kairo");
     unsafe {
         MessageBoxW(
             null_mut(),

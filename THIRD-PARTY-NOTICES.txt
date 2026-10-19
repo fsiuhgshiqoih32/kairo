@@ -1,4 +1,4 @@
-Rewindr includes the following third-party works.
+Kairo includes the following third-party works.
 
 == Inter typeface (assets/fonts) ==
 

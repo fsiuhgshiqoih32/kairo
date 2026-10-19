@@ -19,7 +19,7 @@ pub struct Hotkey {
 pub fn parse(spec: &str) -> Result<HotKey, String> {
     spec.trim()
         .parse::<HotKey>()
-        .map_err(|e| format!("\"{spec}\" isn't a shortcut Rewindr understands ({e})"))
+        .map_err(|e| format!("\"{spec}\" isn't a shortcut Kairo understands ({e})"))
 }
 
 impl Hotkey {
@@ -32,7 +32,7 @@ impl Hotkey {
             },
             Err(e) => {
                 let error = if crate::platform::is_wayland() {
-                    "Wayland doesn't let apps register global shortcuts. Bind the command `rewindr save` to a key \
+                    "Wayland doesn't let apps register global shortcuts. Bind the command `kairo save` to a key \
                      in your desktop's keyboard settings instead."
                         .to_string()
                 } else {

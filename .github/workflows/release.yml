@@ -72,24 +72,50 @@ jobs:
           toolchain: "1.97.0"
           rustflags: ""
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked -p kairo -p kairo-setup
       - name: Package
         shell: pwsh
         run: |
-          $name = "rewindr-v$($env:VERSION)-windows-x64"
+          # Windowed programs: PowerShell doesn't wait for them unless told to.
+          function Run($exe, $argv) {
+            $p = Start-Process -FilePath $exe -ArgumentList $argv -Wait -PassThru -NoNewWindow
+            if ($p.ExitCode -ne 0) { throw "$exe $argv failed ($($p.ExitCode))" }
+          }
+          $name = "kairo-v$($env:VERSION)-windows-x64-portable"
           gh release download $env:FFMPEG_TAG --pattern ffmpeg-windows-x64.zip --dir ff
           Expand-Archive ff/ffmpeg-windows-x64.zip -DestinationPath $name
-          Copy-Item target/release/rewindr.exe, README.md, LICENSE, THIRD-PARTY-NOTICES.txt $name
-          Remove-Item Env:REWINDR_FFMPEG -ErrorAction SilentlyContinue
-          $env:REWINDR_HOME = "$PWD/selftest-home"
-          # A windowed program: PowerShell doesn't wait for it unless told to.
-          $p = Start-Process -FilePath "$name/rewindr.exe" -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
-          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+          Copy-Item target/release/kairo.exe, README.md, LICENSE, THIRD-PARTY-NOTICES.txt $name
+          Remove-Item Env:KAIRO_FFMPEG -ErrorAction SilentlyContinue
+          $env:KAIRO_HOME = "$PWD/selftest-home"
+          Run "$name/kairo.exe" "--self-test"
           Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+          # The installer: the setup program with the portable zip at its end. Install it
+          # silently into a scratch folder, check what landed, then uninstall it again.
+          $setup = "kairo-v$($env:VERSION)-windows-x64-setup.exe"
+          Run target/release/kairo-setup.exe @("--pack", "$name.zip", $setup)
+          $dir = "$PWD\installer-test"
+          Run $setup @("--silent", "--dir", $dir, "--no-desktop", "--no-start-menu", "--no-register", "--autostart", "off")
+          foreach ($f in "kairo.exe", "ffmpeg.exe", "uninstall.exe", "installed-files.txt") {
+            if (-not (Test-Path "$dir\Kairo\$f")) { throw "the installer left out $f" }
+          }
+          Run "$dir\Kairo\kairo.exe" "--version"
+          Run $setup @("--uninstall", "--silent", "--dir", "$dir\Kairo")
+          if (Test-Path "$dir\Kairo") { throw "uninstalling left $dir\Kairo behind" }
+
+          # For Rewindr 0.1's updater, which looks for rewindr.exe in a "-windows-x64.zip".
+          $bridge = "rewindr-v$($env:VERSION)-windows-x64"
+          New-Item -ItemType Directory $bridge | Out-Null
+          Copy-Item "$name/kairo.exe" "$bridge/rewindr.exe"
+          Copy-Item "$name/ffmpeg.exe" $bridge
+          Compress-Archive -Path $bridge -DestinationPath "$bridge.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: rewindr-*.zip
+          path: |
+            kairo-*.zip
+            kairo-*.exe
+            rewindr-*.zip
 
   macos:
     needs: version
@@ -117,31 +143,38 @@ jobs:
       - name: Package app bundle
         run: |
           set -euo pipefail
-          app="Rewindr.app"
+          app="Kairo.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          lipo -create -output "$app/Contents/MacOS/rewindr" \
-            target/aarch64-apple-darwin/release/rewindr target/x86_64-apple-darwin/release/rewindr
+          lipo -create -output "$app/Contents/MacOS/kairo" \
+            target/aarch64-apple-darwin/release/kairo target/x86_64-apple-darwin/release/kairo
           gh release download "$FFMPEG_TAG" --pattern ffmpeg-macos.zip --dir ff
           unzip -o ff/ffmpeg-macos.zip -d ff
           cp ff/ffmpeg "$app/Contents/MacOS/ffmpeg"
           chmod +x "$app/Contents/MacOS/ffmpeg"
           cp ff/FFMPEG-LICENSE.txt ff/FFMPEG-SOURCE.txt LICENSE README.md THIRD-PARTY-NOTICES.txt "$app/Contents/Resources/"
           sed "s/VERSION/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
-          iconset=Rewindr.iconset
+          iconset=Kairo.iconset
           mkdir "$iconset"
           for s in 16 32 128 256 512; do
             sips -z $s $s assets/icon.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
             d=$((s * 2))
             sips -z $d $d assets/icon.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
           done
-          iconutil -c icns "$iconset" -o "$app/Contents/Resources/Rewindr.icns"
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/Kairo.icns"
           codesign --force --deep --sign - "$app"
-          REWINDR_HOME="$PWD/selftest-home" "$app/Contents/MacOS/rewindr" --self-test
-          ditto -c -k --keepParent "$app" "rewindr-v$VERSION-macos.zip"
+          KAIRO_HOME="$PWD/selftest-home" "$app/Contents/MacOS/kairo" --self-test
+          ditto -c -k --keepParent "$app" "kairo-v$VERSION-macos-universal.zip"
+          # For Rewindr 0.1's updater, which takes "rewindr" and "ffmpeg" from a "-macos.zip".
+          mkdir bridge
+          cp "$app/Contents/MacOS/kairo" bridge/rewindr
+          cp "$app/Contents/MacOS/ffmpeg" bridge/ffmpeg
+          (cd bridge && zip -q "../rewindr-v$VERSION-macos.zip" rewindr ffmpeg)
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: rewindr-*.zip
+          path: |
+            kairo-*.zip
+            rewindr-*.zip
 
   linux:
     needs: version
@@ -171,19 +204,28 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          name="rewindr-v$VERSION-linux-x86_64"
+          name="kairo-v$VERSION-linux-x86_64-portable"
           mkdir "$name"
           gh release download "$FFMPEG_TAG" --pattern ffmpeg-linux-x86_64.zip --dir ff
           unzip -o ff/ffmpeg-linux-x86_64.zip -d "$name"
           chmod +x "$name/ffmpeg"
-          cp target/release/rewindr README.md LICENSE THIRD-PARTY-NOTICES.txt packaging/linux/rewindr.desktop "$name/"
-          cp assets/icon.png "$name/rewindr.png"
-          REWINDR_HOME="$PWD/selftest-home" xvfb-run -a -s "-screen 0 1280x800x24" "$name/rewindr" --self-test
+          cp target/release/kairo README.md LICENSE THIRD-PARTY-NOTICES.txt packaging/linux/kairo.desktop "$name/"
+          cp assets/icon.png "$name/kairo.png"
+          KAIRO_HOME="$PWD/selftest-home" xvfb-run -a -s "-screen 0 1280x800x24" "$name/kairo" --self-test
           tar czf "$name.tar.gz" "$name"
+          # For Rewindr 0.1's updater, which takes "rewindr" and "ffmpeg" from a
+          # "-linux-x86_64.tar.gz".
+          bridge="rewindr-v$VERSION-linux-x86_64"
+          mkdir "$bridge"
+          cp "$name/kairo" "$bridge/rewindr"
+          cp "$name/ffmpeg" "$bridge/ffmpeg"
+          tar czf "$bridge.tar.gz" "$bridge"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: rewindr-*.tar.gz
+          path: |
+            kairo-*.tar.gz
+            rewindr-*.tar.gz
 
   publish:
     needs: [version, windows, macos, linux]
@@ -201,7 +243,7 @@ jobs:
       - name: Checksums and release notes
         run: |
           set -euo pipefail
-          (cd dist && sha256sum rewindr-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          (cd dist && sha256sum kairo-* rewindr-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
           awk -v v="## $VERSION" '$0 == v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
           cat notes.md
       - name: Publish release
@@ -209,4 +251,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v$VERSION" dist/* --target "$SHA" --latest \
-            --title "Rewindr $VERSION" --notes-file notes.md
+            --title "Kairo $VERSION" --notes-file notes.md

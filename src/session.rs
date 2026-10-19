@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rewindr::{args, library};
+use kairo::{args, library};
 
 use crate::ffmpeg;
 use crate::log::{info, warning};
@@ -25,7 +25,7 @@ pub struct Session {
 const MAX_SESSION_US: i64 = 5 * 3600 * 1_000_000;
 
 /// The folder sessions are saved in.
-pub fn dir(settings: &rewindr::config::Settings) -> PathBuf {
+pub fn dir(settings: &kairo::config::Settings) -> PathBuf {
     settings.save_dir().join("Sessions")
 }
 
@@ -35,7 +35,7 @@ pub fn start(shared: &Arc<Shared>, title: Option<String>) -> Result<(), String> 
     if slot.is_some() {
         return Ok(());
     }
-    let work = rewindr::config::config_dir().join("sessions").join(format!(
+    let work = kairo::config::config_dir().join("sessions").join(format!(
         "{}-{}",
         std::process::id(),
         now_us()
@@ -86,7 +86,7 @@ pub fn stop(
         let mut ring = shared.ring.lock().unwrap();
         (
             ring.take_tape(),
-            ring.codec() == Some(rewindr::ts::Codec::Hevc),
+            ring.codec() == Some(kairo::ts::Codec::Hevc),
         )
     };
     let mut sounds = Vec::new();

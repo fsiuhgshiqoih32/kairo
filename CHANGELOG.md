@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+**Rewindr is now Kairo**, with a new logo and a Windows installer.
+
+- **Moving from Rewindr.** Rewindr 0.1 updates itself to Kairo as usual (the `rewindr-…` files in
+  this release are only for its updater), or run the Kairo installer, which closes and replaces
+  it. Settings and "start with computer" move over the first time Kairo starts, and clips stay in
+  `Videos/Rewindr` if that's where they were. On macOS a fresh `Kairo.app` needs Screen Recording
+  allowed again.
+- **Windows installer.** `kairo-…-windows-x64-setup.exe` installs Kairo for you, without
+  administrator rights: Start menu and desktop shortcuts, start with Windows, and an entry in
+  Settings > Apps to uninstall it. Uninstalling never touches your clips and can also remove
+  settings. It runs silently with `--silent`. The portable zip is still there.
+- The default accent is Kairo's orange (settings that chose one keep it).
 
 Everything below is free: no account, no subscription, no watermark.
 
@@ -10,7 +23,7 @@ Everything below is free: no account, no subscription, no watermark.
   stops the next clip repeating this one.
 - **Session recording.** A shortcut (or the Session button, or the tray) records everything until
   you stop, up to 5 hours, into a Sessions folder with its own list. Markers you set while it runs
-  become bookmarks on its timeline. It can start with Rewindr.
+  become bookmarks on its timeline. It can start with Kairo.
 - **H.265.** Settings > Video > Video format records clips and the replay about a third smaller
   for the same picture, on graphics cards that encode it, and falls back to H.264 where they
   don't. Share links are converted to H.264 so every browser plays them.
@@ -19,7 +32,7 @@ Everything below is free: no account, no subscription, no watermark.
   voice chat, microphone clean-up and even loudness. They apply to every copy you make.
 - **Captions.** Make captions writes subtitles of what's said, recognised offline on your
   computer. Fix any line, keep them as an .srt beside the clip, or burn them into copies.
-  `rewindr captions <clip>` does it from a terminal.
+  `kairo captions <clip>` does it from a terminal.
 - **Square and 4:5 copies** for feeds, beside the 9:16 one.
 - **Send to a Discord channel.** Connect a channel once with its webhook link (Settings > Saving)
   and the editor posts a Discord-size copy there in one click. The link is kept in the system's
@@ -32,10 +45,10 @@ Everything below is free: no account, no subscription, no watermark.
   deleted.
 - **Tags.** Tag clips in the editor (tags from other clips are a click away), filter by tag in
   the sidebar, and find them in search.
-- **Voice chat on its own track (Windows 11).** Rewindr records Discord (or any app you name) on a
+- **Voice chat on its own track (Windows 11).** Kairo records Discord (or any app you name) on a
   track of its own and keeps it out of the game track, so you can turn chat down or off in
   copies.
-- **Keys and clicks overlay (Windows).** Turn it on and Rewindr remembers the gaming keys you
+- **Keys and clicks overlay (Windows).** Turn it on and Kairo remembers the gaming keys you
   press (WASD, QERF, Space, Shift, Ctrl, Tab, 1 to 4) and your mouse buttons while it records;
   nothing else you type is kept. The editor shows them over the clip and can put them in copies.
 - The sidebar's game and tag counts are worked out when the clip list changes, not on every frame
@@ -49,14 +62,14 @@ Everything below is free: no account, no subscription, no watermark.
 - **Lighter on your PC.**
   - Long replay buffers can live on disk (Settings > Video > Replay buffer). Automatic puts any
     buffer that could pass 1 GB in a scratch file the system keeps in spare memory and hands
-    back to games, so a 200-second 1440p buffer no longer sits in Rewindr's memory.
+    back to games, so a 200-second 1440p buffer no longer sits in Kairo's memory.
   - 120 fps recordings use about 25% fewer bits for the same picture, so clips and buffers are
     that much smaller.
   - NVIDIA's encoder runs a faster preset with the same picture.
   - The buffer wastes no memory on spare room, and sound takes half the memory it did.
   - Voice clipping runs one thread instead of one per CPU core.
   - The window wakes up half as often and shows screenshots from small thumbnails.
-- **A cooler window.** Eight accent colours (Settings > Rewindr). Clips glow in the accent when
+- **A cooler window.** Eight accent colours (Settings > Kairo). Clips glow in the accent when
   you point at them. All clips opens with your latest clip as a big banner.
 - **Save a shorter clip** from the menu next to the save button.
 - **Share links, like Medal.** One click uploads a clip (or just the trimmed part) and copies a
@@ -66,8 +79,8 @@ Everything below is free: no account, no subscription, no watermark.
   Get link button too.
   Big or high-frame-rate clips are shared as a 1080p60 copy made for browsers (so they fit the
   host and play smoothly); if the host for lasting links is down, you get a 3-day link instead.
-  `rewindr share <clip>` does the same from a terminal.
-- **Voice clipping.** Say "clip that" (or a phrase of your own) and Rewindr saves a clip,
+  `kairo share <clip>` does the same from a terminal.
+- **Voice clipping.** Say "clip that" (or a phrase of your own) and Kairo saves a clip,
   hands-free. The speech is recognised offline on your computer with Vosk; nothing is sent
   anywhere. It's off until you turn it on, and downloads its speech files (about 55 MB) once.
 - **Screenshots.** Press F9 (or the camera button) to save a full-size picture of the moment, with
@@ -76,13 +89,13 @@ Everything below is free: no account, no subscription, no watermark.
   whole picture over a blurred background), and slow motion at half or quarter speed with the
   sound slowed to match.
 - **Hover previews.** Moving the pointer across a clip's card plays through the clip.
-- **A new window.** Rewindr's window is rebuilt from scratch with iced: a sidebar with your games
+- **A new window.** Kairo's window is rebuilt from scratch with iced: a sidebar with your games
   and what's being recorded, clip cards grouped by day with hover actions (copy, show, rename,
   delete), and a one-click "Save last 30 s" button.
 - **The editor lives in the window now**: a larger player, a filmstrip timeline with dimmed
   cut-off parts and grab handles, start/end readouts, loop playback, and Share to Discord or a
   trimmed copy from a side panel. All the keyboard shortcuts still work.
-- **Redesigned settings**, grouped into Replay, Video, Sound, Saving and Rewindr, with toggles
+- **Redesigned settings**, grouped into Replay, Video, Sound, Saving and Kairo, with toggles
   and choice buttons instead of drop-downs where it's quicker.
 - **A new "Clip saved" card** with the thumbnail and Open, Get link and Copy buttons. On Windows it
   appears without taking focus from your game.

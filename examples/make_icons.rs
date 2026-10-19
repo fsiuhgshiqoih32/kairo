@@ -3,13 +3,13 @@
 
 fn main() {
     std::fs::create_dir_all("assets").unwrap();
-    let png = image::RgbaImage::from_raw(1024, 1024, rewindr::art::app_icon(1024)).unwrap();
+    let png = image::RgbaImage::from_raw(1024, 1024, kairo::art::app_icon(1024)).unwrap();
     png.save("assets/icon.png").unwrap();
     // ICO with PNG-compressed entries.
     let sizes = [16u32, 24, 32, 48, 64, 128, 256];
     let mut images = Vec::new();
     for s in sizes {
-        let img = image::RgbaImage::from_raw(s, s, rewindr::art::app_icon(s as usize)).unwrap();
+        let img = image::RgbaImage::from_raw(s, s, kairo::art::app_icon(s as usize)).unwrap();
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
         images.push((s, buf.into_inner()));

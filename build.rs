@@ -5,8 +5,8 @@ fn main() {
     {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");
-        res.set("ProductName", "Rewindr");
-        res.set("FileDescription", "Rewindr instant replay");
+        res.set("ProductName", "Kairo");
+        res.set("FileDescription", "Kairo instant replay");
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed the icon: {e}");
         }

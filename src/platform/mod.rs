@@ -31,7 +31,7 @@ mod linux;
 pub use self::linux::*;
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-compile_error!("Rewindr supports Windows, macOS and Linux.");
+compile_error!("Kairo supports Windows, macOS and Linux.");
 
 /// A screen, in desktop pixels.
 #[derive(Clone, Debug, PartialEq, Eq)]

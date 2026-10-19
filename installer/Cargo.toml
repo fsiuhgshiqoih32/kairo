@@ -1,0 +1,45 @@
+[package]
+name = "kairo-setup"
+# The version people see is Kairo's own (build.rs reads it from ../Cargo.toml).
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+description = "The Kairo installer for Windows: installs, updates and uninstalls Kairo for the current user."
+license = "MIT"
+publish = false
+
+[dependencies]
+# Software rendering only: an installer has to open on any PC, GPU drivers or not.
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "image-without-codecs",
+    "svg",
+    "crisp",
+    "thread-pool",
+    "smol",
+] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+rfd = "0.15"
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
+windows-core = "0.62"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_System_Registry",
+] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+iced_test = "0.14"

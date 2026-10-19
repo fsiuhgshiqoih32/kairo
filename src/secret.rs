@@ -28,7 +28,7 @@ mod imp {
     };
 
     fn target(name: &str) -> Vec<u16> {
-        format!("Rewindr/{name}")
+        format!("Kairo/{name}")
             .encode_utf16()
             .chain(Some(0))
             .collect()
@@ -55,7 +55,7 @@ mod imp {
 
     pub fn set(name: &str, value: &str) -> Result<(), String> {
         let mut t = target(name);
-        let mut user: Vec<u16> = "Rewindr".encode_utf16().chain(Some(0)).collect();
+        let mut user: Vec<u16> = "Kairo".encode_utf16().chain(Some(0)).collect();
         let mut blob = value.as_bytes().to_vec();
         // SAFETY: every pointer in the record outlives the call; the rest is zeroed.
         let ok = unsafe {
@@ -91,7 +91,7 @@ mod imp {
         PasswordOptions, delete_generic_password, generic_password, set_generic_password,
     };
 
-    const SERVICE: &str = "Rewindr";
+    const SERVICE: &str = "Kairo";
 
     pub fn get(name: &str) -> Option<String> {
         generic_password(PasswordOptions::new_generic_password(SERVICE, name))
@@ -116,7 +116,7 @@ mod imp {
     use dbus_secret_service::{EncryptionType, SecretService};
 
     fn attrs(name: &str) -> HashMap<&str, &str> {
-        HashMap::from([("application", "rewindr"), ("name", name)])
+        HashMap::from([("application", "kairo"), ("name", name)])
     }
 
     pub fn get(name: &str) -> Option<String> {
@@ -137,7 +137,7 @@ mod imp {
         let c = ss.get_default_collection().map_err(missing)?;
         c.ensure_unlocked().map_err(missing)?;
         c.create_item(
-            &format!("Rewindr {name}"),
+            &format!("Kairo {name}"),
             attrs(name),
             value.as_bytes(),
             true,

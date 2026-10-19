@@ -1,6 +1,6 @@
 //! The "clip saved" card in the corner of the screen: a thumbnail, the clip's name, and buttons
 //! to open it, get a share link, or copy it. It runs as its own short-lived process
-//! (`rewindr notify`), so the recorder never waits on a window. It appears without taking focus
+//! (`kairo notify`), so the recorder never waits on a window. It appears without taking focus
 //! from a game.
 
 use std::path::{Path, PathBuf};
@@ -57,7 +57,7 @@ pub fn run(msg: Message) -> Result<(), String> {
     if platform::is_wayland() {
         return system_notification(&msg);
     }
-    if let Ok(s) = rewindr::config::load(&rewindr::config::default_path()) {
+    if let Ok(s) = kairo::config::load(&kairo::config::default_path()) {
         theme::set_accent(&s.accent);
     }
     let mut settings = window::Settings {
@@ -67,7 +67,7 @@ pub fn run(msg: Message) -> Result<(), String> {
         level: window::Level::AlwaysOnTop,
         visible: false,
         exit_on_close_request: true,
-        icon: window::icon::from_rgba(rewindr::art::app_icon(64), 64, 64).ok(),
+        icon: window::icon::from_rgba(kairo::art::app_icon(64), 64, 64).ok(),
         ..Default::default()
     };
     #[cfg(windows)]
@@ -87,7 +87,7 @@ pub fn run(msg: Message) -> Result<(), String> {
         Toast::update,
         Toast::view,
     )
-    .title("Rewindr")
+    .title("Kairo")
     .theme(|_: &Toast| theme::theme())
     .subscription(Toast::subscription)
     .default_font(theme::FONT)
@@ -219,7 +219,7 @@ impl Toast {
                     && let Some(f) = self.file()
                 {
                     let (settings, _) =
-                        rewindr::config::load_or_create(&rewindr::config::default_path());
+                        kairo::config::load_or_create(&kairo::config::default_path());
                     self.upload = Some(share::start(f, f, &settings.share_expiry, None));
                     self.status = None;
                 }
@@ -417,7 +417,7 @@ fn system_notification(msg: &Message) -> Result<(), String> {
         Message::Failed(e) => ("Couldn't save".to_string(), e.clone(), None),
     };
     let mut cmd = std::process::Command::new("notify-send");
-    cmd.arg("--app-name=Rewindr");
+    cmd.arg("--app-name=Kairo");
     if let Some(i) = icon.filter(|p| p.exists()) {
         cmd.arg(format!("--icon={}", i.display()));
     }

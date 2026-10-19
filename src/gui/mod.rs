@@ -1,4 +1,4 @@
-//! Rewindr's window, built with iced: the clip library, the editor and the settings. The
+//! Kairo's window, built with iced: the clip library, the editor and the settings. The
 //! "clip saved" card is its own small window (`toast`).
 
 mod editor;
@@ -25,8 +25,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme, window};
 
-use rewindr::config::{self, Settings};
-use rewindr::library::{self as lib, Library, Link};
+use kairo::config::{self, Settings};
+use kairo::library::{self as lib, Library, Link};
 
 use crate::daemon::{self, Report, Request};
 use crate::share;
@@ -311,7 +311,7 @@ impl App {
         let (settings, _) = config::load_or_create(&config::default_path());
         let (mut app, tasks) = App::new(settings);
         app._lock = lock;
-        if std::env::var("REWINDR_TAB").is_ok_and(|t| t == "settings") {
+        if std::env::var("KAIRO_TAB").is_ok_and(|t| t == "settings") {
             app.page = Page::Settings;
         }
         let mut all = vec![tasks, app.reload(), Task::done(Message::Tick)];
@@ -365,7 +365,7 @@ impl App {
                 let bin = lib::trash_dir(&dir);
                 let sig = library::folder_signature(
                     &[&dir, &shots, &thumbs, &sessions, &bin],
-                    &rewindr::library::Library::path(),
+                    &kairo::library::Library::path(),
                 );
                 (Some(sig) != last).then(|| {
                     Box::new(Scan {
@@ -622,18 +622,18 @@ impl App {
                             println!("ui self-test: exported; now {k:?}");
                             if k == editor::ExportKind::Square {
                                 // Styled, with a caption burned in.
-                                ed.effects = rewindr::media::Effects {
-                                    look: rewindr::media::Look::Cinematic,
+                                ed.effects = kairo::media::Effects {
+                                    look: kairo::media::Look::Cinematic,
                                     fade: true,
                                     even_loudness: true,
                                     ..Default::default()
                                 };
-                                ed.captions = vec![rewindr::captions::Caption {
+                                ed.captions = vec![kairo::captions::Caption {
                                     start: 0.6,
                                     end: 2.0,
                                     text: "Self test caption".into(),
                                 }];
-                                let key = |t: f64, key: u8, down: bool| rewindr::keys::KeyEvent {
+                                let key = |t: f64, key: u8, down: bool| kairo::keys::KeyEvent {
                                     t,
                                     key,
                                     down,
@@ -1298,8 +1298,8 @@ impl App {
 
     pub fn title(&self) -> String {
         match (&self.page, &self.editor) {
-            (Page::Editor, Some(e)) => format!("{} - Rewindr", e.name),
-            _ => "Rewindr".into(),
+            (Page::Editor, Some(e)) => format!("{} - Kairo", e.name),
+            _ => "Kairo".into(),
         }
     }
 
@@ -1715,7 +1715,7 @@ impl App {
             ))
             .width(28)
             .height(28),
-            text("Rewindr").font(BOLD).size(19),
+            text("Kairo").font(BOLD).size(19),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -1807,7 +1807,7 @@ impl App {
                     row![
                         icon(Icon::Download, 16.0, theme::accent()),
                         column![
-                            text(format!("Rewindr {} is out", u.version))
+                            text(format!("Kairo {} is out", u.version))
                                 .size(13)
                                 .font(SEMIBOLD),
                             text("Update in Settings").size(11).color(TEXT_2),
@@ -1889,7 +1889,7 @@ impl App {
                 )
             }
             Some(s) => s.error.clone().unwrap_or_else(|| "Getting ready...".into()),
-            None => "Rewindr isn't recording.".into(),
+            None => "Kairo isn't recording.".into(),
         };
         let clip_len = self.settings.clip_seconds as f32;
         let held = s.map_or(0.0, |s| s.buffer_seconds as f32);
@@ -2364,14 +2364,14 @@ fn check_export(kind: editor::ExportKind, path: &Path) -> Result<(), String> {
 /// `--ui-self-test`: the real window, hidden, on a short generated clip in a temporary folder.
 /// It must show the first frame and the filmstrip, play, and save a trimmed copy.
 pub fn self_test() -> Result<(), String> {
-    let home = std::env::temp_dir().join(format!("rewindr-uitest-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("kairo-uitest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let clips = home.join("Clips");
     std::fs::create_dir_all(&clips).map_err(|e| e.to_string())?;
     // Safe: nothing else runs yet.
     unsafe {
-        std::env::set_var("REWINDR_HOME", &home);
-        std::env::set_var("REWINDR_NO_UPDATE_CHECK", "1");
+        std::env::set_var("KAIRO_HOME", &home);
+        std::env::set_var("KAIRO_NO_UPDATE_CHECK", "1");
     }
     let ff = crate::ffmpeg::path()?;
     let clip = clips.join("Self test 2026-01-01 00-00-00.mp4");
@@ -2455,7 +2455,7 @@ pub fn run(clip: Option<PathBuf>, wait: bool) -> Result<(), String> {
     let Some(lock) = lock else {
         let text = clip.map(|p| p.display().to_string()).unwrap_or_default();
         std::fs::write(open_request_path(), text).map_err(|e| e.to_string())?;
-        println!("The Rewindr window is already open.");
+        println!("The Kairo window is already open.");
         return Ok(());
     };
     let _ = std::fs::remove_file(open_request_path());
@@ -2479,7 +2479,7 @@ pub fn run(clip: Option<PathBuf>, wait: bool) -> Result<(), String> {
         size: Size::new(1240.0, 800.0),
         min_size: Some(Size::new(840.0, 560.0)),
         position: window::Position::Centered,
-        icon: window::icon::from_rgba(rewindr::art::app_icon(64), 64, 64).ok(),
+        icon: window::icon::from_rgba(kairo::art::app_icon(64), 64, 64).ok(),
         ..Default::default()
     });
     for f in theme::FONTS {

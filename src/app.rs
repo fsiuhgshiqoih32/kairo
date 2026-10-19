@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Starts another copy of this program, detached, e.g. `rewindr notify <clip>`.
+/// Starts another copy of this program, detached, e.g. `kairo notify <clip>`.
 pub fn spawn_self(args: &[&str]) -> Result<std::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(exe);
@@ -13,7 +13,7 @@ pub fn spawn_self(args: &[&str]) -> Result<std::process::Child, String> {
         .stderr(Stdio::null());
     detach(&mut cmd);
     cmd.spawn()
-        .map_err(|e| format!("could not start rewindr {}: {e}", args.join(" ")))
+        .map_err(|e| format!("could not start kairo {}: {e}", args.join(" ")))
 }
 
 /// Keeps a child alive when the terminal that started us closes.
@@ -39,7 +39,7 @@ pub fn open(target: &Path) {
     }
 }
 
-/// Opens a clip in Rewindr's editor, or the system's player if the editor can't start.
+/// Opens a clip in Kairo's editor, or the system's player if the editor can't start.
 pub fn open_clip(clip: &Path) {
     let arg = clip.display().to_string();
     if spawn_self(&["edit", &arg]).is_err() {

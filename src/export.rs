@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rewindr::args::{self, Encoder};
-use rewindr::library;
-use rewindr::media::{self, Effects, Info};
+use kairo::args::{self, Encoder};
+use kairo::library;
+use kairo::media::{self, Effects, Info};
 
 use crate::ffmpeg;
 use crate::log::{info, warning};
@@ -71,8 +71,8 @@ pub fn start(
     range: (f64, f64),
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
     eff: Effects,
-    caps: Vec<rewindr::captions::Caption>,
-    keys: Vec<rewindr::keys::KeyEvent>,
+    caps: Vec<kairo::captions::Caption>,
+    keys: Vec<kairo::keys::KeyEvent>,
 ) -> Job {
     let status = Arc::new(Mutex::new(Status {
         stage: match kind {
@@ -99,7 +99,7 @@ pub fn start(
                 range,
                 caps: &caps,
                 keys: &keys,
-                burns_dir: rewindr::config::config_dir().join("captions").join(format!(
+                burns_dir: kairo::config::config_dir().join("captions").join(format!(
                     "{}-{}",
                     std::process::id(),
                     crate::recorder::now_us()
@@ -127,9 +127,9 @@ struct Export<'a> {
     clip: &'a Path,
     info: &'a Info,
     range: (f64, f64),
-    caps: &'a [rewindr::captions::Caption],
+    caps: &'a [kairo::captions::Caption],
     /// Keys and clicks to overlay (empty for none).
-    keys: &'a [rewindr::keys::KeyEvent],
+    keys: &'a [kairo::keys::KeyEvent],
     /// Where caption pictures and overlay frames go while it runs.
     burns_dir: PathBuf,
 }
@@ -143,11 +143,11 @@ impl Export<'_> {
         }
         if !self.keys.is_empty() {
             const FPS: u32 = 15;
-            let overlay = rewindr::keys::size_for(size.1);
+            let overlay = kairo::keys::size_for(size.1);
             let path = self.burns_dir.join("keys.rgba");
             std::fs::create_dir_all(&self.burns_dir).map_err(|e| e.to_string())?;
             let accent = crate::gui::theme::accent_rgb();
-            rewindr::keys::write_stream(
+            kairo::keys::write_stream(
                 self.keys,
                 self.range,
                 eff.speed,
@@ -348,7 +348,7 @@ fn montage(
 /// Caption pictures for an export: drawn for `out_size` (the export's picture), written as raw
 /// RGBA into `dir`, placed in the export's timeline.
 pub fn render_burns(
-    caps: &[rewindr::captions::Caption],
+    caps: &[kairo::captions::Caption],
     range: (f64, f64),
     speed: f64,
     out_size: (u32, u32),
@@ -362,7 +362,7 @@ pub fn render_burns(
         let Some((start, end)) = media::burn_window(c.start, c.end, range, speed) else {
             continue;
         };
-        let Some(p) = rewindr::captions::render(&c.text, w * 88 / 100, size, font) else {
+        let Some(p) = kairo::captions::render(&c.text, w * 88 / 100, size, font) else {
             continue;
         };
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -389,7 +389,7 @@ pub struct CaptionJob {
 pub struct CaptionStatus {
     pub stage: String,
     pub progress: f32,
-    pub result: Option<Result<Vec<rewindr::captions::Caption>, String>>,
+    pub result: Option<Result<Vec<kairo::captions::Caption>, String>>,
 }
 
 impl CaptionJob {
@@ -426,7 +426,7 @@ fn captions(
     track: usize,
     status: &Mutex<CaptionStatus>,
     cancel: &AtomicBool,
-) -> Result<Vec<rewindr::captions::Caption>, String> {
+) -> Result<Vec<kairo::captions::Caption>, String> {
     let set = |stage: &str, p: f32| {
         let mut s = status.lock().unwrap();
         s.stage = stage.to_string();
@@ -458,7 +458,7 @@ fn captions(
     }
     let words = crate::voice::transcribe(&samples, &|p| set("Listening", p), cancel)?;
     info!("captions: {} words from {}", words.len(), clip.display());
-    Ok(rewindr::captions::lines(&words))
+    Ok(kairo::captions::lines(&words))
 }
 
 /// Longest stretch a GIF export takes.

@@ -677,7 +677,7 @@ mod tests {
     }
 
     fn spill_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("rewindr-ring-{}-{name}.bin", std::process::id()))
+        std::env::temp_dir().join(format!("kairo-ring-{}-{name}.bin", std::process::id()))
     }
 
     fn file_of(snap: &Snapshot) -> Vec<u8> {
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn a_tape_holds_the_stream_from_a_keyframe_until_it_stops() {
-        let dir = std::env::temp_dir().join(format!("rewindr-vtape-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kairo-vtape-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s.ts");
         let mut ring = Ring::new(2 * SEC, usize::MAX);
