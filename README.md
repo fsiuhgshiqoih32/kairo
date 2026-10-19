@@ -9,7 +9,7 @@ unless you ask for a share link.
   <img src="docs/media/kairo-demo.webp" width="100%"
        alt="Kairo in action: F8 saves the last 30 seconds of a Minecraft session, the clip opens in the editor, and a share link comes with a QR code">
 </p>
-<p align="center"><a href="docs/media/kairo-demo.mp4">Watch the demo in full quality (MP4, 31 s)</a></p>
+<p align="center"><a href="https://github.com/fsiuhgshiqoih32/kairo/raw/main/docs/media/kairo-demo.mp4">Download the demo in full quality (MP4, 31 s, 6 MB)</a></p>
 
 - **Always ready, light on games.** The replay is captured and encoded on the GPU (NVIDIA
   NVENC, AMD AMF, Intel and others through Media Foundation, Apple VideoToolbox), with x264 as a
