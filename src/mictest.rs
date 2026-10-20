@@ -171,14 +171,22 @@ fn run(
                 *phase.lock().unwrap() =
                     Phase::Recording(now + Duration::from_secs(RECORD_SECONDS as u64));
             }
-            Phase::Recording(_) => {
+            Phase::Recording(until) => {
                 let done = take
                     .lock()
                     .unwrap()
                     .as_ref()
                     .is_some_and(|t| t.len() >= wanted_samples);
-                if done {
+                // A mic that sends nothing (or too little) mustn't leave the test recording forever.
+                let late = now > until + Duration::from_secs(2);
+                if done || late {
                     let got = take.lock().unwrap().take().unwrap_or_default();
+                    if got.is_empty() {
+                        *phase.lock().unwrap() = Phase::Listening;
+                        return Err(
+                            "The microphone sent no sound. Is it muted or unplugged?".into()
+                        );
+                    }
                     let (out, secs) = play(&got, rate, channels)?;
                     playing = Some(out);
                     *phase.lock().unwrap() = Phase::Playing(now + secs);

@@ -98,11 +98,19 @@ fn set_status(shared: &Shared, camera: Option<String>, error: Option<String>) {
     st.webcam_error = error;
 }
 
+/// How long to wait before trying the camera again after `failures` failures in a row: longer
+/// each time (a camera another app holds would otherwise blink its light every few seconds).
+fn retry_after(failures: u32) -> Duration {
+    Duration::from_secs((10u64 << failures.min(5)).min(300))
+}
+
 /// Runs until `shared.stop` is set. Call on its own thread.
 pub fn run(shared: Arc<Shared>) {
+    let mut failures = 0u32;
     while !shared.stop.load(Ordering::Relaxed) {
         let generation = shared.cam_generation.load(Ordering::SeqCst);
         if !wanted(&shared) {
+            failures = 0;
             shared.cam.lock().unwrap().clear();
             set_status(&shared, None, None);
             wait(&shared, Duration::from_secs(1), generation);
@@ -121,15 +129,20 @@ pub fn run(shared: Arc<Shared>) {
             .cloned()
         else {
             set_status(&shared, None, Some("No webcam found.".into()));
-            wait(&shared, Duration::from_secs(10), generation);
+            wait(&shared, retry_after(failures), generation);
+            failures += 1;
             continue;
         };
         match record(&ff, &cam, &shared, generation) {
-            Ok(()) => set_status(&shared, None, None),
+            Ok(()) => {
+                failures = 0;
+                set_status(&shared, None, None);
+            }
             Err(e) => {
                 warning!("webcam {}: {e}", cam.name);
                 set_status(&shared, None, Some(e));
-                wait(&shared, Duration::from_secs(10), generation);
+                wait(&shared, retry_after(failures), generation);
+                failures += 1;
             }
         }
     }
@@ -200,4 +213,15 @@ fn record(ff: &Path, cam: &Camera, shared: &Arc<Shared>, generation: u64) -> Res
     };
     shared.cam.lock().unwrap().clear();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn retries_slow_down() {
+        assert_eq!(super::retry_after(0).as_secs(), 10);
+        assert_eq!(super::retry_after(1).as_secs(), 20);
+        assert_eq!(super::retry_after(4).as_secs(), 160);
+        assert_eq!(super::retry_after(9).as_secs(), 300);
+    }
 }

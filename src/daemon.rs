@@ -235,6 +235,8 @@ pub fn run() -> Result<(), String> {
     // front, and whether Kairo paused itself (as opposed to the user pausing).
     let mut base = settings.clone();
     let mut front: Option<String> = None;
+    // The game whose own settings are in use (None: the main settings).
+    let mut applied: Option<String> = None;
     let mut last_look = Instant::now();
     let mut no_game_since: Option<Instant> = None;
     let mut auto_paused = false;
@@ -316,7 +318,7 @@ pub fn run() -> Result<(), String> {
                 match config::load(&path) {
                     Ok(s) => {
                         base = s.clone();
-                        let s = base.for_game(front.as_deref());
+                        let s = base.for_game(applied.as_deref());
                         hotkey.set(&s.hotkey);
                         shot_key.set(&s.screenshot_hotkey);
                         mark_key.set(&s.marker_hotkey);
@@ -347,13 +349,29 @@ pub fn run() -> Result<(), String> {
                 last_look = Instant::now();
                 let title = game_title();
                 if title != front {
-                    let before = base.for_game(front.as_deref());
-                    let now = base.for_game(title.as_deref());
-                    front = title;
-                    if now != before {
-                        hotkey.set(&now.hotkey);
-                        shared.apply(now);
+                    // A game's own settings come in with it and stay while another app is in
+                    // front for a moment: switching back would restart the recorder and lose
+                    // the replay. Another game (or one with its own settings) takes over.
+                    let next = if base
+                        .rule_for(title.as_deref())
+                        .is_some_and(|r| r.kind != "never")
+                    {
+                        title.clone()
+                    } else if platform::game_in_front() == Some(true) {
+                        None
+                    } else {
+                        applied.clone()
+                    };
+                    if next != applied {
+                        let before = base.for_game(applied.as_deref());
+                        let now = base.for_game(next.as_deref());
+                        applied = next;
+                        if now != before {
+                            hotkey.set(&now.hotkey);
+                            shared.apply(now);
+                        }
                     }
+                    front = title;
                 }
                 let rule = base.rule_for(front.as_deref()).cloned();
                 let private = rule.as_ref().is_some_and(|r| r.kind == "never");
@@ -538,9 +556,7 @@ fn toggle_pause(shared: &Shared) {
 /// Takes a screenshot on a worker thread, then plays the sound and shows the notification.
 fn start_screenshot(shared: &Arc<Shared>) {
     let settings = shared.settings();
-    let title = platform::foreground_title()
-        .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Kairo");
+    let title = game_title();
     if settings.sound && shared.status.lock().unwrap().recording {
         platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
     }
@@ -568,11 +584,12 @@ fn start_screenshot(shared: &Arc<Shared>) {
     });
 }
 
-/// The game or app in front, for naming clips.
+/// The game or app in front, for naming clips. Kairo's own windows ("Kairo", or "<clip> -
+/// Kairo" in the editor) don't count.
 fn game_title() -> Option<String> {
     platform::foreground_title()
         .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Kairo")
+        .filter(|t| t != "Kairo" && !t.ends_with(" - Kairo"))
 }
 
 /// Starts recording a session, or stops the one running.
@@ -647,9 +664,7 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
     }
     let settings = shared.settings();
     // The window in front when the key was pressed names the clip (usually the game).
-    let title = platform::foreground_title()
-        .and_then(|t| platform::clean_title(&t))
-        .filter(|t| t != "Kairo");
+    let title = game_title();
     if settings.sound && shared.status.lock().unwrap().recording {
         platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
     }

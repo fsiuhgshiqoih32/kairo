@@ -904,7 +904,10 @@ impl Editor {
                         kairo::cuts::removed_at(&self.removed, self.player.position)
                 {
                     if b >= end - 0.01 {
+                        // The rest is cut out: that's the end, as if playback reached it (so
+                        // Play starts over, and looping does).
                         self.player.pause();
+                        self.player.position = end;
                     } else {
                         self.player.seek(b);
                     }

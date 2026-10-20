@@ -932,9 +932,9 @@ impl App {
         shown: f32,
         sideways: bool,
     ) -> Element<'a, Message> {
-        if shown >= 1.0 {
-            return content;
-        }
+        // The same layout whether moving or settled: changing it when the entrance ends would
+        // reset the page's scroll position and focus.
+        let shown = shown.clamp(0.0, 1.0);
         let shift = (1.0 - shown) * 18.0;
         let moved: Element<'a, Message> = if sideways {
             row![Space::new().width(shift), content].into()

@@ -327,11 +327,15 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     open_now
 }
 
-/// The default output or input device changed (headphones plugged in, say).
+/// The default output or input device changed (headphones plugged in, say). Only a stream opened
+/// on a device counts: the voice-chat split captures by process, whatever the device.
 fn defaults_changed(open: &Open, settings: &Settings) -> bool {
     let host = cpal::default_host();
     let id = |d: Option<cpal::Device>| d.and_then(|d| d.id().ok()).map(|i| format!("{i:?}"));
-    (cfg!(windows) && settings.desktop_audio && id(host.default_output_device()) != open.output_id)
+    (cfg!(windows)
+        && settings.desktop_audio
+        && open.output_id.is_some()
+        && id(host.default_output_device()) != open.output_id)
         || ((settings.microphone || settings.voice_clip)
             && settings.microphone_device.trim().is_empty()
             && id(host.default_input_device()) != open.input_id)
