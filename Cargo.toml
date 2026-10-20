@@ -1,6 +1,6 @@
 [package]
 name = "kairo"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Instant replay for Windows, macOS and Linux: press F8 to save the last 30 seconds of your screen and sound."
