@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2
+
+- **Steady sound with voice chat on its own track.** Kairo no longer restarts the game sound every
+  two seconds while Discord has its own track, which left gaps in clips.
+- **Alt-tab keeps your replay.** A game with its own settings keeps them while you glance at
+  another app, instead of restarting the recorder and losing what it held.
+- **Smaller fixes.** Clips saved with the editor in front aren't named after it; Play works when
+  the end of a clip is cut out; the mic test says so when the mic sends no sound; a busy webcam
+  is retried less and less often; pages keep their scroll position after they appear.
+
 ## 0.4.1
 
 - **Mic volume.** Settings > Sound has a slider from 0 to 300%: turn a quiet mic up or a loud one
