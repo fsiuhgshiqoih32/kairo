@@ -10,13 +10,13 @@
   // ---------- Downloads ----------
   const REPO = "fsiuhgshiqoih32/kairo";
   const release = {
-    version: "0.3.0",
+    version: "0.4.0",
     date: null,
     files: {
-      windows: { name: "kairo-v0.3.0-windows-x64-setup.exe", size: 31979762 },
-      portable: { name: "kairo-v0.3.0-windows-x64-portable.zip", size: 15609058 },
-      mac: { name: "kairo-v0.3.0-macos-universal.zip", size: 25437353 },
-      linux: { name: "kairo-v0.3.0-linux-x86_64-portable.tar.gz", size: 15796739 },
+      windows: { name: "kairo-v0.4.0-windows-x64-setup.exe", size: 32235258 },
+      portable: { name: "kairo-v0.4.0-windows-x64-portable.zip", size: 15864554 },
+      mac: { name: "kairo-v0.4.0-macos-universal.zip", size: 25830423 },
+      linux: { name: "kairo-v0.4.0-linux-x86_64-portable.tar.gz", size: 16017793 },
       sums: { name: "SHA256SUMS.txt", size: 0 },
     },
   };

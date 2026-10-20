@@ -58,13 +58,13 @@
     </h1>
     <p class="hero-lede">Kairo keeps the last 30 seconds of your game in memory. Press F8 and they’re saved as a clip in about a second. Free and open source for Windows, macOS and Linux.</p>
     <div class="hero-actions">
-      <a class="btn btn-lg" id="hero-download" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/kairo-v0.3.0-windows-x64-setup.exe">
+      <a class="btn btn-lg" id="hero-download" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/kairo-v0.4.0-windows-x64-setup.exe">
         <svg aria-hidden="true" viewBox="0 0 20 20" width="20" height="20"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span id="hero-download-label">Download for Windows</span>
       </a>
       <a class="btn btn-ghost" href="#tour">See the app</a>
     </div>
-    <p class="hero-meta" id="hero-meta">Version <span data-version>0.3.0</span> · 32 MB · Windows 10 and 11 · <a href="#download">macOS and Linux</a></p>
+    <p class="hero-meta" id="hero-meta">Version <span data-version>0.4.0</span> · 32 MB · Windows 10 and 11 · <a href="#download">macOS and Linux</a></p>
   </div>
 
   <div class="hud" id="hud" data-ui>
@@ -208,12 +208,12 @@
       </div>
       <div class="panel" role="tabpanel" id="panel-editor" aria-labelledby="tab-editor" hidden>
         <div class="panel-copy">
-          <h3>Trim it in seconds.</h3>
-          <p>Play with sound, scrub the filmstrip, drag the handles and save an exact copy. Press M to mark a moment.</p>
-          <p class="soft">Change the speed and look, add fades and music, balance game, mic and voice chat, and make square, 4:5 and 9:16 copies for phones.</p>
+          <h3>Cut it in seconds.</h3>
+          <p>Drag the handles to trim, press S to split and Delete to cut the dull part out of the middle. Ctrl+Z undoes anything, and a plain trim saves instantly at full quality.</p>
+          <p class="soft">Put text on it and drag it into place, with a pop, slide or blur as it comes in. Change the speed and look, add fades and music, balance game, mic and voice chat, and make copies for phones.</p>
         </div>
         <figure class="shot" data-ui>
-          <img loading="lazy" src="media/site/editor-1280.webp" srcset="media/site/editor-1280.webp 1280w, media/site/editor-2560.webp 2560w" sizes="(max-width: 1000px) 100vw, 900px" width="1280" height="800" alt="Kairo's editor: a Red Eclipse clip with play controls, a filmstrip with trim handles and moment flags, and panels for sharing, tags, trim, moments and captions">
+          <img loading="lazy" src="media/site/editor-1280.webp" srcset="media/site/editor-1280.webp 1280w, media/site/editor-2560.webp 2560w" sizes="(max-width: 1000px) 100vw, 900px" width="1280" height="800" alt="Kairo's editor: a Red Eclipse clip with the text What a clutch and GG over it, a filmstrip with trim handles, a part cut out and moment flags, and panels for sharing, tags and folder, trim with Split and Cut this part, and moments">
         </figure>
       </div>
       <div class="panel" role="tabpanel" id="panel-share" aria-labelledby="tab-share" hidden>
@@ -302,8 +302,11 @@
       <li><h3>Nothing leaves your PC</h3><p>No account, no ads, no tracking and no watermark. A clip is only uploaded when you ask for a share link.</p></li>
       <li><h3>Save and share, one key</h3><p>Give it a shortcut and one press saves the clip, uploads it and copies the link, ready to paste in a chat.</p></li>
       <li><h3>Your stats</h3><p>Clips kept, play time, storage, your top games, the last two weeks and your streak of days with a clip.</p></li>
-      <li><h3>Mark the moment</h3><p>F10 drops a flag while you play, and the clip that holds it shows the flag on its timeline.</p></li>
       <li><h3>Never miss an update</h3><p>A notice tells you when a new version is out and what’s in it. Each download is checked against its published checksum.</p></li>
+      <li><h3>Text that moves</h3><p>Type a line, drag it where you want it and pick how it arrives: a pop, a slide or a blur, drawn with motion blur.</p></li>
+      <li><h3>Your webcam in the corner</h3><p>Turn it on and your camera goes in a corner of every clip you save, at the size you pick.</p></li>
+      <li><h3>Only while you play</h3><p>Keep a replay only while a game is in front, give each game its own length and quality, and never record the apps you name (Windows).</p></li>
+      <li><h3>Folders and badges</h3><p>Sort clips into folders, and earn 15 achievements as your library grows. Dark, light or match your system.</p></li>
       <li><h3>Scriptable</h3><p>Save, screenshot, share and caption from the command line, with <code>kairo save</code> and friends. Handy on Wayland.</p></li>
     </ul>
   </div>
@@ -313,7 +316,7 @@
   <div class="wrap">
     <div class="get-head">
       <h2 id="get-title" class="h2">Get Kairo.</h2>
-      <p class="lead">Free, for good. Version <span data-version>0.3.0</span><span id="release-date">, released 19 October 2026</span>. ffmpeg is included, so there’s nothing else to install.</p>
+      <p class="lead">Free, for good. Version <span data-version>0.4.0</span><span id="release-date">, released 20 October 2026</span>. ffmpeg is included, so there’s nothing else to install.</p>
     </div>
 
     <div class="get-grid">
@@ -324,11 +327,11 @@
           <button type="button" role="radio" aria-checked="false" data-os="linux" tabindex="-1">Linux</button>
         </div>
         <p class="pick-for" id="pick-for">For Windows 10 and 11, 64‑bit</p>
-        <a class="btn btn-lg btn-block" id="go" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/kairo-v0.3.0-windows-x64-setup.exe">
+        <a class="btn btn-lg btn-block" id="go" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/kairo-v0.4.0-windows-x64-setup.exe">
           <svg aria-hidden="true" viewBox="0 0 20 20" width="20" height="20"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span id="go-label">Download the installer</span>
         </a>
-        <p class="pick-file"><span id="go-file">kairo-v0.3.0-windows-x64-setup.exe</span> · <span id="go-size">32 MB</span></p>
+        <p class="pick-file"><span id="go-file">kairo-v0.4.0-windows-x64-setup.exe</span> · <span id="go-size">32 MB</span></p>
         <p class="pick-note" id="pick-note">Installs for you without administrator rights and uninstalls from Settings › Apps. It isn’t code-signed yet, so Windows may say it protected your PC: choose More info, then Run anyway.</p>
         <div class="phone-note" id="phone-note" hidden>
           <p>Kairo runs on computers. Send yourself this page and open it there.</p>
@@ -339,11 +342,11 @@
       <div class="others">
         <h3>Other downloads</h3>
         <ul class="dl-list">
-          <li><a id="alt-portable" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/kairo-v0.3.0-windows-x64-portable.zip"><b>Windows, no installer</b><span>Unzip anywhere and run kairo.exe · <span data-size="portable">16 MB</span></span></a></li>
-          <li><a id="alt-mac" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/kairo-v0.3.0-macos-universal.zip"><b>macOS 11 or newer</b><span>Apple silicon and Intel · <span data-size="mac">25 MB</span></span></a></li>
-          <li><a id="alt-linux" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/kairo-v0.3.0-linux-x86_64-portable.tar.gz"><b>Linux, x86_64</b><span>X11, or XWayland with a shortcut for <code>kairo save</code> · <span data-size="linux">16 MB</span></span></a></li>
+          <li><a id="alt-portable" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/kairo-v0.4.0-windows-x64-portable.zip"><b>Windows, no installer</b><span>Unzip anywhere and run kairo.exe · <span data-size="portable">16 MB</span></span></a></li>
+          <li><a id="alt-mac" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/kairo-v0.4.0-macos-universal.zip"><b>macOS 11 or newer</b><span>Apple silicon and Intel · <span data-size="mac">26 MB</span></span></a></li>
+          <li><a id="alt-linux" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/kairo-v0.4.0-linux-x86_64-portable.tar.gz"><b>Linux, x86_64</b><span>X11, or XWayland with a shortcut for <code>kairo save</code> · <span data-size="linux">16 MB</span></span></a></li>
         </ul>
-        <p class="others-small">Check your download against <a id="sums" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.3.0/SHA256SUMS.txt">SHA256SUMS.txt</a>. <a href="https://github.com/fsiuhgshiqoih32/kairo/releases">Release notes and every version</a>. Downloads come from GitHub.</p>
+        <p class="others-small">Check your download against <a id="sums" href="https://github.com/fsiuhgshiqoih32/kairo/releases/download/v0.4.0/SHA256SUMS.txt">SHA256SUMS.txt</a>. <a href="https://github.com/fsiuhgshiqoih32/kairo/releases">Release notes and every version</a>. Downloads come from GitHub.</p>
       </div>
     </div>
   </div>
