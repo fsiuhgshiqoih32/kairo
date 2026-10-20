@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- **Mic volume.** Settings > Sound has a slider from 0 to 300%: turn a quiet mic up or a loud one
+  down, and clips get it from then on. Loud peaks are softened instead of crackling.
+- **Test your mic.** Test mic shows a live level as you talk, and Hear yourself records a few
+  seconds and plays them back at the volume you set. Nothing is saved.
+
 ## 0.4.0
 
 - **Cut and undo in the editor.** Press S to split at the playhead and Delete to cut a part out of
