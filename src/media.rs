@@ -81,6 +81,24 @@ pub fn parse_info(text: &str) -> Option<Info> {
             && let Some(last) = info.audio_tracks.last_mut()
         {
             *last = v.trim().to_string();
+        } else if last_was_audio
+            && let Some(t) = l.strip_prefix("handler_name")
+            && let Some((_, v)) = t.split_once(':')
+            && let Some(last) = info.audio_tracks.last_mut()
+            && last.is_empty()
+            && !matches!(v.trim(), "SoundHandler" | "")
+        {
+            // MP4 keeps the handler name where it drops the title.
+            *last = v.trim().to_string();
+        }
+    }
+    // Clips saved before the handler names were written: Kairo's tracks come in a known order.
+    if info.audio_tracks.iter().all(String::is_empty) {
+        let known = ["Everything", "Game", "Microphone", "Voice chat"];
+        if (3..=4).contains(&info.audio_tracks.len()) {
+            for (t, name) in info.audio_tracks.iter_mut().zip(known) {
+                *t = name.to_string();
+            }
         }
     }
     (seen_video && info.width > 0).then_some(info)
@@ -686,7 +704,7 @@ pub fn trim_args(
 
 /// One clip's kept `parts` (seconds of the clip, in order) joined back to back, picture and every
 /// sound track. `last`: this is the finished copy (MP4, AAC); otherwise it's for the rest of an
-/// export to work on (Matroska, the picture at a higher bitrate, the sound exact).
+/// export to work on (MOV, the picture at a higher bitrate, the sound exact).
 pub fn join_args(
     clip: &Path,
     parts: &[(f64, f64)],
@@ -735,6 +753,10 @@ pub fn join_args(
     a.extend(export_video_opts(encoder, bitrate, fps, false));
     for (t, title) in info.audio_tracks.iter().enumerate() {
         a.extend([format!("-metadata:s:a:{t}"), format!("title={title}")]);
+        a.extend([
+            format!("-metadata:s:a:{t}"),
+            format!("handler_name={title}"),
+        ]);
     }
     if last {
         a.extend(mp4_tail(out));
@@ -742,7 +764,7 @@ pub fn join_args(
         if tracks > 0 {
             a.extend([s("-c:a"), s("pcm_s16le")]);
         }
-        a.extend([s("-f"), s("matroska"), out.display().to_string()]);
+        a.extend([s("-f"), s("mov"), out.display().to_string()]);
     }
     a
 }
@@ -1164,6 +1186,35 @@ mod tests {
 At least one output file must be specified";
 
     #[test]
+    fn reads_track_names_from_handler_names() {
+        let mp4 = SAMPLE
+            .replace(
+                "title           : Everything",
+                "handler_name    : Everything",
+            )
+            .replace("title           : Game", "handler_name    : Game");
+        assert_eq!(
+            parse_info(&mp4).unwrap().audio_tracks,
+            vec!["Everything".to_string(), "Game".to_string()]
+        );
+        // Older clips: three unnamed tracks are Kairo's mix, game and microphone.
+        let three = format!(
+            "{}\n  Stream #0:3[0x4](und): Audio: aac (LC), 48000 Hz, stereo, fltp, 160 kb/s",
+            SAMPLE
+                .replace(
+                    "title           : Everything",
+                    "handler_name    : SoundHandler"
+                )
+                .replace("title           : Game", "handler_name    : SoundHandler")
+                .trim_end_matches("At least one output file must be specified")
+        );
+        assert_eq!(
+            parse_info(&three).unwrap().audio_tracks,
+            vec!["Everything", "Game", "Microphone"]
+        );
+    }
+
+    #[test]
     fn reads_clip_details() {
         let i = parse_info(SAMPLE).unwrap();
         assert!((i.duration - 30.3).abs() < 1e-9);
@@ -1531,7 +1582,7 @@ At least one output file must be specified";
             &info,
             Encoder::Nvenc,
             false,
-            Path::new("j.mkv"),
+            Path::new("j.mov"),
         )
         .join(" ");
         assert!(a.contains("-ss 2.000 -t 10.000 -i c.mp4"), "{a}");
@@ -1556,7 +1607,7 @@ At least one output file must be specified";
             "a higher bitrate for the next pass: {a}"
         );
         assert!(
-            a.contains("-metadata:s:a:2 title=Microphone -c:a pcm_s16le -f matroska j.mkv"),
+            a.contains("-metadata:s:a:2 handler_name=Microphone -c:a pcm_s16le -f mov j.mov"),
             "{a}"
         );
         let last = join_args(

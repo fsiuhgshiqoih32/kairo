@@ -574,7 +574,9 @@ pub fn save_with_cam_args(
         a.extend([s("-c:a"), s("aac"), s("-b:a"), s("160k")]);
     }
     for (i, t) in titles.iter().enumerate() {
+        // MP4 keeps a track's handler name but not its title: write both.
         a.extend([format!("-metadata:s:a:{i}"), format!("title={t}")]);
+        a.extend([format!("-metadata:s:a:{i}"), format!("handler_name={t}")]);
         let d = if i == 0 { "default" } else { "0" };
         a.extend([format!("-disposition:a:{i}"), s(d)]);
     }
@@ -1011,11 +1013,14 @@ mod tests {
             "{a}"
         );
         assert!(
-            a.contains("-metadata:s:a:0 title=Everything -disposition:a:0 default"),
+            a.contains(
+                "-metadata:s:a:0 title=Everything -metadata:s:a:0 handler_name=Everything \
+                 -disposition:a:0 default"
+            ),
             "{a}"
         );
         assert!(
-            a.contains("-metadata:s:a:2 title=Microphone -disposition:a:2 0"),
+            a.contains("handler_name=Microphone -disposition:a:2 0"),
             "{a}"
         );
         assert!(a.ends_with("-movflags +faststart -f mp4 out.mp4"));

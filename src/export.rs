@@ -321,7 +321,7 @@ fn run_cut(
     }
     status.lock().unwrap().stage = "Joining the parts".into();
     std::fs::create_dir_all(&job.burns_dir).map_err(|e| e.to_string())?;
-    let joined = job.burns_dir.join("joined.mkv");
+    let joined = job.burns_dir.join("joined.mov");
     let a = media::join_args(job.clip, &parts, job.info, encoder, false, &joined);
     encode(job.ff, &a, length, &joined, status, cancel, (0.0, 0.35))?;
     let mut info = ffmpeg::probe_clip(job.ff, &joined)?;

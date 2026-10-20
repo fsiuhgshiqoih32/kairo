@@ -74,8 +74,10 @@ test "$(wc -c < "$dir/cap.rgba")" -eq $((120 * 40 * 4))
 test -s "$dir/captioned.mp4"
 
 step "editor cuts: parts of a clip joined back to back, every sound track kept exact"
-"$ff" "${q[@]}" -ss 0.2 -t 2.4 -i "$dir/clip.mp4" -filter_complex   "[0:v]split=2[v0][v1];[0:a:0]asplit=2[a0_0][a0_1];[v0]trim=start=0:end=0.8,setpts=PTS-STARTPTS[pv0];[a0_0]atrim=start=0:end=0.8,asetpts=PTS-STARTPTS[pa0_0];[v1]trim=start=1.6:end=2.4,setpts=PTS-STARTPTS[pv1];[a0_1]atrim=start=1.6:end=2.4,asetpts=PTS-STARTPTS[pa0_1];[pv0][pa0_0][pv1][pa0_1]concat=n=2:v=1:a=1[v][a0]"   -map "[v]" -map "[a0]" -c:v libx264 -b:v 300k -metadata:s:a:0 title=Game -c:a pcm_s16le -f matroska "$dir/cut.mkv"
-test -s "$dir/cut.mkv"
+"$ff" "${q[@]}" -ss 0.2 -t 2.4 -i "$dir/clip.mp4" -filter_complex   "[0:v]split=2[v0][v1];[0:a:0]asplit=2[a0_0][a0_1];[v0]trim=start=0:end=0.8,setpts=PTS-STARTPTS[pv0];[a0_0]atrim=start=0:end=0.8,asetpts=PTS-STARTPTS[pa0_0];[v1]trim=start=1.6:end=2.4,setpts=PTS-STARTPTS[pv1];[a0_1]atrim=start=1.6:end=2.4,asetpts=PTS-STARTPTS[pa0_1];[pv0][pa0_0][pv1][pa0_1]concat=n=2:v=1:a=1[v][a0]"   -map "[v]" -map "[a0]" -c:v libx264 -b:v 300k -metadata:s:a:0 title=Game -metadata:s:a:0 handler_name=Game -c:a pcm_s16le -f mov "$dir/cut.mov"
+# Reading a file with no output "fails", so take the text first, then look in it.
+probe=$("$ff" -hide_banner -i "$dir/cut.mov" 2>&1 || true)
+grep -q "handler_name *: Game" <<<"$probe" || { echo "track name lost"; exit 1; }
 "$ff" "${q[@]}" -ss 0.2 -i "$dir/clip.mp4" -t 1 -map 0:v:0 -map "0:a?" -c copy -avoid_negative_ts make_zero   -movflags +faststart -f mp4 "$dir/copy.mp4"
 test -s "$dir/copy.mp4"
 
@@ -93,7 +95,8 @@ case "$(uname -s)" in
   Darwin) cam=avfoundation ;;
   *) cam=v4l2 ;;
 esac
-"$ff" -hide_banner -devices 2>/dev/null | grep -qw "$cam" || { echo "no $cam camera input"; exit 1; }
+devices=$("$ff" -hide_banner -devices 2>/dev/null || true)
+grep -qw "$cam" <<<"$devices" || { echo "no $cam camera input"; exit 1; }
 
 step "screenshot: one frame of the stream as JPEG"
 "$ff" "${q[@]}" -i "$dir/video.ts" -vf "select=eq(n\,80)" -frames:v 1 -q:v 2 -update 1 "$dir/shot.jpg"
