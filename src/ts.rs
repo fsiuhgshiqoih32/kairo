@@ -149,9 +149,41 @@ pub fn unwrap_pts_us(pts: i64, around_us: i64) -> i64 {
     best * 100 / 9
 }
 
+/// The video codec of a stream, from the PAT and PMT near its start.
+pub fn codec_of(stream: &[u8]) -> Option<Codec> {
+    let mut pmt = None;
+    for p in stream.chunks_exact(PACKET) {
+        let Some(h) = header(p) else { continue };
+        let Some(at) = h.payload.filter(|_| h.unit_start) else {
+            continue;
+        };
+        if h.pid == 0 {
+            pmt = pat_pmt_pid(&p[at..]);
+        } else if Some(h.pid) == pmt
+            && let Some((_, codec)) = pmt_video_pid(&p[at..])
+        {
+            return Some(codec);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn the_codec_is_read_from_the_stream_start() {
+        let mut h264 = packet(0, true, false, &pat(0x100)).to_vec();
+        h264.extend(packet(0x100, true, false, &pmt(0x101)));
+        assert_eq!(codec_of(&h264), Some(Codec::H264));
+        let mut m = pmt(0x101);
+        m[13] = 0x24; // the stream type: HEVC
+        let mut hevc = packet(0, true, false, &pat(0x100)).to_vec();
+        hevc.extend(packet(0x100, true, false, &m));
+        assert_eq!(codec_of(&hevc), Some(Codec::Hevc));
+        assert_eq!(codec_of(&h264[..PACKET]), None);
+    }
 
     /// A TS packet for tests: header, optional adaptation field with the random-access flag,
     /// payload, stuffing.

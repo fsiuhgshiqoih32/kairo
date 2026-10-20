@@ -1,7 +1,7 @@
 //! Finding and running the bundled ffmpeg.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use kairo::args::{self, Encoder};
@@ -61,14 +61,56 @@ pub fn command(ffmpeg: &Path) -> Command {
     cmd
 }
 
+/// Starts `cmd`, tied to this process: if Kairo ends any way at all (a crash, being killed,
+/// signing out), Windows ends the ffmpeg too, instead of leaving it recording or writing half a
+/// file.
+pub fn spawn(cmd: &mut Command) -> std::io::Result<Child> {
+    let child = cmd.spawn()?;
+    #[cfg(windows)]
+    tie(&child);
+    Ok(child)
+}
+
+#[cfg(windows)]
+fn tie(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+    // Never closed: the handle goes when the process does, and every process in the job with it.
+    static JOB: OnceLock<usize> = OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of_val(&info) as u32,
+        );
+        job as usize
+    });
+    if job != 0 {
+        unsafe { AssignProcessToJobObject(job as _, child.as_raw_handle() as _) };
+    }
+}
+
 /// Runs ffmpeg to completion, giving up after `timeout`. `Err` carries its error output.
 pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
-    let mut child = command(ffmpeg)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let mut child = spawn(
+        command(ffmpeg)
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     let mut stderr = child.stderr.take();
     let reader = std::thread::spawn(move || {
         let mut s = String::new();

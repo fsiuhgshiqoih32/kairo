@@ -127,8 +127,15 @@ enum UserEvent {
     Menu(MenuEvent),
 }
 
-pub fn run() -> Result<(), String> {
-    let Some(lock) = single_instance::acquire_patiently(single_instance::DAEMON)? else {
+/// `wait`: started by the old process restarting after an update, which saves a running
+/// session before it goes; that can take minutes.
+pub fn run(wait: bool) -> Result<(), String> {
+    let lock = if wait {
+        single_instance::acquire_within(single_instance::DAEMON, Duration::from_secs(3600))?
+    } else {
+        single_instance::acquire_patiently(single_instance::DAEMON)?
+    };
+    let Some(lock) = lock else {
         println!("Kairo is already running.");
         return Ok(());
     };
@@ -153,6 +160,23 @@ pub fn run() -> Result<(), String> {
         let _ = take_request(r);
     }
     let shared = Shared::new(settings.clone());
+    // Sessions a stopped Kairo didn't get to save (shut down, crashed, killed): listed before
+    // anything records, then saved in the background.
+    let leftovers = crate::session::leftovers();
+    {
+        let s = settings.clone();
+        std::thread::spawn(move || {
+            crate::session::sweep_parts(&s);
+            for work in leftovers {
+                info!("saving a session that was cut short: {}", work.display());
+                match crate::session::recover(&work, &s) {
+                    Ok(Some(r)) => tell(s.notify, Ok(r)),
+                    Ok(None) => {}
+                    Err(e) => tell(s.notify, Err(e)),
+                }
+            }
+        });
+    }
     let threads = vec![
         {
             let s = shared.clone();
@@ -446,7 +470,7 @@ pub fn run() -> Result<(), String> {
             }
             if take_request(Request::Restart) {
                 info!("restarting after an update");
-                if let Err(e) = crate::app::spawn_self(&["daemon"]) {
+                if let Err(e) = crate::app::spawn_self(&["daemon", "--wait"]) {
                     error!("{e}");
                 } else {
                     quit = true;
@@ -488,14 +512,10 @@ pub fn run() -> Result<(), String> {
             }
         }
         if quit {
-            // Join a running session before going (its files would be lost otherwise).
-            if shared.session.lock().unwrap().is_some() {
-                let (tx, rx) = std::sync::mpsc::channel();
-                crate::session::stop(&shared, move |r| {
-                    let _ = tx.send(r);
-                });
-                let _ = rx.recv_timeout(Duration::from_secs(600));
-            }
+            // Save a running session, and any being saved, before going: however long that
+            // takes (ffmpeg's own time limit bounds it). A restart's new process waits for us.
+            finish_session(&shared);
+            crate::session::wait_for_joins();
             shared.stop.store(true, Ordering::SeqCst);
             if let Some(ts) = threads.take() {
                 for t in ts {
@@ -608,26 +628,29 @@ fn toggle_session(shared: &Arc<Shared>) {
 /// Stops the session and joins it, then shows it like a saved clip.
 fn finish_session(shared: &Arc<Shared>) {
     let notify = shared.settings().notify;
-    crate::session::stop(shared, move |r| {
-        let args: Vec<String> = match r {
-            Ok((path, seconds)) if notify => vec![
-                "notify".into(),
-                "--clip".into(),
-                path.display().to_string(),
-                "--seconds".into(),
-                format!("{seconds:.1}"),
-            ],
-            Ok(_) => return,
-            Err(e) => {
-                warning!("{e}");
-                vec!["notify".into(), "--error".into(), e]
-            }
-        };
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        if let Err(e) = crate::app::spawn_self(&refs) {
+    crate::session::stop(shared, move |r| tell(notify, r));
+}
+
+/// Shows a saved session like a saved clip, or why it couldn't be saved.
+fn tell(notify: bool, r: Result<(PathBuf, f64), String>) {
+    let args: Vec<String> = match r {
+        Ok((path, seconds)) if notify => vec![
+            "notify".into(),
+            "--clip".into(),
+            path.display().to_string(),
+            "--seconds".into(),
+            format!("{seconds:.1}"),
+        ],
+        Ok(_) => return,
+        Err(e) => {
             warning!("{e}");
+            vec!["notify".into(), "--error".into(), e]
         }
-    });
+    };
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let Err(e) = crate::app::spawn_self(&refs) {
+        warning!("{e}");
+    }
 }
 
 /// Points the quick-save shortcuts at the settings' (unused slots are off).

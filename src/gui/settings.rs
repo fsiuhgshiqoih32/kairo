@@ -297,9 +297,20 @@ impl State {
         if m.shift() {
             parts.push("Shift".into());
         }
-        parts.push(name);
+        let alone = parts.is_empty();
+        parts.push(name.clone());
         let spec = parts.join("+");
         self.capturing_key = None;
+        if alone && !hotkey::ok_alone(&name) {
+            self.hotkey_problem = Some((
+                target,
+                format!(
+                    "{spec} on its own would stop working in every other app. Add Ctrl, Alt or \
+                     Shift, or use an F-key."
+                ),
+            ));
+            return Effect::None;
+        }
         let taken = [
             (Target::Save, &s.hotkey),
             (Target::Screenshot, &s.screenshot_hotkey),

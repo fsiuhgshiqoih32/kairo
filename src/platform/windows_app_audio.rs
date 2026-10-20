@@ -269,15 +269,17 @@ impl Drop for Split {
     }
 }
 
-/// Puts a ring at `slot` for this capture's sound, keeping one that's already there (and
-/// whatever a session is writing from it).
-fn ensure_ring(slot: &Mutex<Option<PcmRing>>, keep_us: i64) {
-    let mut r = slot.lock().unwrap();
-    let fits = r
+/// Puts a ring at `track` for this capture's sound, keeping one that's already there; a new one
+/// carries on whatever a session is writing.
+fn ensure_ring(shared: &Shared, track: crate::recorder::Track, keep_us: i64) {
+    let fits = shared
+        .track(track)
+        .lock()
+        .unwrap()
         .as_ref()
         .is_some_and(|r| r.rate == RATE && r.channels == CHANNELS);
     if !fits {
-        *r = Some(PcmRing::new(RATE, CHANNELS, keep_us));
+        shared.set_ring(track, Some(PcmRing::new(RATE, CHANNELS, keep_us)));
     }
 }
 
@@ -312,7 +314,7 @@ fn run(shared: Arc<Shared>, app: String, stop: Arc<AtomicBool>, running: Arc<Mut
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let clock = Clock::new();
     let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-    ensure_ring(&shared.desktop, keep);
+    ensure_ring(&shared, crate::recorder::Track::Game, keep);
     let mut target: Option<Option<u32>> = None;
     let mut rest: Option<Capture> = None;
     let mut chat: Option<Capture> = None;
@@ -330,7 +332,7 @@ fn run(shared: Arc<Shared>, app: String, stop: Arc<AtomicBool>, running: Arc<Mut
                     .map_err(|e| warning!("desktop audio without {app}: {e}"))
                     .ok();
                 chat = now.and_then(|pid| {
-                    ensure_ring(&shared.chat, keep);
+                    ensure_ring(&shared, crate::recorder::Track::Chat, keep);
                     Capture::open(pid, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE)
                         .map_err(|e| warning!("{app} audio: {e}"))
                         .ok()

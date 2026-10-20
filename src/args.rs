@@ -302,11 +302,11 @@ pub fn record_args(plan: &VideoPlan) -> Vec<String> {
     let mut filters: Vec<String> = Vec::new();
     match &plan.source {
         Source::WindowsGraphics { hmonitor } => {
-            let mut g =
-                format!("gfxcapture=hmonitor={hmonitor}:max_framerate={fps}:capture_cursor=1");
-            if scaled {
-                g.push_str(&format!(":width={ow}:height={oh}:resize_mode=scale_aspect"));
-            }
+            // The size is always given: without it, a game changing the display mode makes the
+            // capture crop (or pad) to the old size instead of scaling.
+            let g = format!(
+                "gfxcapture=hmonitor={hmonitor}:max_framerate={fps}:capture_cursor=1                 :width={ow}:height={oh}:resize_mode=scale_aspect"
+            );
             a.extend([s("-f"), s("lavfi"), s("-i"), g]);
         }
         Source::Ddagrab { output } => {
@@ -519,7 +519,14 @@ pub fn save_with_cam_args(
     }
     let first_audio = 1 + usize::from(cam.is_some());
     for (p, _) in audio {
-        a.extend([s("-i"), p.display().to_string()]);
+        // A session's WAV can pass 4 GiB (its header can't say so) or be left unfinished by a
+        // crash (its header says 0): read to the end either way.
+        a.extend([
+            s("-ignore_length"),
+            s("1"),
+            s("-i"),
+            p.display().to_string(),
+        ]);
     }
     let mut graph: Vec<String> = Vec::new();
     if let Some(c) = cam {
@@ -830,7 +837,9 @@ mod tests {
         )
         .join(" ");
         assert!(
-            a.contains("-i video.ts -ss 0.400 -i cam.ts -i Game.wav -i Microphone.wav"),
+            a.contains(
+                "-i video.ts -ss 0.400 -i cam.ts -ignore_length 1 -i Game.wav -ignore_length 1 -i Microphone.wav"
+            ),
             "{a}"
         );
         assert!(
@@ -914,6 +923,11 @@ mod tests {
             None,
         )));
         assert!(a.contains("-use_wallclock_as_timestamps 1 -f lavfi -i gfxcapture=hmonitor=65537:max_framerate=60"), "{a}");
+        // Even at the screen's own size: a display-mode change then scales, not crops.
+        assert!(
+            a.contains(":width=2560:height=1440:resize_mode=scale_aspect"),
+            "{a}"
+        );
         assert!(!a.contains("hwdownload"), "{a}");
         assert!(a.contains("-vf fps=60 "), "{a}");
         assert!(a.contains("-c:v h264_nvenc"));
@@ -1005,7 +1019,9 @@ mod tests {
         );
         let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], false, o));
         assert!(
-            a.contains("-i v.ts -i desktop.wav -i mic.wav -filter_complex [1:a][2:a]amix=inputs=2"),
+            a.contains(
+                "-i v.ts -ignore_length 1 -i desktop.wav -ignore_length 1 -i mic.wav -filter_complex [1:a][2:a]amix=inputs=2"
+            ),
             "{a}"
         );
         assert!(

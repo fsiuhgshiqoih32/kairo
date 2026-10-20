@@ -150,12 +150,13 @@ pub fn run(shared: Arc<Shared>) {
 
 /// Records `cam` into the webcam buffer until it's no longer wanted (`Ok`) or ffmpeg stops.
 fn record(ff: &Path, cam: &Camera, shared: &Arc<Shared>, generation: u64) -> Result<(), String> {
-    let mut child = ffmpeg::command(ff)
-        .args(args::webcam_args(&cam.id))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let mut child = ffmpeg::spawn(
+        ffmpeg::command(ff)
+            .args(args::webcam_args(&cam.id))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     shared.cam.lock().unwrap().new_run();
     let got = Arc::new(AtomicBool::new(false));
     let reader = {

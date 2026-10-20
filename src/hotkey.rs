@@ -15,6 +15,30 @@ pub struct Hotkey {
     pub error: Option<String>,
 }
 
+/// Whether `key` (a key's name, as Settings writes it) can be a shortcut on its own. A global
+/// shortcut takes its key from every app, so keys people type with (letters, Space, Enter,
+/// arrows) need Ctrl, Alt, Shift or Cmd; keys nobody types with (F1 to F24, Pause, Scroll Lock,
+/// Print Screen, Insert, media keys) don't.
+pub fn ok_alone(key: &str) -> bool {
+    let k = key.trim();
+    let f_key = k
+        .strip_prefix('F')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=24).contains(&n));
+    f_key
+        || matches!(
+            k,
+            "Pause"
+                | "ScrollLock"
+                | "PrintScreen"
+                | "Insert"
+                | "MediaPlayPause"
+                | "MediaStop"
+                | "MediaTrackNext"
+                | "MediaTrackPrevious"
+        )
+}
+
 /// Parses "F8", "Ctrl+Shift+S" and the like.
 pub fn parse(spec: &str) -> Result<HotKey, String> {
     spec.trim()
@@ -97,5 +121,27 @@ impl Hotkey {
     pub fn is_press(&self, e: &GlobalHotKeyEvent) -> bool {
         e.state == HotKeyState::Pressed
             && self.current.as_ref().is_some_and(|(hk, _)| hk.id() == e.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_keys_nobody_types_work_alone() {
+        for k in ["F8", "F12", "F24", "Pause", "ScrollLock", "Insert"] {
+            assert!(super::ok_alone(k), "{k}");
+        }
+        for k in [
+            "Space",
+            "A",
+            "1",
+            "Enter",
+            "ArrowUp",
+            "F25",
+            "Tab",
+            "Backquote",
+        ] {
+            assert!(!super::ok_alone(k), "{k}");
+        }
     }
 }

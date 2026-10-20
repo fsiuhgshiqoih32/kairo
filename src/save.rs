@@ -105,7 +105,7 @@ pub fn read_keys(clip: &Path) -> Vec<kairo::keys::KeyEvent> {
 pub fn tidy_folder(settings: &kairo::config::Settings) {
     let dir = settings.save_dir();
     let now = crate::share::now_secs();
-    let mut lib = library::Library::load();
+    let lib = library::Library::load();
     for p in library::expired_clips(&dir, settings.keep_days, &lib, now) {
         match library::trash(&dir, &p, now) {
             Ok(_) => info!(
@@ -119,11 +119,14 @@ pub fn tidy_folder(settings: &kairo::config::Settings) {
     let gone = library::purge_expired(&dir, now);
     for t in &gone {
         remove_sidecars(&t.from);
-        lib.forget(&t.from);
         info!("deleted {} for good after 30 days", t.from.display());
     }
     if !gone.is_empty()
-        && let Err(e) = lib.save()
+        && let Err(e) = library::Library::edit(|lib| {
+            for t in &gone {
+                lib.forget(&t.from);
+            }
+        })
     {
         warning!("{e}");
     }
@@ -375,28 +378,26 @@ pub fn save_inner(
     write_keys(&out, &shared.inputs_within(start, end));
     let marks: Vec<i64> = shared.marks.lock().unwrap().iter().copied().collect();
     let marks = library::marks_within(&marks, start, end);
-    if !marks.is_empty() {
-        let mut lib = library::Library::load();
-        lib.set_markers(&out, marks);
-        if let Err(e) = lib.save() {
-            warning!("could not keep the clip's marks: {e}");
-        }
+    if !marks.is_empty()
+        && let Err(e) = library::Library::edit(|lib| lib.set_markers(&out, marks))
+    {
+        warning!("could not keep the clip's marks: {e}");
     }
     let seconds = (end - start) as f64 / 1e6;
     info!("saved {} ({seconds:.1} s)", out.display());
     if settings.max_storage_gb > 0 {
         let limit = settings.max_storage_gb as u64 * 1_000_000_000;
-        let mut lib = library::Library::load();
-        for p in library::clean_up(&dir, limit, &lib) {
-            remove_sidecars(&p);
-            lib.forget(&p);
-            info!(
-                "deleted {} to stay under {} GB",
-                p.display(),
-                settings.max_storage_gb
-            );
-        }
-        let _ = lib.save();
+        let _ = library::Library::edit(|lib| {
+            for p in library::clean_up(&dir, limit, lib, &out) {
+                remove_sidecars(&p);
+                lib.forget(&p);
+                info!(
+                    "deleted {} to stay under {} GB",
+                    p.display(),
+                    settings.max_storage_gb
+                );
+            }
+        });
     }
     drop(cleanup);
     shared.status.lock().unwrap().last_clip = Some(out.display().to_string());

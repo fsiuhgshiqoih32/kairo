@@ -32,13 +32,21 @@ pub fn acquire(name: &str) -> Result<Option<InstanceLock>, String> {
 /// Like [`acquire`], but keeps trying for a few seconds, for a restart where the old process is
 /// still shutting down.
 pub fn acquire_patiently(name: &str) -> Result<Option<InstanceLock>, String> {
-    for _ in 0..25 {
+    acquire_within(name, Duration::from_secs(5))
+}
+
+/// Like [`acquire`], but keeps trying for up to `patience`.
+pub fn acquire_within(name: &str, patience: Duration) -> Result<Option<InstanceLock>, String> {
+    let start = std::time::Instant::now();
+    loop {
         if let Some(lock) = acquire(name)? {
             return Ok(Some(lock));
         }
+        if start.elapsed() >= patience {
+            return Ok(None);
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Ok(None)
 }
 
 /// True if another process holds the lock.

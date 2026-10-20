@@ -52,7 +52,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run in the background: record, show the tray icon, save clips on the shortcut.
-    Daemon,
+    Daemon {
+        /// Wait for the old background process to finish (it saves a running session first).
+        #[arg(long, hide = true)]
+        wait: bool,
+    },
     /// Open the clips and settings window.
     Window {
         /// Wait for a closing window (after an update).
@@ -155,12 +159,12 @@ fn main() {
     }
     let windowed = matches!(
         cli.command,
-        None | Some(Cmd::Window { .. }) | Some(Cmd::Daemon) | Some(Cmd::Edit { .. })
+        None | Some(Cmd::Window { .. }) | Some(Cmd::Daemon { .. }) | Some(Cmd::Edit { .. })
     );
     let result = match cli.command {
         // The window starts the background process itself.
         None => gui::run(None, false, false),
-        Some(Cmd::Daemon) => daemon::run(),
+        Some(Cmd::Daemon { wait }) => daemon::run(wait),
         Some(Cmd::Window { wait, update }) => gui::run(None, wait, update),
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),

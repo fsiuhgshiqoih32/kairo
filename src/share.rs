@@ -141,9 +141,7 @@ pub fn start(file: &Path, clip: &Path, setting: &str, range: Option<(f64, f64)>)
             r
         });
         let r = r.inspect(|link| {
-            let mut lib = Library::load();
-            lib.set_link(&clip, Some(link.clone()));
-            if let Err(e) = lib.save() {
+            if let Err(e) = Library::edit(|lib| lib.set_link(&clip, Some(link.clone()))) {
                 warning!("couldn't remember the link: {e}");
             }
         });
@@ -184,7 +182,14 @@ fn prepare(
     let plan = kairo::media::web_plan(COPY_TARGET, end - start, &info)?;
     let dir = kairo::config::config_dir().join("sharing");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(format!("{}-{}.mp4", std::process::id(), now_secs()));
+    // Its own name: two shares started in the same second mustn't share a file.
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let out = dir.join(format!(
+        "{}-{}-{}.mp4",
+        std::process::id(),
+        now_secs(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let encoder = crate::export::best_encoder(&ff, &Mutex::new(None));
     let args = kairo::media::share_args(
         file,

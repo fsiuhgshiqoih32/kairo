@@ -504,6 +504,17 @@ pub fn config_dir() -> PathBuf {
     dir
 }
 
+/// Where big working files go (a session's until it's joined): local app data, which on
+/// Windows, unlike the settings' roaming folder, isn't copied around a network at sign-in.
+pub fn local_dir() -> PathBuf {
+    if let Some(h) = home_override() {
+        return h;
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("kairo")
+}
+
 /// Moves Rewindr's settings folder to Kairo's the first time Kairo starts. If it can't be moved
 /// (a Rewindr still running holds files open), it's copied instead.
 fn move_old_settings(old: &Path, new: &Path) {

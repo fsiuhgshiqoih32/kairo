@@ -73,10 +73,11 @@ pub fn game_of(name: &str) -> String {
                 s = s[..i].trim_end();
             }
         }
-        // " 2026-10-18 16-54-03"
+        // " 2026-10-18 16-54-03", compared as bytes: a name ending in Japanese, emoji and so on
+        // mustn't be cut inside a character (the match starts with an ASCII space, so cutting
+        // there is safe).
         if s.len() >= 20 {
-            let tail = &s[s.len() - 20..];
-            let b = tail.as_bytes();
+            let b = &s.as_bytes()[s.len() - 20..];
             let digits = [1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19];
             if b[0] == b' '
                 && b[5] == b'-'
@@ -102,6 +103,67 @@ pub fn game_of(name: &str) -> String {
 }
 
 /// Clips the user starred, links they shared and moments they marked, by file name. Stored in
+/// Writes `text` to `path` without readers ever seeing half a file, and without writers in other
+/// processes (the window, the background process, a notification) getting in each other's way:
+/// each writes its own temporary file, takes `<path>.lock` while it swaps it in, and keeps the
+/// file it replaces as `<path>.bak`.
+pub fn write_atomic(path: &Path, text: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy().to_string());
+    let tmp = path.with_file_name(format!(
+        "{name}.{}-{}.tmp",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, text)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_file_name(format!("{name}.lock")))?;
+    lock.lock()?;
+    if path.exists() {
+        let _ = std::fs::copy(path, path.with_file_name(format!("{name}.bak")));
+    }
+    let done = std::fs::rename(&tmp, path);
+    let _ = lock.unlock();
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
+}
+
+/// Runs `f` while holding `<path>.lock`, so a read-change-write from one process isn't undone by
+/// another's at the same moment.
+fn with_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy().to_string());
+    let lock = path.parent().and_then(|d| {
+        std::fs::create_dir_all(d).ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_file_name(format!("{name}.edit-lock")))
+            .ok()
+    });
+    if let Some(l) = &lock {
+        let _ = l.lock();
+    }
+    let out = f();
+    if let Some(l) = &lock {
+        let _ = l.unlock();
+    }
+    out
+}
+
 /// `clips.json` in the config folder.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -116,6 +178,10 @@ pub struct Library {
     pub folders: BTreeSet<String>,
     /// The folder each clip is in; a clip is in one folder at most.
     pub folder_of: BTreeMap<String, String>,
+    /// clips.json was there but couldn't be read (nor its backup): saving would wipe it, so
+    /// `save` refuses.
+    #[serde(skip)]
+    pub damaged: bool,
 }
 
 /// Folder names are short: this many characters at most.
@@ -194,21 +260,66 @@ impl Library {
     }
 
     pub fn load() -> Library {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        Self::load_from(&Self::path())
+    }
+
+    /// Reads `path`. A damaged file is kept aside (as `.damaged-<time>`) and the last good copy
+    /// (`.bak`) is used instead; with neither, an empty library marked `damaged` comes back, so
+    /// nothing saves over what might still be recovered.
+    pub fn load_from(path: &Path) -> Library {
+        let read = |p: &Path| -> Result<Option<Library>, ()> {
+            match std::fs::read_to_string(p) {
+                Ok(t) => serde_json::from_str(&t).map(Some).map_err(|_| ()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(_) => Err(()),
+            }
+        };
+        match read(path) {
+            Ok(Some(lib)) => lib,
+            Ok(None) => Library::default(),
+            Err(()) => {
+                let name = path
+                    .file_name()
+                    .map_or_else(Default::default, |n| n.to_string_lossy().to_string());
+                let _ = std::fs::copy(
+                    path,
+                    path.with_file_name(format!("{name}.damaged-{}", unix(SystemTime::now()))),
+                );
+                match read(&path.with_file_name(format!("{name}.bak"))) {
+                    Ok(Some(lib)) => lib,
+                    _ => Library {
+                        damaged: true,
+                        ..Default::default()
+                    },
+                }
+            }
+        }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path();
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        self.save_to(&Self::path())
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if self.damaged {
+            return Err(format!(
+                "{} couldn't be read, so it wasn't overwritten",
+                path.display()
+            ));
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    /// Reads clips.json, changes it with `f` and writes it back, with no other writer in
+    /// between (the background process and the window both keep it).
+    pub fn edit(f: impl FnOnce(&mut Library)) -> Result<(), String> {
+        let path = Self::path();
+        with_lock(&path, || {
+            let mut lib = Self::load_from(&path);
+            f(&mut lib);
+            lib.save_to(&path)
+        })
     }
 
     pub fn is_favorite(&self, clip: &Path) -> bool {
@@ -426,9 +537,9 @@ impl Library {
 }
 
 /// Deletes for good until the folder's clips and Recently deleted total at most `limit_bytes`:
-/// what's in Recently deleted first, then the oldest clips (never favourites). Returns where
-/// what went was saved.
-pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library) -> Vec<PathBuf> {
+/// what's in Recently deleted first, then the oldest clips (never favourites, never `keep`, the
+/// clip just saved). Returns where what went was saved.
+pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library, keep: &Path) -> Vec<PathBuf> {
     let clips = scan(dir);
     let bin = trashed(dir);
     let mut total: u64 =
@@ -447,7 +558,7 @@ pub fn clean_up(dir: &Path, limit_bytes: u64, lib: &Library) -> Vec<PathBuf> {
         if total <= limit_bytes {
             break;
         }
-        if lib.is_favorite(&c.path) {
+        if lib.is_favorite(&c.path) || c.path == keep {
             continue;
         }
         if std::fs::remove_file(&c.path).is_ok() {
@@ -513,10 +624,7 @@ fn write_trash_list(dir: &Path, list: &BTreeMap<String, TrashEntry>) {
         return;
     }
     if let Ok(text) = serde_json::to_string_pretty(list) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ = write_atomic(&path, text.as_bytes());
     }
 }
 
@@ -718,6 +826,78 @@ pub fn rename_target(clip: &Path, new_name: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_in_any_script_load() {
+        // A long name whose 20th byte from the end falls inside a character.
+        assert_eq!(
+            game_of("原神 Genshin Impact 日本語のタイトルです"),
+            "原神 Genshin Impact 日本語のタイトルです"
+        );
+        assert_eq!(game_of("原神 2026-10-18 16-54-03"), "原神");
+        assert_eq!(game_of("🎮🎮🎮🎮🎮🎮🎮"), "🎮🎮🎮🎮🎮🎮🎮");
+    }
+
+    #[test]
+    fn a_damaged_clips_json_is_not_wiped() {
+        let dir = std::env::temp_dir().join(format!("kairo-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clips.json");
+        let mut lib = Library::default();
+        lib.favorites.insert("a.mp4".into());
+        lib.save_to(&path).unwrap();
+        lib.favorites.insert("b.mp4".into());
+        lib.save_to(&path).unwrap();
+        // The file gets damaged: the last good copy comes back.
+        std::fs::write(&path, "{ not json").unwrap();
+        let back = Library::load_from(&path);
+        assert!(!back.damaged);
+        assert!(back.favorites.contains("a.mp4"), "{back:?}");
+        // With the backup damaged too, nothing is saved over them.
+        std::fs::write(dir.join("clips.json.bak"), "nope").unwrap();
+        let lost = Library::load_from(&path);
+        assert!(lost.damaged && lost.save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writers_take_turns() {
+        let dir = std::env::temp_dir().join(format!("kairo-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clips.json");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for k in 0..10 {
+                        with_lock(&path, || {
+                            let mut lib = Library::load_from(&path);
+                            lib.favorites.insert(format!("{i}-{k}.mp4"));
+                            lib.save_to(&path).unwrap();
+                        });
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(
+            Library::load_from(&path).favorites.len(),
+            80,
+            "no edit was lost"
+        );
+        let leftovers = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
@@ -798,8 +978,11 @@ mod tests {
         lib.set_favorite(&old_fav, true);
         assert!(lib.is_favorite(&old_fav));
         // Keep 250 KB: delete the oldest non-favourite clips first.
-        let deleted = clean_up(dir.path(), 250 * 1024, &lib);
+        let deleted = clean_up(dir.path(), 250 * 1024, &lib, &newest);
         assert_eq!(deleted, vec![oldest.clone(), newer.clone()]);
+        assert!(old_fav.exists() && newest.exists());
+        // A limit nothing can meet still never deletes the clip just saved (or a favourite).
+        assert!(clean_up(dir.path(), 1, &lib, &newest).is_empty());
         assert!(old_fav.exists() && newest.exists());
         let to = dir.path().join("renamed.mp4");
         lib.renamed(&old_fav, &to);

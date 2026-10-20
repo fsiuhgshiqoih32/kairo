@@ -692,12 +692,13 @@ pub fn encode_with(
     cancel: &AtomicBool,
     progress: &dyn Fn(f32),
 ) -> Result<(), String> {
-    let mut child = ffmpeg::command(ff)
-        .args(a)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let mut child = ffmpeg::spawn(
+        ffmpeg::command(ff)
+            .args(a)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     let err = child.stderr.take().expect("piped");
     let errors = std::thread::spawn(move || {
         let mut s = String::new();

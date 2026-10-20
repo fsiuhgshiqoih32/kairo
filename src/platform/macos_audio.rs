@@ -97,15 +97,21 @@ impl Output {
 }
 
 fn push(shared: &Shared, samples: &[f32], rate: u32, channels: u16) {
-    let mut ring = shared.desktop.lock().unwrap();
-    let fits = ring
+    let fits = shared
+        .desktop
+        .lock()
+        .unwrap()
         .as_ref()
         .is_some_and(|r| r.rate == rate && r.channels == channels);
     if !fits {
+        // A new ring carries on a session's file from the old one.
         let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-        *ring = Some(PcmRing::new(rate, channels, keep));
+        shared.set_ring(
+            crate::recorder::Track::Game,
+            Some(PcmRing::new(rate, channels, keep)),
+        );
     }
-    if let Some(r) = ring.as_mut() {
+    if let Some(r) = shared.desktop.lock().unwrap().as_mut() {
         r.push(samples, now_us());
     }
 }

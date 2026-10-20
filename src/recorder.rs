@@ -86,6 +86,27 @@ pub struct SessionStatus {
     pub mb: f64,
 }
 
+/// The sound tracks, each with its ring in `Shared`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Track {
+    Game = 0,
+    Mic = 1,
+    Chat = 2,
+}
+
+impl Track {
+    pub const ALL: [Track; 3] = [Track::Game, Track::Mic, Track::Chat];
+
+    /// The name a session's file and a clip's track get.
+    pub fn name(self) -> &'static str {
+        match self {
+            Track::Game => "Game",
+            Track::Mic => "Microphone",
+            Track::Chat => "Voice chat",
+        }
+    }
+}
+
 /// Everything the recorder, audio capture, saving and the tray share.
 pub struct Shared {
     pub settings: Mutex<Settings>,
@@ -96,6 +117,9 @@ pub struct Shared {
     pub mic: Mutex<Option<PcmRing>>,
     /// A voice-chat app's sound, when it has its own track.
     pub chat: Mutex<Option<PcmRing>>,
+    /// A session's sound files while their track has no ring (audio restarting, paused), so
+    /// they carry on in the next one instead of being lost.
+    pub parked_tapes: Mutex<[Option<kairo::pcm::PcmTape>; 3]>,
     pub status: Mutex<Status>,
     pub stop: AtomicBool,
     pub paused: AtomicBool,
@@ -131,6 +155,7 @@ impl Shared {
             desktop: Mutex::new(None),
             mic: Mutex::new(None),
             chat: Mutex::new(None),
+            parked_tapes: Mutex::default(),
             status: Mutex::new(Status::default()),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -145,6 +170,50 @@ impl Shared {
             session: Mutex::new(None),
             session_wanted: AtomicBool::new(false),
         })
+    }
+
+    pub fn track(&self, t: Track) -> &Mutex<Option<PcmRing>> {
+        match t {
+            Track::Game => &self.desktop,
+            Track::Mic => &self.mic,
+            Track::Chat => &self.chat,
+        }
+    }
+
+    /// Puts `ring` (or nothing) in `t`'s place. A session's file being written from the old ring
+    /// carries on in the new one, or waits for the next ring, rather than being dropped with it.
+    pub fn set_ring(&self, t: Track, ring: Option<PcmRing>) {
+        let mut slot = self.track(t).lock().unwrap();
+        let mut parked = self.parked_tapes.lock().unwrap();
+        let tape = slot
+            .as_mut()
+            .and_then(|r| r.take_tape())
+            .or_else(|| parked[t as usize].take());
+        *slot = ring;
+        if let Some(tape) = tape {
+            match slot.as_mut() {
+                Some(r) => r.adopt_tape(tape),
+                None => parked[t as usize] = Some(tape),
+            }
+        }
+    }
+
+    /// A session's sound files, from the rings and any waiting for one.
+    pub fn take_tapes(&self) -> Vec<(Track, kairo::pcm::PcmTape)> {
+        Track::ALL
+            .into_iter()
+            .filter_map(|t| {
+                let from_ring = self
+                    .track(t)
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .and_then(|r| r.take_tape());
+                from_ring
+                    .or_else(|| self.parked_tapes.lock().unwrap()[t as usize].take())
+                    .map(|tape| (t, tape))
+            })
+            .collect()
     }
 
     /// From when events are still worth keeping: the buffer's reach, or a session's start.
@@ -487,12 +556,12 @@ fn wait_or_stop(shared: &Shared, d: Duration) -> bool {
 /// from `generation`).
 pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generation: u64) -> Outcome {
     let args = args::record_args(plan);
-    let mut child: Child = match ffmpeg::command(ffmpeg)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let mut child: Child = match ffmpeg::spawn(
+        ffmpeg::command(ffmpeg)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    ) {
         Ok(c) => c,
         Err(e) => return Outcome::FailedToStart(format!("could not start ffmpeg: {e}")),
     };
@@ -538,6 +607,7 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
     };
     let started = Instant::now();
     let mut announced = false;
+    let mut last_look = Instant::now();
     let outcome = loop {
         if let Ok(Some(status)) = child.try_wait() {
             let _ = reader.join();
@@ -551,9 +621,27 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
                 Outcome::FailedToStart(text)
             };
         }
+        // A game changing the display mode changes the screen's size: start over at the new
+        // size rather than keep scaling to the old one.
+        let resized = last_look.elapsed() >= Duration::from_secs(2) && {
+            last_look = Instant::now();
+            let now = platform::choose_monitor(&shared.settings().monitor).map(|m| (m.w, m.h));
+            let changed = now.is_some_and(|s| s != plan.src_size);
+            if changed {
+                info!(
+                    "the screen changed from {}x{} to {}x{}: starting over",
+                    plan.src_size.0,
+                    plan.src_size.1,
+                    now.map_or(0, |s| s.0),
+                    now.map_or(0, |s| s.1)
+                );
+            }
+            changed
+        };
         let interrupted = shared.stop.load(Ordering::Relaxed)
             || shared.paused.load(Ordering::Relaxed)
-            || shared.video_generation.load(Ordering::SeqCst) != generation;
+            || shared.video_generation.load(Ordering::SeqCst) != generation
+            || resized;
         let stalled =
             !got_data.load(Ordering::Relaxed) && started.elapsed() > Duration::from_secs(8);
         if interrupted || stalled {

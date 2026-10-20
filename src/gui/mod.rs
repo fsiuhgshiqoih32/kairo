@@ -880,9 +880,13 @@ impl App {
         let task = self.handle(message);
         if (self.page, self.filter.clone(), self.welcome) != page {
             self.page_in = Some(Instant::now());
-            // The mic test only runs while Settings shows it.
+            // The mic test and shortcut capture only run while Settings shows them (a capture
+            // left armed would make the next key pressed anywhere a global shortcut).
             if self.page != Page::Settings {
                 self.setup.stop_mic_test();
+                if self.welcome.is_none() {
+                    self.setup.capturing_key = None;
+                }
             }
         }
         if !had_dialog && self.dialog.is_some() {

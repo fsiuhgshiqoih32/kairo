@@ -34,6 +34,15 @@ enum Kind {
     Mic,
 }
 
+impl Kind {
+    fn track(self) -> crate::recorder::Track {
+        match self {
+            Kind::Desktop => crate::recorder::Track::Game,
+            Kind::Mic => crate::recorder::Track::Mic,
+        }
+    }
+}
+
 fn ring_of(shared: &Shared, kind: Kind) -> &Mutex<Option<PcmRing>> {
     match kind {
         Kind::Desktop => &shared.desktop,
@@ -94,7 +103,10 @@ fn open(
     let rate = config.sample_rate();
     let channels = config.channels();
     let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-    *ring_of(shared, kind).lock().unwrap() = record.then(|| PcmRing::new(rate, channels, keep));
+    shared.set_ring(
+        kind.track(),
+        record.then(|| PcmRing::new(rate, channels, keep)),
+    );
     let s2 = shared.clone();
     let f2 = failed.clone();
     let stream = device
@@ -180,7 +192,10 @@ fn open_monitor(shared: &Arc<Shared>) -> Result<std::process::Child, String> {
             .spawn()
         {
             Ok(mut child) => {
-                *shared.desktop.lock().unwrap() = Some(PcmRing::new(48_000, 2, keep));
+                shared.set_ring(
+                    crate::recorder::Track::Game,
+                    Some(PcmRing::new(48_000, 2, keep)),
+                );
                 let mut out = child.stdout.take().expect("piped");
                 let s2 = shared.clone();
                 std::thread::spawn(move || {
@@ -238,9 +253,9 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let mut errors: Vec<String> = Vec::new();
     let mut desktop_name = None;
     let mut mic_name = None;
-    *shared.desktop.lock().unwrap() = None;
-    *shared.mic.lock().unwrap() = None;
-    *shared.chat.lock().unwrap() = None;
+    for t in crate::recorder::Track::ALL {
+        shared.set_ring(t, None);
+    }
     #[allow(unused_mut)]
     let mut split = false;
     #[cfg(windows)]
@@ -350,8 +365,9 @@ pub fn run(shared: Arc<Shared>) {
         let settings = shared.settings();
         let paused = shared.paused.load(Ordering::Relaxed);
         let open_now = if paused {
-            *shared.desktop.lock().unwrap() = None;
-            *shared.mic.lock().unwrap() = None;
+            for t in crate::recorder::Track::ALL {
+                shared.set_ring(t, None);
+            }
             Open::default()
         } else {
             start(&shared, &settings, &failed)

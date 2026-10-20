@@ -63,6 +63,26 @@ impl PcmTape {
         })
     }
 
+    /// The tape's own sample rate and channels (sound in another format is converted to them).
+    pub fn format(&self) -> (u32, u16) {
+        (self.rate, self.channels)
+    }
+
+    /// Writes a block captured at `rate` with `channels` that starts at `start_us`, converted to
+    /// the tape's own format if it differs (the device changed while a session ran).
+    fn write_from(&mut self, start_us: i64, samples: &[i16], rate: u32, channels: u16) {
+        if (rate, channels) == (self.rate, self.channels) {
+            self.write(start_us, samples);
+            return;
+        }
+        let f: Vec<f32> = samples.iter().map(|s| to_f32(*s)).collect();
+        let converted: Vec<i16> = convert(&f, rate, channels, self.rate, self.channels)
+            .into_iter()
+            .map(to_i16)
+            .collect();
+        self.write(start_us, &converted);
+    }
+
     /// Writes a block that starts at `start_us`: silence first if it starts after the tape's
     /// end, its overlapping start dropped if before.
     fn write(&mut self, start_us: i64, samples: &[i16]) {
@@ -72,9 +92,17 @@ impl PcmTape {
         let gap = at - self.frames as i64;
         let mut skip = 0usize;
         if gap > 0 {
-            let silence = vec![0u8; gap as usize * ch * 2];
-            if self.file.write_all(&silence).is_err() {
-                return;
+            // In pieces: an hour of silence (nothing played) is hundreds of megabytes, too much
+            // to allocate at once inside an audio callback.
+            const CHUNK: usize = 64 * 1024;
+            let zeros = [0u8; CHUNK];
+            let mut left = gap as usize * ch * 2;
+            while left > 0 {
+                let n = left.min(CHUNK);
+                if self.file.write_all(&zeros[..n]).is_err() {
+                    return;
+                }
+                left -= n;
             }
             self.frames += gap as u64;
         } else if gap < 0 {
@@ -154,6 +182,11 @@ impl PcmRing {
         self.tape.take()
     }
 
+    /// Carries on `tape` (a session's file) from this ring's sound, from now on.
+    pub fn adopt_tape(&mut self, tape: PcmTape) {
+        self.tape = Some(tape);
+    }
+
     pub fn set_keep_us(&mut self, keep_us: i64) {
         self.keep_us = keep_us;
     }
@@ -182,7 +215,7 @@ impl PcmRing {
                 .collect(),
         };
         if let Some(t) = &mut self.tape {
-            t.write(block.start_us, &block.samples);
+            t.write_from(block.start_us, &block.samples, self.rate, self.channels);
         }
         self.blocks.push_back(block);
         let cutoff = end_us - self.keep_us;
@@ -430,6 +463,49 @@ mod tests {
         // Later sound doesn't go to a stopped tape.
         r.push(&[0.5; 100], T0 + 800_000);
         assert_eq!(std::fs::read(&wav).unwrap().len(), 44 + 650 * 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_tape_carries_on_in_a_new_ring_of_another_format() {
+        let dir = std::env::temp_dir().join(format!("kairo-tape2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.wav");
+        // The session starts on a 1 kHz mono device...
+        let mut a = PcmRing::new(1000, 1, 10_000_000);
+        a.start_tape(&path, T0).unwrap();
+        a.push(&[0.5; 100], T0 + 100_000);
+        // ...which is swapped for a 2 kHz stereo one (headphones plugged in) 200 ms later.
+        let tape = a.take_tape().unwrap();
+        assert_eq!(tape.format(), (1000, 1));
+        let mut b = PcmRing::new(2000, 2, 10_000_000);
+        b.adopt_tape(tape);
+        b.push(&[-0.5; 400], T0 + 400_000); // 200 stereo frames: 300..400 ms
+        let wav = b.take_tape().unwrap().finish().unwrap();
+        let bytes = std::fs::read(&wav).unwrap();
+        let s: Vec<i16> = bytes[44..]
+            .chunks(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        // Still 1 kHz mono: 100 ms of sound, 200 ms of silence while it changed, 100 ms more.
+        assert_eq!(s.len(), 400);
+        assert!(s[..100].iter().all(|v| *v == to_i16(0.5)));
+        assert!(s[100..300].iter().all(|v| *v == 0));
+        assert!(s[300..].iter().all(|v| *v == to_i16(-0.5)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn long_silence_is_written_in_pieces() {
+        let dir = std::env::temp_dir().join(format!("kairo-tape3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = PcmRing::new(48_000, 2, 10_000_000);
+        r.start_tape(&dir.join("t.wav"), T0).unwrap();
+        // Ten minutes of nothing, then a block: 10 * 60 * 48000 * 4 bytes of silence.
+        r.push(&[0.1; 96], T0 + 600_000_000 + 1_000);
+        let wav = r.take_tape().unwrap().finish().unwrap();
+        let len = std::fs::metadata(&wav).unwrap().len();
+        assert_eq!(len, 44 + (600 * 48_000 + 48) * 4);
         let _ = std::fs::remove_dir_all(dir);
     }
 
