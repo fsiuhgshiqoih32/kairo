@@ -10,6 +10,7 @@ mod ffmpeg;
 mod gui;
 mod hotkey;
 mod log;
+mod mictest;
 mod platform;
 mod player;
 mod recorder;

@@ -259,7 +259,11 @@ fn preview() {
     ];
     theme::set_light(false);
     app.settings.webcam = true;
+    app.settings.mic_volume = 140;
+    app.setup.show_mic_test(0.82);
     shoot(app.view(), "iced-games", (1280.0, 3900.0));
+    app.setup.stop_mic_test();
+    app.settings.mic_volume = 100;
     app.settings.webcam = false;
     theme::set_light(true);
     app.settings.game_rules.clear();

@@ -282,6 +282,8 @@ pub struct Settings {
     /// Pages, dialogs and notices ease in: "system" (unless the computer asks for less motion),
     /// "on" or "off".
     pub motion: String,
+    /// The microphone's volume in clips, in percent (100 is as it comes in).
+    pub mic_volume: u32,
 }
 
 impl Default for Settings {
@@ -334,6 +336,7 @@ impl Default for Settings {
             webcam_corner: "bottom-right".into(),
             webcam_size: 25,
             motion: "system".into(),
+            mic_volume: 100,
         }
     }
 }
@@ -345,6 +348,8 @@ pub const MAX_CLIP_SECONDS: u32 = 1200;
 pub const MAX_POST_ROLL: u32 = 15;
 /// At most this many games with their own settings.
 pub const MAX_GAME_RULES: usize = 24;
+/// The loudest the microphone can be turned up, in percent.
+pub const MAX_MIC_VOLUME: u32 = 300;
 pub const WEBCAM_CORNERS: [&str; 4] = ["top-left", "top-right", "bottom-left", "bottom-right"];
 
 impl Settings {
@@ -397,6 +402,7 @@ impl Settings {
             self.webcam_corner = "bottom-right".into();
         }
         self.webcam_size = self.webcam_size.clamp(10, 40);
+        self.mic_volume = self.mic_volume.min(MAX_MIC_VOLUME);
         if !["system", "on", "off"].contains(&self.motion.as_str()) {
             self.motion = "system".into();
         }

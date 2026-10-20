@@ -252,6 +252,71 @@ pub fn wav_f32(rate: u32, channels: u16, samples: &[f32]) -> Vec<u8> {
     v
 }
 
+/// Above this, a boosted sample is eased towards full scale instead of clipping.
+const KNEE: f32 = 0.85;
+
+/// Makes `samples` louder or quieter by `gain` (1 is as recorded). Peaks past the knee are
+/// softened so a boosted microphone doesn't crackle.
+pub fn apply_gain(samples: &mut [f32], gain: f32) {
+    if (gain - 1.0).abs() < 1e-4 {
+        return;
+    }
+    for s in samples {
+        let v = *s * gain;
+        let a = v.abs();
+        *s = if a <= KNEE {
+            v
+        } else {
+            let room = 1.0 - KNEE;
+            v.signum() * (KNEE + room * ((a - KNEE) / room).tanh())
+        };
+    }
+}
+
+/// The loudest sample, 0 to 1.
+pub fn peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, s| m.max(s.abs())).min(1.0)
+}
+
+/// A level for a meter, 0 to 1, from a peak: -60 dB and below is empty, 0 dB is full.
+pub fn meter(peak: f32) -> f32 {
+    if peak <= 0.001 {
+        return 0.0;
+    }
+    ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+/// Interleaved sound at `from_rate` with `from_ch` channels, converted for an output at `to_rate`
+/// with `to_ch` channels (linear interpolation; extra output channels repeat the last input one).
+pub fn convert(
+    samples: &[f32],
+    from_rate: u32,
+    from_ch: u16,
+    to_rate: u32,
+    to_ch: u16,
+) -> Vec<f32> {
+    let (fc, tc) = (from_ch.max(1) as usize, to_ch.max(1) as usize);
+    let frames = samples.len() / fc;
+    if frames == 0 {
+        return Vec::new();
+    }
+    let out_frames = (frames as u64 * to_rate as u64 / from_rate.max(1) as u64) as usize;
+    let step = from_rate as f64 / to_rate.max(1) as f64;
+    let mut out = Vec::with_capacity(out_frames * tc);
+    for j in 0..out_frames {
+        let t = j as f64 * step;
+        let i = (t.floor() as usize).min(frames - 1);
+        let next = (i + 1).min(frames - 1);
+        let k = (t - i as f64) as f32;
+        for c in 0..tc {
+            let ch = c.min(fc - 1);
+            let (a, b) = (samples[i * fc + ch], samples[next * fc + ch]);
+            out.push(a + (b - a) * k);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +431,41 @@ mod tests {
         r.push(&[0.5; 100], T0 + 800_000);
         assert_eq!(std::fs::read(&wav).unwrap().len(), 44 + 650 * 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mic_volume_boosts_without_clipping() {
+        let mut s = vec![0.1, -0.2, 0.5, -0.9];
+        apply_gain(&mut s, 1.0);
+        assert_eq!(s, vec![0.1, -0.2, 0.5, -0.9], "100% leaves it alone");
+        apply_gain(&mut s, 2.0);
+        assert!((s[0] - 0.2).abs() < 1e-6 && (s[1] + 0.4).abs() < 1e-6);
+        // Pushed past full scale, peaks bend towards it but never pass it, keeping their sign.
+        assert!(s[2] > KNEE && s[2] < 1.0);
+        assert!(s[3] < -KNEE && s[3] >= -1.0);
+        let mut quiet = vec![0.8];
+        apply_gain(&mut quiet, 0.5);
+        assert!((quiet[0] - 0.4).abs() < 1e-6);
+        assert_eq!(peak(&[0.2, -0.7, 0.1]), 0.7);
+        assert_eq!(meter(1.0), 1.0);
+        assert_eq!(meter(0.0), 0.0);
+        assert!(
+            (meter(0.1) - 2.0 / 3.0).abs() < 1e-3,
+            "-20 dB is two thirds up"
+        );
+    }
+
+    #[test]
+    fn converts_for_play_back() {
+        // Mono 1 kHz to stereo 2 kHz: twice the frames, each sample on both channels.
+        let out = convert(&[0.0, 1.0], 1000, 1, 2000, 2);
+        assert_eq!(out, vec![0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]);
+        // Stereo 48 kHz to stereo 24 kHz: half the frames, channels kept apart.
+        let input: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        assert_eq!(
+            convert(&input, 48_000, 2, 24_000, 2),
+            vec![0.0, 1.0, 4.0, 5.0]
+        );
+        assert!(convert(&[], 48_000, 2, 44_100, 2).is_empty());
     }
 }

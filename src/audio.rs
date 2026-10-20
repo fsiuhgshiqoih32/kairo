@@ -42,7 +42,7 @@ fn ring_of(shared: &Shared, kind: Kind) -> &Mutex<Option<PcmRing>> {
 }
 
 /// Converts any sample format cpal hands us to f32.
-fn to_f32(data: &cpal::Data) -> Option<Vec<f32>> {
+pub fn to_f32(data: &cpal::Data) -> Option<Vec<f32>> {
     use cpal::SampleFormat as F;
     Some(match data.sample_format() {
         F::F32 => data.as_slice::<f32>()?.to_vec(),
@@ -102,7 +102,13 @@ fn open(
             config.config(),
             config.sample_format(),
             move |data: &cpal::Data, _: &cpal::InputCallbackInfo| {
-                let Some(samples) = to_f32(data) else { return };
+                let Some(mut samples) = to_f32(data) else {
+                    return;
+                };
+                if kind == Kind::Mic {
+                    let gain = f32::from_bits(s2.mic_gain.load(Ordering::Relaxed));
+                    kairo::pcm::apply_gain(&mut samples, gain);
+                }
                 if kind == Kind::Mic
                     && let Some(tap) = s2.voice_tap.lock().unwrap().as_ref()
                 {

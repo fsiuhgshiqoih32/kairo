@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::keyboard::{self, Key, key};
 use iced::widget::{
-    Space, button, column, container, pick_list, row, scrollable, text, text_input, toggler,
+    Space, button, column, container, pick_list, row, scrollable, slider, text, text_input, toggler,
 };
-use iced::{Alignment, Element, Fill, Length, Padding, Task};
+use iced::{Alignment, Element, Fill, FillPortion, Length, Padding, Task};
 
 use kairo::args::{self, Encoder};
 use kairo::config::{
@@ -43,6 +43,9 @@ pub struct State {
     mics: Vec<String>,
     /// The cameras, once listed.
     cameras: Option<Vec<crate::webcam::Camera>>,
+    /// The mic test while it runs, and its meter (0 to 1, falling back slowly).
+    mic_test: Option<crate::mictest::MicTest>,
+    mic_level: f32,
     encoders: Option<Vec<Encoder>>,
     launcher: Option<auto_launch::AutoLaunch>,
     autostart: bool,
@@ -143,6 +146,14 @@ pub enum Msg {
     DesktopAudio(bool),
     Microphone(bool),
     Mic(Choice),
+    /// The microphone's volume in clips, in percent.
+    MicVolume(u32),
+    /// Starts or stops the mic test.
+    MicTest(bool),
+    /// Records a few seconds and plays them back.
+    MicRecord,
+    /// Moves the mic test's meter on.
+    MicTick,
     Webcam(bool),
     Cameras(Vec<crate::webcam::Camera>),
     Camera(Choice),
@@ -214,6 +225,8 @@ impl State {
                 monitors: platform::monitors(),
                 mics: crate::audio::microphones(),
                 cameras: None,
+                mic_test: None,
+                mic_level: 0.0,
                 encoders: None,
                 launcher,
                 autostart,
@@ -539,6 +552,114 @@ impl State {
         rows
     }
 
+    fn start_mic_test(&mut self, s: &Settings) {
+        self.mic_test = Some(crate::mictest::MicTest::start(
+            &s.microphone_device,
+            s.mic_volume as f32 / 100.0,
+        ));
+        self.mic_level = 0.0;
+    }
+
+    /// Shows the mic test at `level` without opening a microphone (for previews).
+    #[cfg(test)]
+    pub fn show_mic_test(&mut self, level: f32) {
+        self.mic_test = Some(crate::mictest::MicTest::idle("Microphone (Shure MV7+)"));
+        self.mic_level = level;
+    }
+
+    /// The mic test is running (the window then ticks its meter).
+    pub fn mic_testing(&self) -> bool {
+        self.mic_test.is_some()
+    }
+
+    pub fn stop_mic_test(&mut self) {
+        self.mic_test = None;
+        self.mic_level = 0.0;
+    }
+
+    /// The mic test's row: the level, what's happening, and record-and-play-back.
+    fn mic_test_view<'a>(&'a self, t: &'a crate::mictest::MicTest) -> Element<'a, Msg> {
+        use crate::mictest::Phase;
+        let level = self.mic_level.clamp(0.0, 1.0);
+        let color = if level > 0.92 {
+            theme::RED
+        } else if level > 0.75 {
+            theme::GOLD
+        } else {
+            theme::GREEN
+        };
+        let on = (level * 1000.0).round() as u16;
+        let mut bar = row![].width(Fill).height(10);
+        if on > 0 {
+            bar = bar.push(
+                container(Space::new().width(Fill).height(10))
+                    .width(FillPortion(on))
+                    .style(move |_| container::Style {
+                        background: Some(color.into()),
+                        border: iced::Border {
+                            radius: 5.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+        bar = bar.push(Space::new().width(FillPortion(1000 - on.min(999))));
+        let meter = container(bar).width(240).style(|_| container::Style {
+            background: Some(theme::raised().into()),
+            border: iced::Border {
+                radius: 5.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let phase = t.phase();
+        let line = match (t.error(), phase) {
+            (Some(e), _) => text(format!("Couldn't open the mic: {e}"))
+                .size(12)
+                .color(theme::RED),
+            (None, Phase::Listening) => text(
+                "Talk as you would in a game: the bar should sit in the yellow, and only shouts \
+                 should touch the red. Hear yourself records a few seconds and plays them back.",
+            )
+            .size(12)
+            .color(theme::muted()),
+            (None, Phase::Recording(until)) => text(format!(
+                "Recording... {} s left. Say something.",
+                until
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_secs()
+                    + 1
+            ))
+            .size(12)
+            .color(theme::accent()),
+            (None, Phase::Playing(_)) => text("Playing it back.").size(12).color(theme::GREEN),
+        };
+        let name = t.name.lock().unwrap().clone();
+        column![
+            row![
+                meter,
+                button(text("Hear yourself").size(12).font(MEDIUM))
+                    .padding(Padding::from([6, 10]))
+                    .style(theme::secondary)
+                    .on_press_maybe((phase == Phase::Listening).then_some(Msg::MicRecord)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            line,
+            text(if name.is_empty() {
+                String::new()
+            } else {
+                format!("Testing {name}")
+            })
+            .size(11)
+            .color(theme::muted()),
+        ]
+        .spacing(8)
+        .align_x(Alignment::End)
+        .into()
+    }
+
     /// "Start with the computer", when this system can.
     pub(super) fn autostart_state(&self) -> Option<bool> {
         self.launcher.is_some().then_some(self.autostart)
@@ -833,7 +954,35 @@ impl State {
             }
             Msg::Mic(c) => {
                 s.microphone_device = c.value;
+                if self.mic_test.is_some() {
+                    self.start_mic_test(s);
+                }
                 return changed;
+            }
+            Msg::MicVolume(v) => {
+                s.mic_volume = v.min(kairo::config::MAX_MIC_VOLUME);
+                if let Some(t) = &self.mic_test {
+                    t.set_gain(s.mic_volume as f32 / 100.0);
+                }
+                return changed;
+            }
+            Msg::MicTest(on) => {
+                if on {
+                    self.start_mic_test(s);
+                } else {
+                    self.stop_mic_test();
+                }
+            }
+            Msg::MicRecord => {
+                if let Some(t) = &self.mic_test {
+                    t.record();
+                }
+            }
+            Msg::MicTick => {
+                if let Some(t) = &self.mic_test {
+                    let now = kairo::pcm::meter(t.take_peak());
+                    self.mic_level = now.max(self.mic_level - 0.035);
+                }
             }
             Msg::Webcam(v) => {
                 s.webcam = v;
@@ -1696,8 +1845,51 @@ impl State {
                         .spacing(12)
                         .align_y(Alignment::Center),
                 ),
+                setting(
+                    "Mic volume",
+                    Some(
+                        "How loud your voice is in clips. Over 100% boosts a quiet mic; loud \
+                         peaks are softened rather than crackling."
+                            .into(),
+                    ),
+                    row![
+                        slider(
+                            0..=kairo::config::MAX_MIC_VOLUME,
+                            s.mic_volume,
+                            Msg::MicVolume
+                        )
+                        .step(5u32)
+                        .width(170)
+                        .style(theme::volume_slider),
+                        text(format!("{}%", s.mic_volume))
+                            .size(13)
+                            .font(MEDIUM)
+                            .width(44),
+                        button(
+                            text(if self.mic_test.is_some() {
+                                "Stop test"
+                            } else {
+                                "Test mic"
+                            })
+                            .size(13)
+                            .font(MEDIUM)
+                        )
+                        .padding(Padding::from([7, 12]))
+                        .style(theme::secondary)
+                        .on_press(Msg::MicTest(self.mic_test.is_none())),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+                ),
             ]
             .into_iter()
+            .chain(self.mic_test.as_ref().map(|t| {
+                setting(
+                    "Mic test",
+                    Some("Only you hear this; nothing is saved.".into()),
+                    self.mic_test_view(t),
+                )
+            }))
             .chain(sound_rows)
             .collect(),
         ));

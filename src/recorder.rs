@@ -105,6 +105,8 @@ pub struct Shared {
     pub audio_generation: AtomicU64,
     /// Bumped when webcam settings change.
     pub cam_generation: AtomicU64,
+    /// The microphone's volume (an f32's bits; 1 is as recorded), applied as it's captured.
+    pub mic_gain: std::sync::atomic::AtomicU32,
     pub saving: AtomicBool,
     /// The microphone's sound also goes here while voice clipping listens.
     pub voice_tap: crate::voice::Tap,
@@ -121,6 +123,7 @@ pub struct Shared {
 impl Shared {
     pub fn new(settings: Settings) -> Arc<Shared> {
         let keep = settings.buffer_seconds() as i64 * 1_000_000;
+        let mic_gain = (settings.mic_volume as f32 / 100.0).to_bits();
         Arc::new(Shared {
             settings: Mutex::new(settings),
             ring: Mutex::new(Ring::new(keep, MAX_BUFFER_BYTES)),
@@ -134,6 +137,7 @@ impl Shared {
             video_generation: AtomicU64::new(0),
             audio_generation: AtomicU64::new(0),
             cam_generation: AtomicU64::new(0),
+            mic_gain: std::sync::atomic::AtomicU32::new(mic_gain),
             saving: AtomicBool::new(false),
             voice_tap: Default::default(),
             marks: Mutex::default(),
@@ -217,6 +221,8 @@ impl Shared {
         let keep = new.buffer_seconds() as i64 * 1_000_000;
         self.ring.lock().unwrap().set_keep_us(keep);
         self.cam.lock().unwrap().set_keep_us(keep);
+        self.mic_gain
+            .store((new.mic_volume as f32 / 100.0).to_bits(), Ordering::Relaxed);
         for ring in [&self.desktop, &self.mic, &self.chat] {
             if let Some(r) = ring.lock().unwrap().as_mut() {
                 r.set_keep_us(keep);

@@ -880,6 +880,10 @@ impl App {
         let task = self.handle(message);
         if (self.page, self.filter.clone(), self.welcome) != page {
             self.page_in = Some(Instant::now());
+            // The mic test only runs while Settings shows it.
+            if self.page != Page::Settings {
+                self.setup.stop_mic_test();
+            }
         }
         if !had_dialog && self.dialog.is_some() {
             self.dialog_in = Some(Instant::now());
@@ -1609,6 +1613,12 @@ impl App {
         }
         if self.animating() {
             subs.push(window::frames().map(|_| Message::AnimTick));
+        }
+        if self.setup.mic_testing() {
+            subs.push(
+                iced::time::every(Duration::from_millis(40))
+                    .map(|_| Message::Settings(settings::Msg::MicTick)),
+            );
         }
         if self.scrub.is_some() {
             // The hovered card's preview plays at about ten times speed.
