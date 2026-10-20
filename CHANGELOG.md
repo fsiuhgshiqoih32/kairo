@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+- **Cut and undo in the editor.** Press S to split at the playhead and Delete to cut a part out of
+  the middle; playback skips it and every copy closes the gap. Ctrl+Z undoes any edit (a whole
+  drag or slider move at once), and J, K, L, Q and W work like in other editors.
+- **Instant copy.** A plain trim saves in about a second at full quality, without encoding again.
+- **Text on your clips.** Type a line, drag it where you want it on the video, pick its colour and
+  size, and choose how it comes in and goes out: a pop, a slide or a blur, drawn with motion blur.
+- **Webcam in clips.** Turn it on in Settings > Webcam and your camera goes in a corner of each
+  clip you save, in the size and corner you pick.
+- **Only record games.** Settings can keep a replay only while a game is in front, and give a game
+  its own length, quality and shortcut, or never record an app (Windows).
+- **Folders and achievements.** Sort clips into folders from the sidebar or the editor, and earn
+  15 badges on the stats page as your library grows.
+- **A lighter look.** Choose Dark, Light or Match system, with bigger library cards whose previews
+  play when you rest the pointer on them, and a short setup the first time Kairo starts.
+- **Smoother window.** Pages, dialogs and notices ease in; Settings > Animations turns it on or
+  off, and it follows your system's reduce-motion setting by default.
+- **Your save sound.** Pick the sound a saved clip makes, or use a WAV of your own.
+- **Fixes.** The game, microphone and voice-chat volume controls now find their tracks in clips
+  (older clips included), and Settings no longer crashes when it shows the per-game list.
+
 ## 0.3.0
 
 - **Update notices.** Kairo now looks for a new version a few minutes after it starts and every
