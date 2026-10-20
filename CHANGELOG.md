@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.3
+
+- **Sessions aren't lost any more.** A session still recording when the PC shuts down, Kairo
+  crashes or it's ended from Task Manager is saved the next time Kairo starts. Quitting waits
+  until a running session is saved, however long it is, and after an update the new Kairo waits
+  for the old one to finish saving instead of not starting.
+- **Session sound keeps going.** Plugging in a headset, switching speakers or changing sound
+  settings mid-session no longer leaves the rest of the session silent.
+- **Your clip list is safe.** A damaged clip list is set aside and its backup used, never replaced
+  with an empty one, and two parts of Kairo saving it at once no longer undo each other's
+  changes. Games with Japanese, Chinese or Korean names, or emoji, no longer crash the library.
+- **The storage limit spares your new clip.** Making room never deletes the clip just saved.
+- **No cropped video after a resolution change.** When the screen changes size (a game going
+  fullscreen at another resolution), recording restarts at the new size instead of cutting off
+  part of the picture.
+- **Safer shortcuts.** Recording a shortcut stops when you leave Settings, and a single letter or
+  number can't be a shortcut on its own (it would stop working in every other app). F-keys,
+  Pause, Insert and media keys still can.
+- **Smaller fixes.** Two clips shared in the same second no longer overwrite each other; a long
+  silence in a session no longer needs a burst of memory; very long sessions with surround sound
+  keep all their sound; ffmpeg can't keep running after Kairo closes suddenly; half-written files
+  left by a crash are cleaned up.
+
 ## 0.4.2
 
 - **Steady sound with voice chat on its own track.** Kairo no longer restarts the game sound every
