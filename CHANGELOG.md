@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4
+
+- **Sharp clips in the editor.** Kairo showed every clip at 720p at most, so 1440p and 4K clips
+  looked soft in the editor even though the files are full size. Clips now play at up to 1080p,
+  and a paused frame (or one you skip to) is shown at the clip's full size.
+
 ## 0.4.3
 
 - **Sessions aren't lost any more.** A session still recording when the PC shuts down, Kairo
