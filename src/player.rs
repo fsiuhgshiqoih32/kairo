@@ -19,6 +19,8 @@ use crate::ffmpeg;
 
 pub struct Frame {
     pub time: f64,
+    /// Its size in pixels: playback and still frames are decoded at different sizes.
+    pub size: (u32, u32),
     pub rgba: Vec<u8>,
 }
 
@@ -57,7 +59,14 @@ impl VideoDecoder {
                 }
                 let time = start + n as f64 / fps;
                 n += 1;
-                if tx.send(Some(Frame { time, rgba: buf })).is_err() {
+                if tx
+                    .send(Some(Frame {
+                        time,
+                        size,
+                        rgba: buf,
+                    }))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -247,9 +256,13 @@ pub struct Player {
     ff: PathBuf,
     pub clip: PathBuf,
     pub info: Info,
-    /// The size frames are decoded at.
+    /// The size frames are decoded at while playing.
     pub size: (u32, u32),
+    /// The size a frame shown still (opened, seeked to, paused on) is decoded at.
+    pub still_size: (u32, u32),
     playing: Option<Playback>,
+    /// The time of the last frame playback showed, to fetch it sharper when playback stops.
+    shown: Option<f64>,
     /// The time of the frame on screen (or being fetched).
     pub position: f64,
     /// A new frame to show, taken by the window.
@@ -262,14 +275,24 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(ff: PathBuf, clip: PathBuf, info: Info, max: (u32, u32)) -> Player {
+    /// Playback decodes frames fitted into `max`, stills into `still_max`.
+    pub fn new(
+        ff: PathBuf,
+        clip: PathBuf,
+        info: Info,
+        max: (u32, u32),
+        still_max: (u32, u32),
+    ) -> Player {
         let size = media::fit((info.width, info.height), max);
+        let still_size = media::fit((info.width, info.height), still_max);
         let mut p = Player {
             ff,
             clip,
             info,
             size,
+            still_size,
             playing: None,
+            shown: None,
             position: 0.0,
             frame: None,
             still: None,
@@ -349,6 +372,16 @@ impl Player {
     pub fn pause(&mut self) {
         if self.playing.take().is_some() {
             // The frame on screen stays; the position is where it is.
+            self.sharpen();
+        }
+    }
+
+    /// Fetches the frame playback stopped on again at the still size, when that's bigger.
+    fn sharpen(&mut self) {
+        if let Some(t) = self.shown.take()
+            && self.still_size != self.size
+        {
+            self.request_still(t);
         }
     }
 
@@ -393,7 +426,14 @@ impl Player {
             self.still_wanted = Some(t);
             return;
         }
-        match VideoDecoder::start(&self.ff, &self.clip, t, self.size, self.info.fps, Some(1)) {
+        match VideoDecoder::start(
+            &self.ff,
+            &self.clip,
+            t,
+            self.still_size,
+            self.info.fps,
+            Some(1),
+        ) {
             Ok(d) => self.still = Some(d),
             Err(e) => self.error = Some(e),
         }
@@ -459,6 +499,7 @@ impl Player {
             }
             match &p.pending {
                 Some(f) if f.time <= clock => {
+                    self.shown = Some(f.time);
                     self.frame = p.pending.take();
                     changed = true;
                 }
@@ -472,8 +513,60 @@ impl Player {
         if self.position >= end || finished {
             self.position = self.position.min(end);
             self.playing = None;
+            self.sharpen();
             changed = true;
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The next frame the player hands the window.
+    fn next_frame(p: &mut Player) -> Frame {
+        let start = Instant::now();
+        loop {
+            p.tick(f64::MAX);
+            if let Some(f) = p.frame.take() {
+                return f;
+            }
+            assert!(start.elapsed().as_secs() < 20, "no frame came");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A 1440p clip plays at 1080p, and is shown at its own size when opened and when paused.
+    /// Needs ffmpeg with libx264.
+    #[test]
+    #[ignore]
+    fn still_frames_are_full_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clip = tmp.path().join("c.mp4");
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let made = ffmpeg::command(&ff)
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=2560x1440:rate=60")
+            .args(["-t", "3", "-c:v", "libx264", "-preset", "ultrafast"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let info = ffmpeg::probe_clip(&ff, &clip).unwrap();
+        let mut p = Player::new(ff, clip, info, (1920, 1080), (3840, 2160));
+        let opened = next_frame(&mut p);
+        assert_eq!(opened.size, (2560, 1440));
+        assert_eq!(opened.rgba.len(), 2560 * 1440 * 4);
+        p.play();
+        for _ in 0..5 {
+            let f = next_frame(&mut p);
+            assert_eq!(f.size, (1920, 1080));
+            assert_eq!(f.rgba.len(), 1920 * 1080 * 4);
+        }
+        p.pause();
+        let paused = next_frame(&mut p);
+        assert_eq!(paused.size, (2560, 1440));
+        assert!(!p.has_pending_still());
     }
 }

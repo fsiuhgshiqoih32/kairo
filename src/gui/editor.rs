@@ -32,8 +32,12 @@ use crate::export::{self, Job, Kind};
 use crate::player::Player;
 use crate::{ffmpeg, platform};
 
-/// Frames are decoded for playback at most this big.
-const PLAYBACK_MAX: (u32, u32) = (1280, 720);
+/// Frames are decoded for playback at most this big: over twice the detail of 720p, and a 120 fps
+/// clip still decodes in time (measured: about 170 fps at 1080p, but 86 at 1440p).
+const PLAYBACK_MAX: (u32, u32) = (1920, 1080);
+/// A frame shown still (a clip opened, seeked to or paused on) is decoded at the clip's own size,
+/// up to this: one frame takes about as long at any size, and a still is when detail is looked at.
+const STILL_MAX: (u32, u32) = (3840, 2160);
 /// Height of the filmstrip pictures, in pixels.
 const STRIP_H: u32 = 60;
 /// "Mark" with its key, for the Moments panel.
@@ -372,7 +376,7 @@ impl Editor {
         let clip_path = clip.clone();
         Ok((
             Editor {
-                player: Player::new(ff.clone(), clip.clone(), info, PLAYBACK_MAX),
+                player: Player::new(ff.clone(), clip.clone(), info, PLAYBACK_MAX, STILL_MAX),
                 ff,
                 clip,
                 name,
@@ -913,7 +917,7 @@ impl Editor {
                     }
                 }
                 if let Some(f) = self.player.frame.take() {
-                    self.frame = Some(Picture::new(self.player.size, &f.rgba));
+                    self.frame = Some(Picture::new(f.size, &f.rgba));
                     self.frames_shown += 1;
                 }
                 if was_playing && !self.player.is_playing() && self.looping && self.grab.is_none() {
