@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "kairo"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "ab_glyph",
  "auto-launch",
