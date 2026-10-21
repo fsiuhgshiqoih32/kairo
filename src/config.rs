@@ -67,6 +67,22 @@ impl Quality {
     /// Medium. Above 60 fps it grows slower than the frame rate, since neighbouring frames are
     /// more alike: 120 fps gets about 1.5 times the bits of 60, not twice (measured on real
     /// game footage, the picture is the same).
+    /// NVENC's constant-quality level for this setting: as good a picture as [`Self::bitrate`]
+    /// gave, in far fewer bits where a scene is easy. That bitrate times 1.5 stays the ceiling,
+    /// as before. Measured on an RTX 3060 Ti with VMAF on 1440p120 game and desktop footage
+    /// (2026-10-20): the mean within half a point and the worst 5% of frames no worse, at 3-65%
+    /// smaller. HEVC's High and Low weren't measured; they keep H.264's steps from Medium.
+    pub fn nvenc_cq(self, codec: VideoCodec) -> u32 {
+        match (codec, self) {
+            (VideoCodec::H264, Quality::High) => 17,
+            (VideoCodec::H264, Quality::Medium) => 21,
+            (VideoCodec::H264, Quality::Low) => 23,
+            (VideoCodec::Hevc, Quality::High) => 19,
+            (VideoCodec::Hevc, Quality::Medium) => 23,
+            (VideoCodec::Hevc, Quality::Low) => 25,
+        }
+    }
+
     pub fn bitrate(self, pixels: u64, fps: u32) -> u64 {
         let per_pixel_frame = match self {
             Quality::Low => 0.05,
@@ -698,6 +714,18 @@ mod tests {
         let (s, warn) = load_or_create(&path);
         assert!(warn.is_some());
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn better_quality_means_a_lower_cq() {
+        for codec in [VideoCodec::H264, VideoCodec::Hevc] {
+            let [low, medium, high] = Quality::ALL.map(|q| q.nvenc_cq(codec));
+            assert!(
+                high < medium && medium < low,
+                "{codec:?}: {high} {medium} {low}"
+            );
+        }
+        assert_eq!(Quality::Medium.nvenc_cq(VideoCodec::H264), 21);
     }
 
     #[test]

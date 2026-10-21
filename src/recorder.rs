@@ -468,6 +468,7 @@ pub fn run(shared: Arc<Shared>) {
                 src_size: size,
                 max_height: settings.resolution.max_height(),
                 bitrate: bitrate as u64,
+                cq: (encoder == Encoder::Nvenc).then(|| settings.quality.nvenc_cq(codec)),
                 vaapi_device: ffmpeg::vaapi_device(),
             };
             {

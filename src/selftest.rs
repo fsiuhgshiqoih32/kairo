@@ -52,6 +52,7 @@ pub fn run() -> Result<(), String> {
         src_size: (320, 240),
         max_height: None,
         bitrate: 1_000_000,
+        cq: None,
         vaapi_device: ffmpeg::vaapi_device(),
     };
     // Through the buffer on disk (the screen test below uses memory).
@@ -148,6 +149,7 @@ pub fn run() -> Result<(), String> {
             src_size: (320, 240),
             max_height: None,
             bitrate: 600_000,
+            cq: None,
             vaapi_device: ffmpeg::vaapi_device(),
         };
         record_for(&ff, &plan, &shared, Duration::from_secs(3));
@@ -197,6 +199,7 @@ pub fn run() -> Result<(), String> {
             src_size: (monitor.w, monitor.h),
             max_height: Some(720),
             bitrate: 2_000_000,
+            cq: None,
             vaapi_device: ffmpeg::vaapi_device(),
         };
         record_for(&ff, &plan, &shared, Duration::from_secs(4));
@@ -312,4 +315,47 @@ fn probe(ff: &std::path::Path, clip: &std::path::Path) -> Result<String, String>
         })
         .collect();
     Ok(streams.join(" | "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NVENC at constant quality through the real recorder: the buffer gets 2-second groups
+    /// and the stream decodes. Needs an NVIDIA GPU; a test picture, so nothing is captured.
+    #[test]
+    #[ignore]
+    fn nvenc_constant_quality_records() {
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let shared = Shared::new(kairo::config::Settings::default());
+        let plan = VideoPlan {
+            source: Source::Test { w: 2560, h: 1440 },
+            encoder: kairo::args::Encoder::Nvenc,
+            codec: kairo::config::VideoCodec::H264,
+            fps: 120,
+            src_size: (2560, 1440),
+            max_height: None,
+            bitrate: 33_000_000,
+            cq: Some(21),
+            vaapi_device: None,
+        };
+        record_for(&ff, &plan, &shared, Duration::from_secs(7));
+        let snap = shared.ring.lock().unwrap().snapshot(0).expect("recorded");
+        let starts: Vec<i64> = snap.gops.iter().map(|g| g.start_us).collect();
+        assert!(starts.len() >= 3, "{starts:?}");
+        for w in starts.windows(2) {
+            let gap = (w[1] - w[0]) as f64 / 1e6;
+            assert!((gap - 2.0).abs() < 0.1, "keyframes {gap:.2} s apart");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ts = dir.path().join("v.ts");
+        snap.write_to(std::fs::File::create(&ts).unwrap()).unwrap();
+        let out = ffmpeg::command(&ff)
+            .args(["-v", "error", "-i"])
+            .arg(&ts)
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+    }
 }

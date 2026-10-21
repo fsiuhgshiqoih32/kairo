@@ -158,13 +158,40 @@ impl Encoder {
         )
     }
 
-    /// Rate control and latency options for a target bitrate.
-    fn options(self, bitrate: u64, fps: u32) -> Vec<String> {
+    /// Rate control and latency options for a target bitrate, or for a constant quality `cq`
+    /// with 1.5 times that bitrate as the ceiling (encoders that have it).
+    fn options(self, bitrate: u64, fps: u32, cq: Option<u32>) -> Vec<String> {
         let b = bitrate.to_string();
         let max = (bitrate * 3 / 2).to_string();
         let buf = (bitrate * 2).to_string();
-        let g = fps.max(1).to_string();
+        let max_buf = (bitrate * 3).to_string();
+        let q = cq.map(|q| q.to_string()).unwrap_or_default();
+        // A keyframe every 2 seconds. At one a second, keyframes were 74% of a desktop clip's
+        // bytes; 2 s made desktop clips 30% and game clips up to 10% smaller at the same VMAF.
+        // Clips start at the keyframe at or before their start, so it's also the cut precision.
+        let g = (2 * fps.max(1)).to_string();
         let v: Vec<&str> = match self {
+            // Constant quality: as good a picture as the bitrate gave, in far fewer bits where a
+            // scene is easy (measured: 15% smaller in a fast game, 50-60% on slower ones and a
+            // desktop), with the old ceiling kept for the hardest scenes.
+            Encoder::Nvenc if cq.is_some() => vec![
+                "-preset",
+                "p2",
+                "-tune",
+                "hq",
+                "-rc",
+                "vbr",
+                "-cq",
+                &q,
+                "-b:v",
+                "0",
+                "-maxrate",
+                &max,
+                "-bufsize",
+                &max_buf,
+                "-forced-idr",
+                "1",
+            ],
             Encoder::Nvenc => vec![
                 // p2 encodes about 1.5 times faster than p4 at the same picture (measured at
                 // 1440p120 on game footage): less load on the encoder while games run.
@@ -227,7 +254,6 @@ impl Encoder {
             ],
         };
         let mut out: Vec<String> = v.into_iter().map(String::from).collect();
-        // One keyframe a second: clips start at a keyframe, so this is the cutting precision.
         out.extend([
             "-g".into(),
             g.clone(),
@@ -252,6 +278,9 @@ pub struct VideoPlan {
     /// Scale down to at most this height.
     pub max_height: Option<u32>,
     pub bitrate: u64,
+    /// A constant-quality level (lower is better) for encoders that have one: `bitrate` is then
+    /// only the ceiling.
+    pub cq: Option<u32>,
     /// VA-API render node, for `Encoder::Vaapi`.
     pub vaapi_device: Option<String>,
 }
@@ -305,7 +334,7 @@ pub fn record_args(plan: &VideoPlan) -> Vec<String> {
             // The size is always given: without it, a game changing the display mode makes the
             // capture crop (or pad) to the old size instead of scaling.
             let g = format!(
-                "gfxcapture=hmonitor={hmonitor}:max_framerate={fps}:capture_cursor=1                 :width={ow}:height={oh}:resize_mode=scale_aspect"
+                "gfxcapture=hmonitor={hmonitor}:max_framerate={fps}:capture_cursor=1:width={ow}:height={oh}:resize_mode=scale_aspect"
             );
             a.extend([s("-f"), s("lavfi"), s("-i"), g]);
         }
@@ -409,7 +438,7 @@ pub fn record_args(plan: &VideoPlan) -> Vec<String> {
             .ffmpeg_name_for(plan.codec)
             .unwrap_or(plan.encoder.ffmpeg_name())),
     ]);
-    a.extend(plan.encoder.options(plan.bitrate, fps));
+    a.extend(plan.encoder.options(plan.bitrate, fps, plan.cq));
     a.extend([
         // Stream headers before every keyframe, so a clip can start at any of them.
         s("-bsf:v"),
@@ -447,7 +476,7 @@ pub fn probe_args(encoder: Encoder, vaapi_device: Option<&str>) -> Vec<String> {
         a.extend([s("-vf"), s("format=nv12,hwupload")]);
     }
     a.extend([s("-frames:v"), s("5"), s("-c:v"), s(encoder.ffmpeg_name())]);
-    a.extend(encoder.options(2_000_000, 30));
+    a.extend(encoder.options(2_000_000, 30, None));
     a.extend([s("-f"), s("null"), s("-")]);
     a
 }
@@ -581,6 +610,18 @@ pub fn save_with_cam_args(
         a.extend([s("-c:a"), s("aac"), s("-b:a"), s("160k")]);
     }
     for (i, t) in titles.iter().enumerate() {
+        // The mix (or a lone track) keeps full quality. A source kept beside it, for editing,
+        // needs less, and a microphone is one voice: mono at 64k.
+        if titles.len() > 1 {
+            match *t {
+                "Everything" => {}
+                "Microphone" => {
+                    a.extend([format!("-b:a:{i}"), s("64k"), format!("-ac:a:{i}"), s("1")])
+                }
+                "Voice chat" => a.extend([format!("-b:a:{i}"), s("96k")]),
+                _ => a.extend([format!("-b:a:{i}"), s("128k")]),
+            }
+        }
         // MP4 keeps a track's handler name but not its title: write both.
         a.extend([format!("-metadata:s:a:{i}"), format!("title={t}")]);
         a.extend([format!("-metadata:s:a:{i}"), format!("handler_name={t}")]);
@@ -897,6 +938,7 @@ mod tests {
             src_size: src,
             max_height,
             bitrate: 12_000_000,
+            cq: None,
             vaapi_device: None,
         }
     }
@@ -923,6 +965,17 @@ mod tests {
             None,
         )));
         assert!(a.contains("-use_wallclock_as_timestamps 1 -f lavfi -i gfxcapture=hmonitor=65537:max_framerate=60"), "{a}");
+        // One argument with no spaces in it (a stray run of them once got in).
+        let filter = record_args(&plan(
+            Source::WindowsGraphics { hmonitor: 65537 },
+            Encoder::Nvenc,
+            (2560, 1440),
+            None,
+        ))
+        .into_iter()
+        .find(|x| x.starts_with("gfxcapture="))
+        .unwrap();
+        assert!(!filter.contains(' '), "{filter}");
         // Even at the screen's own size: a display-mode change then scales, not crops.
         assert!(
             a.contains(":width=2560:height=1440:resize_mode=scale_aspect"),
@@ -931,7 +984,27 @@ mod tests {
         assert!(!a.contains("hwdownload"), "{a}");
         assert!(a.contains("-vf fps=60 "), "{a}");
         assert!(a.contains("-c:v h264_nvenc"));
-        assert!(a.contains("-g 60 -keyint_min 60 -bf 0"));
+        // A keyframe every 2 seconds.
+        assert!(a.contains("-g 120 -keyint_min 120 -bf 0"), "{a}");
+        assert!(
+            a.contains("-tune ll -rc vbr -b:v 12000000 -maxrate 18000000 -bufsize 24000000"),
+            "{a}"
+        );
+        // With a quality level: constant quality under the same ceiling.
+        let mut p = plan(
+            Source::WindowsGraphics { hmonitor: 65537 },
+            Encoder::Nvenc,
+            (2560, 1440),
+            None,
+        );
+        p.cq = Some(21);
+        let a = joined(&record_args(&p));
+        assert!(
+            a.contains(
+                "-preset p2 -tune hq -rc vbr -cq 21 -b:v 0 -maxrate 18000000 -bufsize 36000000 -forced-idr 1 -g 120 -keyint_min 120 -bf 0"
+            ),
+            "{a}"
+        );
         assert!(
             a.contains("-copyts -muxdelay 0 -muxpreload 0 -flush_packets 1 -f mpegts pipe:1"),
             "{a}"
@@ -1039,8 +1112,16 @@ mod tests {
             a.contains("handler_name=Microphone -disposition:a:2 0"),
             "{a}"
         );
+        // The mix at full quality, the sources beside it smaller, the mic in mono.
+        assert!(a.contains("-c:a aac -b:a 160k -metadata:s:a:0"), "{a}");
+        assert!(a.contains("-b:a:1 128k -metadata:s:a:1 title=Game"), "{a}");
+        assert!(
+            a.contains("-b:a:2 64k -ac:a:2 1 -metadata:s:a:2 title=Microphone"),
+            "{a}"
+        );
         assert!(a.ends_with("-movflags +faststart -f mp4 out.mp4"));
         let a = joined(&save_args(v, &[(d, "Game")], false, o));
+        assert!(!a.contains("-b:a:0"), "a lone track keeps 160k: {a}");
         assert!(
             a.contains("-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac"),
             "{a}"
