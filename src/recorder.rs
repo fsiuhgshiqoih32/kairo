@@ -622,22 +622,24 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
             };
         }
         // A game changing the display mode changes the screen's size: start over at the new
-        // size rather than keep scaling to the old one.
-        let resized = last_look.elapsed() >= Duration::from_secs(2) && {
-            last_look = Instant::now();
-            let now = platform::choose_monitor(&shared.settings().monitor).map(|m| (m.w, m.h));
-            let changed = now.is_some_and(|s| s != plan.src_size);
-            if changed {
-                info!(
-                    "the screen changed from {}x{} to {}x{}: starting over",
-                    plan.src_size.0,
-                    plan.src_size.1,
-                    now.map_or(0, |s| s.0),
-                    now.map_or(0, |s| s.1)
-                );
-            }
-            changed
-        };
+        // size rather than keep scaling to the old one. (A test picture has no screen.)
+        let resized = !matches!(plan.source, Source::Test { .. })
+            && last_look.elapsed() >= Duration::from_secs(2)
+            && {
+                last_look = Instant::now();
+                let now = platform::choose_monitor(&shared.settings().monitor).map(|m| (m.w, m.h));
+                let changed = now.is_some_and(|s| s != plan.src_size);
+                if changed {
+                    info!(
+                        "the screen changed from {}x{} to {}x{}: starting over",
+                        plan.src_size.0,
+                        plan.src_size.1,
+                        now.map_or(0, |s| s.0),
+                        now.map_or(0, |s| s.1)
+                    );
+                }
+                changed
+            };
         let interrupted = shared.stop.load(Ordering::Relaxed)
             || shared.paused.load(Ordering::Relaxed)
             || shared.video_generation.load(Ordering::SeqCst) != generation
