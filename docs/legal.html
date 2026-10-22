@@ -70,11 +70,12 @@
 
       <section id="app-privacy">
         <h2>Privacy in the Kairo app</h2>
-        <p>Kairo records your screen and sound on your computer and keeps the recordings there. There’s no account, no analytics, no telemetry and no crash reporting. Kairo goes online only for these things:</p>
+        <p>Kairo records your screen and sound on your computer and keeps the recordings there. You don’t need an account, and there are no analytics, no telemetry and no crash reporting. Kairo goes online only for these things:</p>
         <ul class="list">
           <li><b>Update checks.</b> When its window opens, Kairo asks GitHub’s API for the newest release, identifying itself as Kairo and its version. Updates are downloaded from GitHub and checked against their published checksums. You can turn update checks off in Settings.</li>
           <li><b>Speech recognition.</b> The first time you turn on voice clipping or captions, Kairo downloads the Vosk library from GitHub and its English model from alphacephei.com. After that, speech is recognised on your computer and never sent anywhere.</li>
           <li><b>Share links, when you ask for one.</b> Kairo uploads that clip to catbox.moe, or to litterbox.catbox.moe for a link that expires, and copies the link. Anyone with the link can watch the clip. These are independent services with their own terms.</li>
+          <li><b>Friends, if you sign in.</b> Signing in with Google gives Kairo’s friends server your Google account’s ID, email address and name. The server runs on Supabase, in the United States. It keeps the username you pick, your friend requests and friendships, and the messages and clip links you send and receive, so that your friends’ Kairo can show them. Only you and that friend can read a message through Kairo, but messages aren’t end-to-end encrypted, so whoever runs the server could read them. Clips you send are uploaded to catbox.moe, as with share links. Kairo checks for new messages about every 30 seconds while it runs. Signing out removes the account from your computer. To delete your account and everything the server keeps about you, <a href="https://github.com/fsiuhgshiqoih32/kairo/issues">open an issue on GitHub</a> with your username.</li>
           <li><b>Discord, if you connect a channel.</b> Kairo posts the clips you choose to that channel through the webhook you gave it. The webhook is stored on your computer.</li>
         </ul>
         <p>The keys and clicks overlay, when you turn it on, remembers only the gaming keys you press (WASD, QERF, Space, Shift, Ctrl, Tab and 1 to 4) and your mouse buttons while recording. Nothing else you type is kept.</p>
