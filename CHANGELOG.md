@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.1
+
+- **Import from Medal.** Coming from Medal? Press Import from Medal in Settings (an empty library
+  offers it too). Kairo finds your Medal clips and screenshots, even on another drive, and copies
+  them into a "From Medal" folder with their games, dates, your titles and your stars. Medal's
+  own files stay where they are, and importing again only brings in what's new.
+- **Get link doesn't stop halfway any more.** The pop-up stays open until your link is ready:
+  Open plays the clip without closing it, and closing it during an upload asks first. If
+  something goes wrong you get one short line and the buttons to try again, instead of text
+  that pushed the buttons off the card. Cancel works straight away, a copy that gets stuck is
+  stopped, and a file host that stops answering no longer holds the upload forever.
+- **Faster links.** Most 1080p clips are now sent as they are, with no copy made first. When a
+  copy is needed it's quicker, and if your graphics card can't make it (say, it's busy with a
+  game), your processor makes it instead of the share failing.
+- **Deleting and renaming clips works.** Both often failed with "The process cannot access the
+  file because it is being used by another process". The other process was Kairo's own preview
+  of the clip under your mouse. Kairo now stops its previews of a clip before moving or renaming
+  it, and if another program really has it open, it says so in plain words.
+- **A tidier pop-up.** Nothing is cut off on the right of the "Clip saved" pop-up, its corners
+  are rounded on Windows 11, and screenshots no longer get a play button.
+
 ## 0.6.0
 
 - **Friends.** Sign in with Google, pick a username and add friends by theirs. Send them clips
