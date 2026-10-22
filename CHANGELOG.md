@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+- **Smaller clips, same picture.** Clips take 15 to 60% less space at the same sharpness: on
+  NVIDIA cards Kairo now records at a constant quality instead of a fixed bitrate, so easy scenes
+  use far fewer bits, and every encoder places a keyframe every 2 seconds instead of every second.
+  The separate game, microphone and voice chat tracks are leaner too.
+- **Easier on your game while you clip.** Saving, thumbnails and exports now run at a lower
+  priority, so the game gets the computer first, and the "clip saved" pop-up no longer starts a
+  new graphics session on a graphics card that's busy with your game.
+- **Steadier when a game changes resolution.** Kairo waits for the new display mode to settle
+  before it restarts recording, instead of rebuilding the capture in the middle of the switch.
+- **Sound comes back by itself.** After a sound device error (common with Voicemod, virtual cables
+  and wireless headsets), Kairo keeps trying to reopen your devices instead of leaving clips
+  silent until you restart it. If your chosen microphone drops out for a moment, Kairo switches
+  back to it as soon as it returns.
+- **Smaller fixes.** Getting a link falls back to the 3-day host when catbox answers with an empty
+  reply; a save that fails partway no longer blocks later saves; if part of Kairo stops
+  unexpectedly, it's written to the log and Kairo starts itself again.
+
 ## 0.4.4
 
 - **Sharp clips in the editor.** Kairo showed every clip at 720p at most, so 1440p and 4K clips
