@@ -248,11 +248,12 @@ fn wait_for_code(
             return Err("The sign-in took too long. Try again.".into());
         }
         match listener.accept() {
-            Ok((stream, _)) => match answer_browser(stream) {
-                Some(result) => return result,
-                // Something else the browser asked for (its icon): keep waiting.
-                None => {}
-            },
+            // `None`: something else the browser asked for (its icon); keep waiting.
+            Ok((stream, _)) => {
+                if let Some(result) = answer_browser(stream) {
+                    return result;
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
