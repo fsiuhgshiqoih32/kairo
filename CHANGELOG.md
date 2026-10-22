@@ -6,6 +6,9 @@
   and messages from the new Friends page, or press Send on any clip (or in the editor) and tick
   who gets it: one friend, a few, or everyone. What friends send you shows up in Kairo with a
   pop-up, and their clips play with one click.
+- **Share links that work.** A link now opens a clip page with the title, a player and Download
+  and Copy link buttons, and it plays right in Discord's chat. Uploads no longer fail when catbox
+  is down: Kairo tries litterbox, then pomf2.lain.la, then catbox, each twice. Links last 2 days.
 
 ## 0.5.0
 
