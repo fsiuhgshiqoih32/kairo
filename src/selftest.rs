@@ -61,19 +61,20 @@ pub fn run() -> Result<(), String> {
         .lock()
         .unwrap()
         .set_spill(Some((home.join("buffer").join("replay.bin"), 64 << 20)))?;
-    // A session from 1.5 s on, and a moment marked 3 s in: the 2 s clip saved at the end must
-    // hold the mark, and the session must hold everything from its start.
+    // A session from 2.5 s on, and a moment marked 3.5 s in: the 2 s clip saved at the end must
+    // hold the mark, and the session must hold everything from its start. It starts at the
+    // keyframe before, up to 2 s earlier, but not at the start of the recording.
     let marker = {
         let s = shared.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(2500));
             let started = crate::session::start(&s, Some("Self test".into()));
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(1000));
             s.mark();
             started
         })
     };
-    record_for(&ff, &plan, &shared, Duration::from_secs(4));
+    record_for(&ff, &plan, &shared, Duration::from_secs(5));
     marker
         .join()
         .map_err(|_| "the session thread panicked")?
@@ -91,7 +92,7 @@ pub fn run() -> Result<(), String> {
         "session: {} ({secs:.1} s, marks {marks:?}): {info}",
         session.display()
     );
-    if !(1.5..=3.5).contains(&secs) || !info.contains("Video: h264") || !info.contains("Audio: aac")
+    if !(2.0..=4.7).contains(&secs) || !info.contains("Video: h264") || !info.contains("Audio: aac")
     {
         return Err(format!("the session isn't right ({secs:.1} s): {info}"));
     }
@@ -397,5 +398,46 @@ mod tests {
             "{info}"
         );
         assert!(clip.thumbnail.is_some(), "no thumbnail");
+    }
+
+    /// The self-test's session, alone: with 2-second keyframes it starts at the one before its
+    /// start, not at the recording's. Nothing is captured. Needs `KAIRO_HOME` set.
+    #[test]
+    #[ignore]
+    fn a_session_starts_at_the_keyframe_before_it() {
+        assert!(std::env::var_os("KAIRO_HOME").is_some(), "set KAIRO_HOME");
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let shared = Shared::new(kairo::config::Settings {
+            fps: 30,
+            ..Default::default()
+        });
+        let tone = start_tone(&shared);
+        let plan = VideoPlan {
+            source: Source::Test { w: 320, h: 240 },
+            encoder: *ffmpeg::working_encoders(&ff).first().expect("an encoder"),
+            codec: kairo::config::VideoCodec::H264,
+            fps: 30,
+            src_size: (320, 240),
+            max_height: None,
+            bitrate: 1_000_000,
+            cq: None,
+            vaapi_device: None,
+        };
+        let s = shared.clone();
+        let starter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            crate::session::start(&s, Some("Session test".into()))
+        });
+        record_for(&ff, &plan, &shared, Duration::from_secs(5));
+        starter.join().unwrap().expect("session started");
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::session::stop(&shared, move |r| {
+            let _ = tx.send(r);
+        });
+        let (_, secs) = rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
+        shared.stop.store(true, Ordering::SeqCst);
+        let _ = tone.join();
+        println!("session: {secs:.2} s");
+        assert!((2.0..=4.7).contains(&secs), "{secs:.1} s");
     }
 }
