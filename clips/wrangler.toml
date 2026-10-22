@@ -7,7 +7,7 @@ workers_dev = true
 # The pages: one key per clip, deleted by KV after two days.
 [[kv_namespaces]]
 binding = "CLIPS"
-id = "FILL_IN_AFTER_wrangler_kv_namespace_create"
+id = "efe181ac5f324921a0aeb80c6dd5bc5f"
 
 # At most 20 new links a minute from one address.
 [[ratelimits]]

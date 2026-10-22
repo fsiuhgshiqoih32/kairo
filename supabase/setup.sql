@@ -35,12 +35,17 @@ create table if not exists public.messages (
   sender uuid not null default auth.uid() references public.profiles (id) on delete cascade,
   recipient uuid not null references public.profiles (id) on delete cascade,
   body text not null default '' check (char_length(body) <= 2000),
-  clip_url text check (clip_url ~ '^https://(files|litter)\.catbox\.moe/[A-Za-z0-9._-]+$'),
+  clip_url text,
   clip_title text check (char_length(clip_title) <= 200),
   clip_seconds real check (clip_seconds >= 0),
   created_at timestamptz not null default now(),
   read_at timestamptz,
   check (body <> '' or clip_url is not null)
+);
+-- A clip is a Kairo share link: its page, or the file on one of the hosts Kairo uses.
+alter table public.messages drop constraint if exists messages_clip_url_check;
+alter table public.messages add constraint messages_clip_url_check check (
+  clip_url ~ '^https://(kairo-clips\.bfs-worker\.workers\.dev/c/[A-Za-z0-9]{8}|(files|litter)\.catbox\.moe/[A-Za-z0-9._-]+|pomf2\.lain\.la/f/[A-Za-z0-9._-]+)$'
 );
 create index if not exists messages_recipient on public.messages (recipient, id);
 create index if not exists messages_sender on public.messages (sender, id);

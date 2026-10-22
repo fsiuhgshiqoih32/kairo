@@ -20,7 +20,7 @@ use crate::log::{info, warning};
 pub const LIFETIME: u64 = 2 * 24 * 3600;
 
 /// Kairo's clip site; `KAIRO_CLIP_SITE` points a copy at another (a local `wrangler dev`).
-const CLIP_SITE: &str = "https://kairo-clips.SUBDOMAIN.workers.dev";
+const CLIP_SITE: &str = "https://kairo-clips.bfs-worker.workers.dev";
 
 /// Clips over this can't be shared as a link: the hosts take about 1 GB.
 const MAX: u64 = 1_000_000_000;
