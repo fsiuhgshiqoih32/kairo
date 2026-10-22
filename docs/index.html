@@ -189,6 +189,7 @@
       <button role="tab" id="tab-library" aria-controls="panel-library" aria-selected="true">Library</button>
       <button role="tab" id="tab-editor" aria-controls="panel-editor" aria-selected="false" tabindex="-1">Editor</button>
       <button role="tab" id="tab-share" aria-controls="panel-share" aria-selected="false" tabindex="-1">Share link</button>
+      <button role="tab" id="tab-friends" aria-controls="panel-friends" aria-selected="false" tabindex="-1">Friends</button>
       <button role="tab" id="tab-shots" aria-controls="panel-shots" aria-selected="false" tabindex="-1">Screenshots</button>
       <button role="tab" id="tab-stats" aria-controls="panel-stats" aria-selected="false" tabindex="-1">Your stats</button>
       <button role="tab" id="tab-updates" aria-controls="panel-updates" aria-selected="false" tabindex="-1">Updates</button>
@@ -219,11 +220,21 @@
       <div class="panel" role="tabpanel" id="panel-share" aria-labelledby="tab-share" hidden>
         <div class="panel-copy">
           <h3>One click, one link.</h3>
-          <p>Kairo uploads the clip and copies a link friends can watch in their browser. Discord plays it inline, and the QR code opens it on your phone.</p>
+          <p>Kairo uploads the clip and copies the link. Anyone with it can watch or download the clip, and the QR code opens it on your phone. If a file host is down, Kairo tries the next one.</p>
           <p class="soft">Or skip the clicks: give “Save and share” a key, and one press saves the clip, uploads it and copies the link. Links open a clip page that plays in any browser and right in Discord, and last 2 days.</p>
         </div>
         <figure class="shot" data-ui>
           <img loading="lazy" src="media/site/share-1280.webp" srcset="media/site/share-1280.webp 1280w, media/site/share-2560.webp 2560w" sizes="(max-width: 1000px) 100vw, 900px" width="1280" height="800" alt="The share link dialog in Kairo: the link with a Copy button, a QR code for phones, and how long the link lasts">
+        </figure>
+      </div>
+      <div class="panel" role="tabpanel" id="panel-friends" aria-labelledby="tab-friends" hidden>
+        <div class="panel-copy">
+          <h3>Straight to your friends.</h3>
+          <p>Sign in with Google, pick a username and add friends by theirs. Press Send to friends on any clip, tick one friend, a few or Everyone, and add a message if you like.</p>
+          <p class="soft">They get a pop-up on their PC and watch with one click, and you can chat on the Friends page. Messages are kept on Kairo’s server and aren’t end-to-end encrypted. <a href="legal.html#app-privacy">What’s kept and who can see it</a>.</p>
+        </div>
+        <figure class="shot" data-ui>
+          <img loading="lazy" src="media/site/friends-1280.webp" srcset="media/site/friends-1280.webp 1280w, media/site/friends-2560.webp 2560w" sizes="(max-width: 1000px) 100vw, 900px" width="1280" height="800" alt="Kairo’s Friends page: a chat with a friend, with a Red Eclipse clip they sent and its Watch button, their messages and your reply, and a box to write to them">
         </figure>
       </div>
       <div class="panel" role="tabpanel" id="panel-shots" aria-labelledby="tab-shots" hidden>
@@ -295,12 +306,13 @@
     <ul class="feat">
       <li><h3>Light on your games</h3><p>Encoded on the GPU: NVIDIA NVENC, AMD AMF, Intel and others, Apple VideoToolbox, with x264 as a fallback. H.265 where your card has it.</p></li>
       <li><h3>Say “clip that”</h3><p>Voice clipping saves a clip when you say so. Speech is recognised on your computer and never sent anywhere.</p></li>
-      <li><h3>Every sound on its own track</h3><p>Game sound and your mic are mixed, and each is also kept separately for editing. Turn your mic up or down and test it in Settings. On Windows 11, voice chat gets its own track too.</p></li>
+      <li><h3>Every sound on its own track</h3><p>Game sound and your mic are mixed, and each is also kept separately for editing. Turn your mic up or down and test it in Settings, and Kairo finds a mic you plug in without a restart. On Windows 11, voice chat gets its own track too.</p></li>
       <li><h3>Longer clips and sessions</h3><p>Clips up to 20 minutes, quick-save keys with their own lengths, and whole sessions of up to 5 hours with bookmarks.</p></li>
       <li><h3>Made for Discord</h3><p>One click makes a copy under 10 MB (or 50 and 500 MB for Nitro) and puts it on your clipboard, or posts it to your channel.</p></li>
       <li><h3>Montages and more formats</h3><p>Join clips into one video that dips to black between them. Export GIFs, vertical 9:16 copies and slow motion.</p></li>
-      <li><h3>Nothing leaves your PC</h3><p>No account, no ads, no tracking and no watermark. A clip is only uploaded when you ask for a share link.</p></li>
+      <li><h3>Nothing leaves your PC</h3><p>No ads, no tracking and no watermark, and no account unless you use Friends. A clip is only uploaded when you share it or send it to friends.</p></li>
       <li><h3>Save and share, one key</h3><p>Give it a shortcut and one press saves the clip, uploads it and copies the link, ready to paste in a chat.</p></li>
+      <li><h3>Send clips to friends</h3><p>Sign in with Google, add friends by username and send them clips and messages. They get a pop-up on their PC, and the clip plays with one click.</p></li>
       <li><h3>Your stats</h3><p>Clips kept, play time, storage, your top games, the last two weeks and your streak of days with a clip.</p></li>
       <li><h3>Never miss an update</h3><p>A notice tells you when a new version is out and what’s in it. Each download is checked against its published checksum.</p></li>
       <li><h3>Text that moves</h3><p>Type a line, drag it where you want it and pick how it arrives: a pop, a slide or a blur, drawn with motion blur.</p></li>
@@ -358,7 +370,7 @@
     <div class="qs">
       <details>
         <summary>Is it really free?</summary>
-        <p>Yes, all of it. There’s no paid tier, no account, no ads and no watermark on your clips. Kairo is open source under the MIT licence, so anyone can read and build the code.</p>
+        <p>Yes, all of it. There’s no paid tier, no ads and no watermark on your clips, and you don’t need an account. Kairo is open source under the MIT licence, so anyone can read and build the code.</p>
       </details>
       <details>
         <summary>Will it slow my games down?</summary>
@@ -370,7 +382,7 @@
       </details>
       <details>
         <summary>Does Kairo collect any data?</summary>
-        <p>No. There’s no account, no analytics and no tracking. Kairo only goes online to check for updates, to download the speech model the first time you turn on voice clipping or captions, and to upload a clip when you ask for a share link or post it to your Discord channel. <a href="legal.html#app-privacy">The details</a>.</p>
+        <p>Not unless you sign in to Friends. There are no analytics and no tracking, and you don’t need an account. Kairo only goes online to check for updates, to download the speech model the first time you turn on voice clipping or captions, to upload a clip when you share it or post it to your Discord channel, and for Friends, which keeps your username, friends and messages on Kairo’s server. <a href="legal.html#app-privacy">The details</a>.</p>
       </details>
       <details>
         <summary>How do updates work?</summary>

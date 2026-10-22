@@ -246,6 +246,7 @@ kbd { font: inherit; }
 .panel[hidden] { display: none; }
 .panel-copy h3 { font-size: clamp(26px, 2.3vw, 36px); font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; }
 .panel-copy p { margin-top: 16px; font-size: var(--s-body); max-width: 30em; }
+.panel-copy a { color: var(--ink); text-underline-offset: 3px; }
 .shot { border-radius: var(--radius); overflow: hidden; background: var(--raised); border: 1px solid var(--ui-line); }
 .shot img { width: 100%; height: auto; }
 .panel.enter .shot { animation: shot-in 520ms var(--ease) both; }
