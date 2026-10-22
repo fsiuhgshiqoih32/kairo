@@ -27,6 +27,7 @@ create table if not exists public.friendships (
 -- One friendship per pair, whoever asked first.
 create unique index if not exists friendships_pair
   on public.friendships (least(requester, addressee), greatest(requester, addressee));
+create index if not exists friendships_addressee on public.friendships (addressee);
 
 -- 3. Messages between friends: some text, a clip link, or both.
 create table if not exists public.messages (

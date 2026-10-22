@@ -32,8 +32,8 @@ use crate::single_instance;
 /// Kairo's Supabase project: its address and publishable key. Both are public by design (every
 /// copy of Kairo carries them); the database's rules decide what each signed-in person may do.
 /// `KAIRO_SUPABASE_URL` and `KAIRO_SUPABASE_KEY` point a copy at another project.
-const PROJECT_URL: &str = "";
-const PUBLISHABLE_KEY: &str = "";
+const PROJECT_URL: &str = "https://cnbmyxmmbdcajtoeselg.supabase.co";
+const PUBLISHABLE_KEY: &str = "sb_publishable_1cuLyF2ajgY55uo9mmVLdQ_m-aFcXEj";
 
 /// Where Supabase sends the browser back to after Google, on this computer. It has to be in the
 /// project's list of redirect URLs.
@@ -201,6 +201,11 @@ pub fn sign_out() {
 /// here with a code, and trades the code for a session. `cancel` stops the wait.
 pub fn sign_in(cancel: &AtomicBool) -> Result<(), String> {
     let server = server().ok_or("Friends isn't set up in this copy of Kairo.")?;
+    // With Google off, the browser would only show an error page while Kairo waits.
+    let (status, v) = call(&server, "GET", "/auth/v1/settings", None, None, &[])?;
+    if status == 200 && !google_on(&v) {
+        return Err("Google sign-in isn't switched on for Kairo's friends server yet.".into());
+    }
     let verifier = base64url(&random::<48>());
     let challenge = base64url(&Sha256::digest(verifier.as_bytes()));
     let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT)).map_err(|e| {
@@ -232,6 +237,14 @@ pub fn sign_in(cancel: &AtomicBool) -> Result<(), String> {
     keep_session(&v)?;
     info!("signed in to friends");
     Ok(())
+}
+
+/// Whether Supabase Auth's settings (`GET /auth/v1/settings`) have Google sign-in on.
+fn google_on(settings: &Value) -> bool {
+    settings
+        .pointer("/external/google")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Waits on `listener` (non-blocking) for the browser to come back with the sign-in's code.
@@ -1330,6 +1343,59 @@ mod tests {
         };
         // What goes in Credential Manager stays far under its 2560-byte limit.
         assert!(serde_json::to_string(&s).unwrap().len() < 300);
+    }
+
+    #[test]
+    fn sign_in_checks_google_is_on_first() {
+        // As the live project answered on 2026-10-22, before Google was switched on.
+        let off = json!({"external": {"google": false, "email": true}, "disable_signup": false});
+        assert!(!google_on(&off));
+        assert!(google_on(&json!({"external": {"google": true}})));
+        assert!(!google_on(&json!({})));
+    }
+
+    /// Against Kairo's real project: `cargo test -- --ignored live_server`.
+    #[test]
+    #[ignore]
+    fn live_server_refuses_signed_out_callers_and_says_why() {
+        let server = server().expect("project set");
+        let (status, settings) =
+            call(&server, "GET", "/auth/v1/settings", None, None, &[]).unwrap();
+        assert_eq!(status, 200, "{settings}");
+        eprintln!("google sign-in on: {}", google_on(&settings));
+        let (status, v) = call(
+            &server,
+            "GET",
+            "/rest/v1/profiles?select=id",
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(status, 401, "{v}");
+        assert_eq!(problem(status, &v), "permission denied for table profiles");
+        // A made-up token is refused too.
+        let (status, _) = call(
+            &server,
+            "GET",
+            "/rest/v1/messages?select=id",
+            Some("not.a.token"),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(status, 401 | 403), "{status}");
+        // A refresh token that doesn't exist: refused, which Kairo treats as signed out.
+        let (status, v) = call(
+            &server,
+            "POST",
+            "/auth/v1/token?grant_type=refresh_token",
+            None,
+            Some(json!({ "refresh_token": "nope" })),
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(status, 400 | 401 | 403), "{status} {v}");
     }
 
     #[test]
