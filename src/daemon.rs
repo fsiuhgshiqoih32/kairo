@@ -268,6 +268,8 @@ pub fn run(wait: bool) -> Result<(), String> {
     let mut hold = false;
     let update_found: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut threads = Some(threads);
+    let started = Instant::now();
+    let mut told_stopped = false;
     let _lock = lock;
 
     event_loop.run(move |event, _target, control_flow| {
@@ -474,6 +476,28 @@ pub fn run(wait: bool) -> Result<(), String> {
                     error!("{e}");
                 } else {
                     quit = true;
+                }
+            }
+            // The workers run until Kairo quits; one that stopped panicked (the log says
+            // where). Start over rather than carry on without recording, unless it happened
+            // straight away, where starting over would only repeat it.
+            let stopped = threads
+                .as_ref()
+                .and_then(|ts| ts.iter().find(|t| t.is_finished()))
+                .map(|t| t.thread().name().unwrap_or("worker").to_string());
+            if let Some(name) = stopped
+                && !quit
+                && !told_stopped
+            {
+                told_stopped = true;
+                if started.elapsed() < Duration::from_secs(60) {
+                    error!("the {name} thread stopped right after starting");
+                } else {
+                    error!("the {name} thread stopped; starting Kairo again");
+                    match crate::app::spawn_self(&["daemon", "--wait"]) {
+                        Ok(_) => quit = true,
+                        Err(e) => error!("{e}"),
+                    }
                 }
             }
             let status = shared.status();
@@ -693,6 +717,7 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
     }
     let shared = shared.clone();
     std::thread::spawn(move || {
+        let done = save::SavingFlag(&shared.saving);
         // Keep recording a moment after the press, so the clip doesn't end right at it.
         let post = settings.post_roll;
         if post > 0 {
@@ -704,7 +729,7 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
             shared.ring.lock().unwrap().clear();
             shared.marks.lock().unwrap().clear();
         }
-        shared.saving.store(false, Ordering::SeqCst);
+        drop(done);
         if !settings.notify && !(share && result.is_ok()) {
             if let Err(e) = result {
                 warning!("{e}");

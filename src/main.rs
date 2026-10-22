@@ -147,8 +147,18 @@ fn main() {
         && std::env::var_os("ICED_BACKEND").is_none()
     {
         // SAFETY: as above, before any other thread exists.
-        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
+        unsafe { std::env::set_var("ICED_BACKEND", app::POPUP_BACKEND) };
     }
+    // A panic on any thread goes in the log, where the user's log shows what went wrong.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!(
+            "panic on the {} thread: {info}",
+            thread.name().unwrap_or("unnamed")
+        );
+        report(info);
+    }));
     platform::init_process();
     let cli = Cli::parse();
     if cli.self_test || cli.ui_self_test {

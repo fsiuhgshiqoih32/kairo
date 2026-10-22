@@ -3,7 +3,7 @@
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use kairo::args;
@@ -237,9 +237,18 @@ pub fn save(shared: &Shared, seconds: Option<u32>, title: Option<&str>) -> Resul
     if shared.saving.swap(true, Ordering::SeqCst) {
         return Err("Already saving a clip.".into());
     }
-    let result = save_inner(shared, seconds, title);
-    shared.saving.store(false, Ordering::SeqCst);
-    result
+    let _done = SavingFlag(&shared.saving);
+    save_inner(shared, seconds, title)
+}
+
+/// Clears `shared.saving` however a save ends, a panic included: a flag left set would turn
+/// every later save away.
+pub struct SavingFlag<'a>(pub &'a AtomicBool);
+
+impl Drop for SavingFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Saves while the caller holds `shared.saving` (set it first; this doesn't clear it).

@@ -322,7 +322,9 @@ fn judge(site: &str, status: u16, text: &str) -> Result<String, Failure> {
     } else {
         text.chars().take(160).collect()
     };
-    if status >= 500 || html || status == 0 {
+    // An empty "OK" is the site losing the upload (catbox does), not a refusal: try elsewhere.
+    let lost = (200..300).contains(&status) && text.is_empty();
+    if status >= 500 || html || status == 0 || lost {
         Err(Failure::Unavailable(format!(
             "{site} isn't working right now ({what})."
         )))
@@ -780,6 +782,13 @@ mod tests {
             judge("catbox.moe", 200, "Too big"),
             Err(Failure::Refused(_))
         ));
+        // What the user's share got (2026-10-19): "wouldn't take it: error 200", no fallback.
+        assert_eq!(
+            judge("catbox.moe", 200, " \n"),
+            Err(Failure::Unavailable(
+                "catbox.moe isn't working right now (error 200).".into()
+            ))
+        );
         assert_eq!(
             judge("catbox.moe", 200, "https://files.catbox.moe/a.mp4\n"),
             Ok("https://files.catbox.moe/a.mp4".into())
