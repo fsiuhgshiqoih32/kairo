@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use kairo::args::Encoder;
 use kairo::library::{Library, Link};
 
 use crate::log::{info, warning};
@@ -31,6 +32,26 @@ const TRIES: u32 = 2;
 const PAUSE: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const PAUSE: Duration = Duration::from_millis(10);
+
+/// How hard an upload tries: how many times at each host, and how long it waits for a host's
+/// answer once the file's sent.
+#[derive(Clone, Copy, Debug)]
+struct Patience {
+    tries: u32,
+    answer: Duration,
+}
+
+/// The clip itself.
+const CLIP: Patience = Patience {
+    tries: TRIES,
+    answer: Duration::from_secs(180),
+};
+/// Its poster, a nicety: one quick try at each host, so a host that went down after taking the
+/// clip doesn't hold up the link.
+const POSTER: Patience = Patience {
+    tries: 1,
+    answer: Duration::from_secs(30),
+};
 
 /// A free file host a link's file can go to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,13 +120,58 @@ pub struct Upload {
     preparing: Arc<AtomicU64>,
     sent: Arc<AtomicU64>,
     total: Arc<AtomicU64>,
-    pub cancel: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     result: Arc<Mutex<Option<Result<Link, String>>>>,
+    /// The result has been handed out.
+    taken: Arc<AtomicBool>,
 }
 
 const DONE: u64 = u64::MAX;
 
 impl Upload {
+    /// Runs `work` on a thread of its own. Whatever happens there, a panic too, `take` gets a
+    /// result, so nothing waits on a share forever.
+    fn run(
+        clip: &Path,
+        work: impl FnOnce(&Upload) -> Result<Link, String> + Send + 'static,
+    ) -> Upload {
+        let up = Upload {
+            clip: clip.to_path_buf(),
+            preparing: Arc::new(AtomicU64::new(0)),
+            sent: Arc::default(),
+            total: Arc::new(AtomicU64::new(1)),
+            cancel: Arc::default(),
+            result: Arc::default(),
+            taken: Arc::default(),
+        };
+        let worker = Upload {
+            clip: up.clip.clone(),
+            preparing: up.preparing.clone(),
+            sent: up.sent.clone(),
+            total: up.total.clone(),
+            cancel: up.cancel.clone(),
+            result: up.result.clone(),
+            taken: up.taken.clone(),
+        };
+        let spawned = std::thread::Builder::new()
+            .name("share".into())
+            .spawn(move || {
+                let r = crate::app::unless_panic(|| work(&worker));
+                *worker.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            });
+        if let Err(e) = spawned {
+            *up.result.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Err(format!("Couldn't start sharing: {e}")));
+        }
+        up
+    }
+
+    /// Stops it. `take` says "Cancelled" at once, even while the thread is still winding down
+    /// (ending ffmpeg, or an upload stuck on a dead connection).
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
     /// How far along the whole thing is, 0 to 1 (making the copy is the first third).
     pub fn progress(&self) -> f32 {
         let (stage, f) = self.stage();
@@ -130,70 +196,137 @@ impl Upload {
         }
     }
 
-    /// "Uploading 42%".
+    /// "Uploading 42%", or "Finishing" once the file is sent (the host's answer, the poster and
+    /// the clip page are left).
     pub fn label(&self) -> String {
-        let (stage, f) = self.stage();
-        format!("{stage} {:.0}%", f * 100.0)
+        match self.stage() {
+            ("Uploading", f) if f >= 1.0 => "Finishing".into(),
+            (stage, f) => format!("{stage} {:.0}%", f * 100.0),
+        }
     }
 
     /// The finished result, once.
     pub fn take(&self) -> Option<Result<Link, String>> {
-        self.result.lock().unwrap().take()
+        if self.taken.load(Ordering::Relaxed) {
+            return None;
+        }
+        let r = self
+            .result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .or_else(|| {
+                self.cancel
+                    .load(Ordering::Relaxed)
+                    .then(|| Err("Cancelled".to_string()))
+            });
+        if r.is_some() {
+            self.taken.store(true, Ordering::Relaxed);
+        }
+        r
     }
 }
 
-/// Copies bigger than this are made for links (or anything over 1080p or 60 fps).
+#[cfg(test)]
+impl Upload {
+    /// One that stays where it's put, for pictures of the cards showing it.
+    pub fn frozen(clip: &Path, preparing: u64, sent: u64, total: u64) -> Upload {
+        Upload {
+            clip: clip.to_path_buf(),
+            preparing: Arc::new(AtomicU64::new(preparing)),
+            sent: Arc::new(AtomicU64::new(sent)),
+            total: Arc::new(AtomicU64::new(total)),
+            cancel: Arc::default(),
+            result: Arc::default(),
+            taken: Arc::default(),
+        }
+    }
+}
+
+/// Clips up to this size go as they are when they play everywhere (or anything over 1080p or
+/// 60 fps gets a copy).
 const DIRECT_MAX: u64 = 60_000_000;
-/// The size a link copy aims under: catbox takes 200 MB.
+/// Bigger ones go as they are at up to this bitrate, which browsers stream easily: a copy would
+/// be about as big, and making it takes a minute or more.
+const DIRECT_BPS: u64 = 16_000_000;
+/// The size a link copy aims under, and the most a clip goes as it is: catbox, the last host
+/// tried, takes 200 MB.
 const COPY_TARGET: u64 = 190_000_000;
 
 /// Starts sharing `file` (or its `range`, in seconds) on a thread. When it works, the link is
 /// remembered for `clip` (the clip the file was made from, usually the file itself).
 pub fn start(file: &Path, clip: &Path, range: Option<(f64, f64)>) -> Upload {
-    let up = Upload {
-        clip: clip.to_path_buf(),
-        preparing: Arc::new(AtomicU64::new(0)),
-        sent: Arc::default(),
-        total: Arc::new(AtomicU64::new(1)),
-        cancel: Arc::default(),
-        result: Arc::default(),
-    };
-    let (file, clip) = (file.to_path_buf(), clip.to_path_buf());
-    let (preparing, sent, total, cancel, result) = (
-        up.preparing.clone(),
-        up.sent.clone(),
-        up.total.clone(),
-        up.cancel.clone(),
-        up.result.clone(),
-    );
-    std::thread::spawn(move || {
-        let copy = prepare(&file, range, &preparing, &cancel);
-        preparing.store(DONE, Ordering::Relaxed);
-        let r = copy.and_then(|c| {
-            let send = c.as_deref().unwrap_or(&file);
-            total.store(
-                std::fs::metadata(send).map(|m| m.len()).unwrap_or(1).max(1),
-                Ordering::Relaxed,
-            );
-            let r = share_file(send, &clip, &sent, &cancel);
-            if let Some(c) = &c {
-                let _ = std::fs::remove_file(c);
-            }
-            r
-        });
-        let r = r.inspect(|link| {
-            if let Err(e) = Library::edit(|lib| lib.set_link(&clip, Some(link.clone()))) {
-                warning!("couldn't remember the link: {e}");
-            }
-        });
-        if let Err(e) = &r
-            && e != "Cancelled"
-        {
-            warning!("sharing {} failed: {e}", file.display());
+    let (file, at) = (file.to_path_buf(), clip.to_path_buf());
+    Upload::run(clip, move |up| share(&file, &at, range, up))
+}
+
+/// Makes the link: a copy if one's needed, the upload, and the clip page.
+fn share(file: &Path, clip: &Path, range: Option<(f64, f64)>, up: &Upload) -> Result<Link, String> {
+    let copy = prepare(file, range, &up.preparing, &up.cancel);
+    up.preparing.store(DONE, Ordering::Relaxed);
+    let r = copy.and_then(|c| {
+        let send = c.as_deref().unwrap_or(file);
+        up.total.store(
+            std::fs::metadata(send).map(|m| m.len()).unwrap_or(1).max(1),
+            Ordering::Relaxed,
+        );
+        let r = share_file(send, clip, &up.sent, &up.cancel);
+        if let Some(c) = &c {
+            let _ = std::fs::remove_file(c);
         }
-        *result.lock().unwrap() = Some(r);
+        r
     });
-    up
+    let r = r.inspect(|link| {
+        if let Err(e) = Library::edit(|lib| lib.set_link(clip, Some(link.clone()))) {
+            warning!("couldn't remember the link: {e}");
+        }
+    });
+    if let Err(e) = &r
+        && e != "Cancelled"
+    {
+        warning!("sharing {} failed: {e}", file.display());
+    }
+    r
+}
+
+/// A few words on why sharing failed, for the pop-up's one line (the whole reason is in the
+/// log).
+pub fn brief(error: &str) -> String {
+    let short = if error == "Cancelled" {
+        "Stopped."
+    } else if error.chars().count() <= 34 {
+        error
+    } else if error.contains("tried every file host") {
+        "Couldn't upload. Try again soon."
+    } else if error.contains("Trim it") {
+        "Trim it shorter to get a link."
+    } else if error.contains("ffmpeg is missing") {
+        "Reinstall Kairo (ffmpeg is gone)."
+    } else {
+        "Couldn't get a link. Try again."
+    };
+    short.to_string()
+}
+
+/// Why a link needs its own copy of a clip (`size` bytes), or `None` when the clip can go as it
+/// is: H.264 (H.265 plays in few browsers and not in Discord's embeds), at most 1080p and 60 fps
+/// (what phones and Discord play), and small, or at a bitrate browsers stream easily and under
+/// every host's limit. A part of a clip (`part`) always gets a copy.
+fn copy_reason(info: &kairo::media::Info, size: u64, part: bool) -> Option<&'static str> {
+    let bps = (info.duration > 0.5).then(|| (size as f64 * 8.0 / info.duration) as u64);
+    if part {
+        Some("a part of it")
+    } else if info.video_codec != "h264" {
+        Some("not H.264")
+    } else if info.height > 1080 {
+        Some("over 1080p")
+    } else if info.fps > 61.0 {
+        Some("over 60 fps")
+    } else if size <= DIRECT_MAX || (size <= COPY_TARGET && bps.is_some_and(|b| b <= DIRECT_BPS)) {
+        None
+    } else {
+        Some("too big")
+    }
 }
 
 /// Makes the copy a link gets when the file is big, high-resolution or high frame rate, or when
@@ -213,16 +346,14 @@ fn prepare(
     let ff = crate::ffmpeg::path()?;
     let info = crate::ffmpeg::probe_clip(&ff, file)?;
     let size = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
-    // H.265 plays in few browsers and not in Discord's embeds: links get H.264.
-    let fine =
-        size <= DIRECT_MAX && info.height <= 1080 && info.fps <= 61.0 && info.video_codec == "h264";
-    if range.is_none() && fine {
+    let Some(why) = copy_reason(&info, size, range.is_some()) else {
         return Ok(None);
-    }
+    };
     let (start, end) = range.unwrap_or((0.0, info.duration));
     let plan = kairo::media::web_plan(COPY_TARGET, end - start, &info)?;
     let dir = kairo::config::config_dir().join("sharing");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    clear_old_copies(&dir);
     // Its own name: two shares started in the same second mustn't share a file.
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let out = dir.join(format!(
@@ -231,25 +362,84 @@ fn prepare(
         now_secs(),
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let encoder = crate::export::best_encoder(&ff, &Mutex::new(None));
-    let args = kairo::media::share_args(
-        file,
-        start,
-        end,
-        &info,
-        &kairo::media::Effects::default(),
-        &plan,
-        encoder,
-        &out,
-    );
-    info!(
-        "making a {}p copy to share ({plan:?})",
-        plan.height.unwrap_or(info.height)
-    );
-    crate::export::encode_with(&ff, &args, end - start, &out, cancel, &|f| {
-        preparing.store((f * 1000.0) as u64, Ordering::Relaxed)
+    let made = std::time::Instant::now();
+    let copy = |encoder: Encoder| {
+        info!(
+            "making a {}p copy to share ({why}; {}; {plan:?})",
+            plan.height.unwrap_or(info.height),
+            encoder.label()
+        );
+        preparing.store(0, Ordering::Relaxed);
+        let args = kairo::media::share_args(
+            file,
+            start,
+            end,
+            &info,
+            &kairo::media::Effects::default(),
+            &plan,
+            encoder,
+            &out,
+        );
+        crate::export::encode_with(&ff, &args, end - start, &out, cancel, &|f| {
+            preparing.store((f * 1000.0) as u64, Ordering::Relaxed)
+        })
+    };
+    with_fallback(link_encoder(&ff), copy).map_err(|e| match e.as_str() {
+        "Cancelled" => e,
+        _ => format!("Couldn't make the copy to share: {e}"),
     })?;
+    info!("made the copy in {:.0} s", made.elapsed().as_secs_f64());
     Ok(Some(out))
+}
+
+/// Runs `copy` with `encoder`, and again on the CPU if a graphics card's encoder fails: it can
+/// pass the test and still fail on the clip (busy with a game, out of memory, too many at
+/// once), and the CPU always works.
+fn with_fallback(
+    encoder: Encoder,
+    copy: impl Fn(Encoder) -> Result<(), String>,
+) -> Result<(), String> {
+    match copy(encoder) {
+        Err(e) if e != "Cancelled" && kairo::media::export_encoder(encoder) != Encoder::X264 => {
+            warning!(
+                "{} couldn't make the copy ({e}); using the CPU",
+                encoder.label()
+            );
+            copy(Encoder::X264)
+        }
+        r => r,
+    }
+}
+
+/// The encoder link copies use: the first that works here, found once (testing every encoder
+/// takes seconds).
+fn link_encoder(ff: &Path) -> Encoder {
+    static FOUND: Mutex<Option<Encoder>> = Mutex::new(None);
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    *found.get_or_insert_with(|| {
+        Encoder::candidates()
+            .into_iter()
+            .find(|e| crate::ffmpeg::encoder_works(ff, *e).is_ok())
+            .unwrap_or(Encoder::X264)
+    })
+}
+
+/// Removes copies left behind a day ago or more (a share stopped when Kairo closed).
+fn clear_old_copies(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(24 * 3600));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 pub fn now_secs() -> u64 {
@@ -276,7 +466,7 @@ fn share_file(
     cancel: &Arc<AtomicBool>,
 ) -> Result<Link, String> {
     let hosts: Vec<(Host, &str)> = Host::ORDER.iter().map(|h| (*h, h.api())).collect();
-    let (video, host) = upload_to(&hosts, send, sent, cancel)?;
+    let (video, host) = upload_to(&hosts, send, sent, cancel, CLIP)?;
     let created = now_secs();
     let mut about = About {
         title: title_of(clip),
@@ -300,7 +490,7 @@ fn share_file(
                 .chain(Host::ORDER.into_iter().filter(|h| *h != host))
                 .map(|h| (h, h.api()))
                 .collect();
-            poster = upload_to(&order, &thumb, &Arc::default(), cancel)
+            poster = upload_to(&order, &thumb, &Arc::default(), cancel, POSTER)
                 .ok()
                 .map(|(u, _)| u);
         }
@@ -325,13 +515,15 @@ fn share_file(
     })
 }
 
-/// Uploads `file` to the first of `hosts` that takes it: each is tried twice when it's down,
-/// and skipped when the file's too big for it or it refuses the file. The link and the host.
+/// Uploads `file` to the first of `hosts` that takes it: each is tried again (`patience`) when
+/// it's down, and skipped when the file's too big for it or it refuses the file. The link and
+/// the host.
 fn upload_to(
     hosts: &[(Host, &str)],
     file: &Path,
     sent: &Arc<AtomicU64>,
     cancel: &Arc<AtomicBool>,
+    patience: Patience,
 ) -> Result<(String, Host), String> {
     let size = std::fs::metadata(file)
         .map_err(|e| format!("{}: {e}", file.display()))?
@@ -348,7 +540,7 @@ fn upload_to(
             continue;
         }
         let (fields, field) = host.form();
-        for attempt in 0..TRIES {
+        for attempt in 0..patience.tries {
             if attempt > 0 {
                 std::thread::sleep(PAUSE);
             }
@@ -356,7 +548,7 @@ fn upload_to(
                 return Err("Cancelled".into());
             }
             sent.store(0, Ordering::Relaxed);
-            let answer = post_form(api, &fields, field, file, sent, cancel)
+            let answer = post_form(api, &fields, field, file, sent, cancel, patience.answer)
                 .and_then(|(status, text)| host.read(status, &text));
             match answer {
                 Ok(url) => {
@@ -593,8 +785,14 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-/// POSTs `file` (as `file_field`) with `fields` as multipart/form-data; the status and text of
-/// the answer.
+/// The longest sending `bytes` may take before the connection counts as dead (a host that
+/// stops reading would otherwise hold the upload forever): a minute, plus the time at 64 KB/s.
+fn send_budget(bytes: u64) -> Duration {
+    Duration::from_secs(60 + bytes / 64_000)
+}
+
+/// POSTs `file` (as `file_field`) with `fields` as multipart/form-data, waiting up to `answer`
+/// for the answer once it's sent; the status and text of the answer.
 fn post_form(
     url: &str,
     fields: &[(&str, String)],
@@ -602,6 +800,7 @@ fn post_form(
     file: &Path,
     sent: &Arc<AtomicU64>,
     cancel: &Arc<AtomicBool>,
+    answer: Duration,
 ) -> Result<(u16, String), Failure> {
     let site = url.split('/').nth(2).unwrap_or(url).to_string();
     let name = file
@@ -630,7 +829,9 @@ fn post_form(
     };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(20)))
-        .timeout_recv_response(Some(Duration::from_secs(180)))
+        .timeout_send_body(Some(send_budget(length)))
+        .timeout_recv_response(Some(answer))
+        .timeout_recv_body(Some(Duration::from_secs(30)))
         .user_agent(concat!(
             "Kairo/",
             env!("CARGO_PKG_VERSION"),
@@ -800,6 +1001,7 @@ fn send_to_webhook(
         file,
         sent,
         cancel,
+        CLIP.answer,
     ) {
         Ok((status, text)) => webhook_answer(status, &text),
         Err(Failure::Cancelled) => Err("Cancelled".into()),
@@ -896,8 +1098,16 @@ mod tests {
             ("reqtype", "fileupload".to_string()),
             ("time", "72h".to_string()),
         ];
-        let (status, text) =
-            post_form(&url, &fields, "fileToUpload", &file, &sent, &Arc::default()).unwrap();
+        let (status, text) = post_form(
+            &url,
+            &fields,
+            "fileToUpload",
+            &file,
+            &sent,
+            &Arc::default(),
+            CLIP.answer,
+        )
+        .unwrap();
         assert_eq!(
             Host::Litterbox.read(status, &text),
             Ok("https://files.catbox.moe/abc123.mp4".into())
@@ -950,6 +1160,7 @@ mod tests {
             &file,
             &Arc::default(),
             &Arc::default(),
+            CLIP.answer,
         )
         .unwrap();
         let e = Host::Catbox.read(status, &text).unwrap_err();
@@ -1011,6 +1222,7 @@ mod tests {
             &file,
             &Arc::default(),
             &Arc::default(),
+            CLIP,
         );
         assert_eq!(
             e,
@@ -1037,6 +1249,7 @@ mod tests {
             &file,
             &Arc::default(),
             &Arc::default(),
+            CLIP,
         )
         .unwrap_err();
         assert!(e.contains("tried every file host"), "{e}");
@@ -1048,6 +1261,7 @@ mod tests {
             &file,
             &Arc::default(),
             &Arc::default(),
+            CLIP,
         );
         assert_eq!(
             r,
@@ -1137,6 +1351,255 @@ mod tests {
         );
     }
 
+    /// Waits for a share's result (a few seconds at most).
+    fn wait(up: &Upload) -> Result<Link, String> {
+        for _ in 0..500 {
+            if let Some(r) = up.take() {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no result");
+    }
+
+    /// What the user's friend may have hit: a panic on the share's thread used to leave the
+    /// card at "Preparing" for good (and the window wouldn't start another for that clip).
+    #[test]
+    fn a_share_that_panics_still_ends_with_an_error() {
+        let up = Upload::run(Path::new("a.mp4"), |_| panic!("index out of range"));
+        let e = wait(&up).unwrap_err();
+        assert!(
+            e.contains("index out of range") && e.ends_with("Try again."),
+            "{e}"
+        );
+        assert_eq!(up.take(), None, "the result comes once");
+        let up = Upload::run(Path::new("a.mp4"), |_| Ok(Link::default()));
+        assert_eq!(wait(&up), Ok(Link::default()));
+    }
+
+    /// Cancel answers at once, even while the thread is busy (ending ffmpeg, or stuck on a dead
+    /// connection), so a new share of the clip can start straight away.
+    #[test]
+    fn cancelling_answers_at_once() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let up = Upload::run(Path::new("a.mp4"), move |_| {
+            let _ = rx.recv_timeout(Duration::from_secs(10));
+            Err("too late".into())
+        });
+        assert_eq!(up.take(), None);
+        up.cancel();
+        assert_eq!(up.take(), Some(Err("Cancelled".into())));
+        assert_eq!(up.take(), None);
+        drop(tx);
+    }
+
+    #[test]
+    fn says_what_its_doing() {
+        let up = Upload::run(Path::new("a.mp4"), |_| Err("x".into()));
+        let _ = wait(&up);
+        up.preparing.store(250, Ordering::Relaxed);
+        assert_eq!(up.label(), "Preparing 25%");
+        up.preparing.store(DONE, Ordering::Relaxed);
+        up.total.store(200, Ordering::Relaxed);
+        up.sent.store(50, Ordering::Relaxed);
+        assert_eq!(up.label(), "Uploading 25%");
+        assert!((up.progress() - 0.5).abs() < 1e-6);
+        // Sent: the host's answer, the poster and the page are left.
+        up.sent.store(210, Ordering::Relaxed);
+        assert_eq!(up.label(), "Finishing");
+        assert!((up.progress() - 1.0).abs() < 1e-6);
+    }
+
+    fn clip(height: u32, fps: f64, codec: &str, seconds: f64) -> kairo::media::Info {
+        kairo::media::Info {
+            duration: seconds,
+            width: height * 16 / 9,
+            height,
+            fps,
+            video_codec: codec.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn clips_that_play_everywhere_go_as_they_are() {
+        let reason = |height, fps, codec, seconds, size, part| {
+            copy_reason(&clip(height, fps, codec, seconds), size, part)
+        };
+        // Kairo's usual clip: 30 s of 1080p60 at about 12 Mbit/s.
+        assert_eq!(reason(1080, 60.0, "h264", 30.0, 45_000_000, false), None);
+        // Two minutes of it used to get a copy about as big, made over a minute or more.
+        assert_eq!(reason(1080, 60.0, "h264", 120.0, 180_000_000, false), None);
+        // Over catbox's limit, or at 40 Mbit/s: a copy every host takes and browsers stream.
+        let too_big = Some("too big");
+        assert_eq!(
+            reason(1080, 60.0, "h264", 120.0, 199_000_000, false),
+            too_big
+        );
+        assert_eq!(
+            reason(1080, 60.0, "h264", 30.0, 150_000_000, false),
+            too_big
+        );
+        // A short sharp one is small anyway.
+        assert_eq!(reason(1080, 60.0, "h264", 10.0, 50_000_000, false), None);
+        // The user's clips: 1440p, and 120 fps.
+        let big = reason(1440, 120.0, "h264", 30.0, 40_000_000, false);
+        assert_eq!(big, Some("over 1080p"));
+        let fast = reason(1080, 120.0, "h264", 30.0, 40_000_000, false);
+        assert_eq!(fast, Some("over 60 fps"));
+        let hevc = reason(1080, 59.94, "hevc", 30.0, 9_000_000, false);
+        assert_eq!(hevc, Some("not H.264"));
+        let part = reason(720, 30.0, "h264", 30.0, 9_000_000, true);
+        assert_eq!(part, Some("a part of it"));
+        // No length known: only a small one goes as it is.
+        assert_eq!(reason(1080, 60.0, "h264", 0.0, 50_000_000, false), None);
+        assert_eq!(reason(1080, 60.0, "h264", 0.0, 90_000_000, false), too_big);
+    }
+
+    #[test]
+    fn a_graphics_card_that_fails_hands_the_copy_to_the_cpu() {
+        let tried = Mutex::new(Vec::new());
+        let failing = |e: Encoder| {
+            tried.lock().unwrap().push(e);
+            match e {
+                Encoder::X264 => Ok(()),
+                _ => Err("OpenEncodeSessionEx failed: out of memory (10)".to_string()),
+            }
+        };
+        assert_eq!(with_fallback(Encoder::Nvenc, failing), Ok(()));
+        assert_eq!(*tried.lock().unwrap(), [Encoder::Nvenc, Encoder::X264]);
+        // A cancel is a cancel, and the CPU failing is the end.
+        tried.lock().unwrap().clear();
+        let cancelled = |e: Encoder| {
+            tried.lock().unwrap().push(e);
+            Err("Cancelled".to_string())
+        };
+        assert_eq!(
+            with_fallback(Encoder::Amf, cancelled),
+            Err("Cancelled".into())
+        );
+        assert_eq!(*tried.lock().unwrap(), [Encoder::Amf]);
+        let broken = |_| Err("no".to_string());
+        assert_eq!(with_fallback(Encoder::X264, broken), Err("no".into()));
+        assert_eq!(with_fallback(Encoder::Vaapi, broken), Err("no".into()));
+    }
+
+    /// The pop-up has one line of about 34 letters for what went wrong.
+    #[test]
+    fn failures_fit_the_pop_up() {
+        let every = format!(
+            "{} Kairo tried every file host it uses. Check your internet connection or try \
+             again in a few minutes.",
+            "litterbox.catbox.moe isn't working right now (error 502)."
+        );
+        let cases = [
+            (every.as_str(), "Couldn't upload. Try again soon."),
+            (
+                "Clips over 1 GB can't be shared as a link. Trim it shorter first.",
+                "Trim it shorter to get a link.",
+            ),
+            (
+                "600 s is too long to look good in 190 MB. Trim it to 500 s or less first.",
+                "Trim it shorter to get a link.",
+            ),
+            (
+                "ffmpeg is missing. It ships with Kairo: keep ffmpeg next to the kairo program.",
+                "Reinstall Kairo (ffmpeg is gone).",
+            ),
+            (
+                "Couldn't make the copy to share: [h264_nvenc @ 0x1] OpenEncodeSessionEx \
+                 failed: out of memory (10)",
+                "Couldn't get a link. Try again.",
+            ),
+            ("Cancelled", "Stopped."),
+            ("Couldn't start sharing: x", "Couldn't start sharing: x"),
+        ];
+        for (e, short) in cases {
+            assert_eq!(brief(e), short);
+            assert!(brief(e).chars().count() <= 34, "{short}");
+        }
+    }
+
+    #[test]
+    fn old_copies_are_cleared_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (dir.path().join("1-1-0.mp4"), dir.path().join("2-2-0.mp4"));
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let two_days = SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(two_days)
+            .unwrap();
+        clear_old_copies(dir.path());
+        assert!(!old.exists() && new.exists());
+    }
+
+    #[test]
+    fn a_poster_gets_one_quick_try_at_each_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.jpg");
+        std::fs::write(&file, b"x").unwrap();
+        // The first host loses it; a second try there would find nobody, and isn't made.
+        let (down, s1) = serve_once(" \n");
+        let (up, s2) = serve_once("https://litter.catbox.moe/abc123.jpg");
+        let hosts = [
+            (Host::Litterbox, down.as_str()),
+            (Host::Catbox, up.as_str()),
+        ];
+        let r = upload_to(&hosts, &file, &Arc::default(), &Arc::default(), POSTER);
+        assert_eq!(
+            r,
+            Ok(("https://litter.catbox.moe/abc123.jpg".into(), Host::Catbox))
+        );
+        let _ = (s1.join(), s2.join());
+        assert!(POSTER.answer < CLIP.answer && POSTER.tries == 1);
+    }
+
+    /// A host that takes the file and never answers is given up on, not waited on forever.
+    #[test]
+    fn a_host_that_never_answers_is_given_up_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api.php", listener.local_addr().unwrap());
+        let quiet = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            drop(s);
+        });
+        let started = std::time::Instant::now();
+        let patience = Patience {
+            tries: 1,
+            answer: Duration::from_millis(300),
+        };
+        let e = upload_to(
+            &[(Host::Litterbox, &url)],
+            &file,
+            &Arc::default(),
+            &Arc::default(),
+            patience,
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2), "{e}");
+        assert!(e.contains("tried every file host"), "{e}");
+        let _ = quiet.join();
+    }
+
+    #[test]
+    fn a_dead_connection_gets_time_for_a_slow_upload_but_not_forever() {
+        assert_eq!(send_budget(0), Duration::from_secs(60));
+        // 190 MB, a link copy at its biggest: most of an hour.
+        let b = send_budget(COPY_TARGET);
+        assert!(
+            b > Duration::from_secs(45 * 60) && b < Duration::from_secs(60 * 60),
+            "{b:?}"
+        );
+    }
+
     /// The real thing: `KAIRO_CLIP_SITE=http://127.0.0.1:8787 KAIRO_SHARE_TEST=<a .mp4>
     /// cargo test -- --ignored live_share` (with `wrangler dev` running in clips/).
     #[test]
@@ -1152,6 +1615,34 @@ mod tests {
         );
         assert_eq!(link.expires, Some(link.created + LIFETIME));
         assert!(sent.load(Ordering::Relaxed) > 0);
+    }
+
+    /// Get link as the card and the window run it, the copy included: `KAIRO_HOME=<a temp
+    /// folder> KAIRO_SHARE_TEST=<a .mp4> cargo test -- --ignored live_get_link`.
+    #[test]
+    #[ignore]
+    fn live_get_link_makes_a_copy_and_a_page() {
+        assert!(std::env::var_os("KAIRO_HOME").is_some(), "set KAIRO_HOME");
+        let file = PathBuf::from(std::env::var("KAIRO_SHARE_TEST").expect("a clip to share"));
+        let started = std::time::Instant::now();
+        let up = start(&file, &file, None);
+        let mut shown = String::new();
+        let link = loop {
+            if let Some(r) = up.take() {
+                break r.unwrap();
+            }
+            let label = up.label();
+            if label != shown {
+                eprintln!("{:5.1} s  {label}", started.elapsed().as_secs_f64());
+                shown = label;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        eprintln!("{:5.1} s  link: {link:?}", started.elapsed().as_secs_f64());
+        assert!(
+            link.url.starts_with(&format!("{}/c/", clip_site())),
+            "{link:?}"
+        );
     }
 
     #[test]

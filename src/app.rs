@@ -40,6 +40,21 @@ pub fn detach(cmd: &mut Command) {
     }
 }
 
+/// Runs a worker thread's `work`, turning a panic into an error: the window waiting on the
+/// result then shows what went wrong instead of waiting forever. The panic itself is in the log.
+pub fn unless_panic<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|p| {
+        let why = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no details".into());
+        Err(format!(
+            "Something went wrong inside Kairo ({why}). Try again."
+        ))
+    })
+}
+
 /// Opens a file, folder or link with the system's default program.
 pub fn open(target: &Path) {
     if let Err(e) = opener::open(target) {
@@ -62,5 +77,25 @@ pub fn reveal(path: &Path) {
         if let Some(dir) = path.parent() {
             open(dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_a_worker_becomes_an_error() {
+        let r: Result<(), String> = unless_panic(|| panic!("index out of bounds"));
+        let e = r.unwrap_err();
+        assert!(e.contains("index out of bounds"), "{e}");
+        assert!(e.ends_with("Try again."), "{e}");
+        let r: Result<u32, String> = unless_panic(|| panic!("{} went wrong", 2));
+        assert!(r.unwrap_err().contains("2 went wrong"));
+        assert_eq!(unless_panic(|| Ok::<_, String>(7)), Ok(7));
+        assert_eq!(
+            unless_panic(|| Err::<u8, _>("no".to_string())),
+            Err("no".into())
+        );
     }
 }
