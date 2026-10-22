@@ -31,6 +31,9 @@ pub enum Request {
     /// Starts or stops recording a session.
     Session,
     TogglePause,
+    /// Opens the sound devices again (Settings' Refresh), so a microphone connected since is
+    /// used.
+    ReopenAudio,
     /// After an update: start the new program file in our place.
     Restart,
     Quit,
@@ -44,6 +47,7 @@ impl Request {
             Request::Mark => "mark.request",
             Request::Session => "session.request",
             Request::TogglePause => "pause.request",
+            Request::ReopenAudio => "audio.request",
             Request::Restart => "restart.request",
             Request::Quit => "quit.request",
         };
@@ -154,6 +158,7 @@ pub fn run(wait: bool) -> Result<(), String> {
         Request::Mark,
         Request::Session,
         Request::TogglePause,
+        Request::ReopenAudio,
         Request::Restart,
         Request::Quit,
     ] {
@@ -472,6 +477,10 @@ pub fn run(wait: bool) -> Result<(), String> {
             }
             if take_request(Request::TogglePause) {
                 toggle_pause(&shared);
+            }
+            if take_request(Request::ReopenAudio) {
+                info!("opening the sound devices again on request");
+                shared.audio_generation.fetch_add(1, Ordering::SeqCst);
             }
             if take_request(Request::Quit) {
                 info!("quit on request");
