@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kairo::args::{self, Encoder};
@@ -102,15 +103,123 @@ fn tie(child: &Child) {
     }
 }
 
+/// ffmpegs reading a clip for pictures (hover previews, filmstrips, the banner), by the clip.
+/// Windows can't move or delete a file while ffmpeg has it open, so deleting a clip stops them
+/// first, and none starts on a clip in `HELD` meanwhile.
+type Readers = Vec<(PathBuf, Arc<Mutex<Child>>)>;
+static READERS: Mutex<Readers> = Mutex::new(Vec::new());
+static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// An ffmpeg reading a clip, which [`stop_reading`] can end.
+pub struct Reading(Arc<Mutex<Child>>);
+
+impl Reading {
+    /// Lets [`stop_reading`] end `child`, which reads `clip` (at once, if it's being deleted).
+    /// Take its output pipes first.
+    pub fn new(clip: &Path, child: Child) -> Reading {
+        let child = Arc::new(Mutex::new(child));
+        let mut readers = READERS.lock().unwrap();
+        if HELD.lock().unwrap().iter().any(|p| p == clip) {
+            let _ = child.lock().unwrap().kill();
+        }
+        readers.push((clip.to_path_buf(), child.clone()));
+        Reading(child)
+    }
+
+    pub fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.0.lock().unwrap().try_wait()
+    }
+
+    /// Waits for it to end (without holding up `stop_reading` meanwhile).
+    pub fn wait(&self) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            if let Some(st) = self.try_wait()? {
+                return Ok(st);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn kill(&self) {
+        let mut c = self.0.lock().unwrap();
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READERS
+            .lock()
+            .unwrap()
+            .retain(|(_, c)| !Arc::ptr_eq(c, &self.0));
+    }
+}
+
+/// Ends the ffmpegs reading `clip`, and keeps new ones off it until the hold is dropped: for
+/// moving or deleting it.
+pub fn stop_reading(clip: &Path) -> Hold {
+    HELD.lock().unwrap().push(clip.to_path_buf());
+    let found: Vec<Arc<Mutex<Child>>> = READERS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == clip)
+        .map(|(_, c)| c.clone())
+        .collect();
+    for c in found {
+        let mut c = c.lock().unwrap();
+        let _ = c.kill();
+        // Once it has ended, Windows has closed its files.
+        let _ = c.wait();
+    }
+    Hold(clip.to_path_buf())
+}
+
+/// Keeps ffmpegs from reading a clip while it's moved; see [`stop_reading`].
+pub struct Hold(PathBuf);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut held = HELD.lock().unwrap();
+        if let Some(i) = held.iter().position(|p| *p == self.0) {
+            held.remove(i);
+        }
+    }
+}
+
 /// Runs ffmpeg to completion, giving up after `timeout`. `Err` carries its error output.
 /// Below normal priority: these are saves, exports and pictures, made while a game may be
 /// running.
 pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
+    run_on(ffmpeg, args, timeout, None)
+}
+
+/// Like [`run`], for an ffmpeg that only reads `clip`: deleting the clip stops it.
+pub fn run_reading(
+    ffmpeg: &Path,
+    args: &[String],
+    timeout: Duration,
+    clip: &Path,
+) -> Result<(), String> {
+    run_on(ffmpeg, args, timeout, Some(clip))
+}
+
+fn run_on(
+    ffmpeg: &Path,
+    args: &[String],
+    timeout: Duration,
+    reads: Option<&Path>,
+) -> Result<(), String> {
     let mut cmd = command(ffmpeg);
     platform::hide_console_low_priority(&mut cmd);
     let mut child = spawn(cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped()))
         .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     let mut stderr = child.stderr.take();
+    let child = match reads {
+        Some(clip) => Reading::new(clip, child),
+        None => Reading(Arc::new(Mutex::new(child))),
+    };
     let reader = std::thread::spawn(move || {
         let mut s = String::new();
         if let Some(e) = stderr.as_mut() {
@@ -125,8 +234,7 @@ pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), Stri
             break st;
         }
         if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill();
             return Err("ffmpeg took too long".into());
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -202,4 +310,98 @@ pub fn probe_clip(ff: &Path, clip: &Path) -> Result<kairo::media::Info, String> 
         .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     kairo::media::parse_info(&String::from_utf8_lossy(&out.stderr))
         .ok_or_else(|| format!("{} isn't a video Kairo can open.", clip.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process that runs for half a minute and reads nothing.
+    fn sleeper() -> Child {
+        let mut c = if cfg!(windows) {
+            let mut c = Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        platform::hide_console(&mut c);
+        c.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Deleting a clip ends what reads it (and only that), and nothing starts reading it until
+    /// the delete is done.
+    #[test]
+    fn deleting_stops_readers_of_that_clip() {
+        let (a, b) = (Path::new("readers-a.mp4"), Path::new("readers-b.mp4"));
+        let ra = Reading::new(a, sleeper());
+        let rb = Reading::new(b, sleeper());
+        let held = stop_reading(a);
+        assert!(ra.try_wait().unwrap().is_some());
+        assert!(rb.try_wait().unwrap().is_none());
+        // One that starts on it meanwhile is ended at once.
+        let start = Instant::now();
+        let late = Reading::new(a, sleeper());
+        late.wait().unwrap();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        drop(held);
+        let after = Reading::new(a, sleeper());
+        assert!(after.try_wait().unwrap().is_none());
+        rb.kill();
+        after.kill();
+        drop((ra, rb, late, after));
+        assert!(
+            READERS
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(p, _)| p != a && p != b)
+        );
+    }
+
+    /// What users hit: on Windows a clip can't go to Recently deleted while ffmpeg reads it for a
+    /// hover preview, until the preview is stopped. Needs ffmpeg.
+    #[test]
+    #[ignore]
+    fn a_clip_being_previewed_can_be_deleted() {
+        let ff = path().expect("ffmpeg");
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let clip = d.join("Game 2026-10-19 10-00-00.mp4");
+        let made = command(&ff)
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=640x360:rate=30")
+            .args(["-t", "20", "-c:v", "libx264", "-preset", "ultrafast"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // Reads it at playing speed: a preview of a big clip that takes a while.
+        let child = command(&ff)
+            .args(["-loglevel", "error", "-re", "-i"])
+            .arg(&clip)
+            .args(["-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let preview = Reading::new(&clip, child);
+        std::thread::sleep(Duration::from_millis(500));
+        if cfg!(windows) {
+            let e = kairo::library::trash(d, &clip, 1_000).unwrap_err();
+            assert!(kairo::library::in_use(&e), "{e}");
+            assert!(clip.exists());
+        }
+        let held = stop_reading(&clip);
+        let to = kairo::library::trash(d, &clip, 1_000).unwrap();
+        drop(held);
+        assert!(to.exists() && !clip.exists());
+        assert!(preview.try_wait().unwrap().is_some());
+    }
 }

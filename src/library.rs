@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -131,7 +131,8 @@ pub fn write_atomic(path: &Path, text: &[u8]) -> std::io::Result<()> {
     if path.exists() {
         let _ = std::fs::copy(path, path.with_file_name(format!("{name}.bak")));
     }
-    let done = std::fs::rename(&tmp, path);
+    // A program reading the old file (a virus scan) can hold up the swap for a moment.
+    let done = patiently(|| std::fs::rename(&tmp, path));
     let _ = lock.unlock();
     if done.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -653,13 +654,67 @@ fn free_name(path: &Path) -> PathBuf {
     p
 }
 
-/// Moves a file, copying when it has to cross drives. Fails without leaving a copy behind.
+/// True when a program has the file open in a way that stops it being moved or deleted:
+/// Windows' "being used by another process" (ffmpeg, for one, opens files like that).
+pub fn in_use(e: &std::io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    (cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)))
+        || e.kind() == std::io::ErrorKind::ResourceBusy
+}
+
+/// How long moving or deleting a file waits for a program to let go of it.
+const PATIENCE: Duration = Duration::from_secs(1);
+
+/// Runs `f` again while the file is in use, for up to [`PATIENCE`]: a virus scan, Explorer
+/// making a thumbnail or a preview just stopped lets go in a moment.
+fn patiently<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let start = Instant::now();
+    loop {
+        match f() {
+            Err(e) if in_use(&e) && start.elapsed() < PATIENCE => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// Why moving or deleting a file failed, in plain words for a notice.
+pub fn why(e: &std::io::Error) -> String {
+    use std::io::ErrorKind as K;
+    if in_use(e) {
+        return "it's open in another program, like a video player. Close it there and try again"
+            .into();
+    }
+    match e.kind() {
+        K::NotFound => "it isn't there any more".into(),
+        K::PermissionDenied if cfg!(windows) => {
+            "Windows didn't allow it. If Controlled folder access is on in Windows Security, \
+             allow Kairo there"
+                .into()
+        }
+        K::PermissionDenied => {
+            "Kairo isn't allowed to change it. Check the folder's permissions".into()
+        }
+        K::StorageFull => "the drive is full".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// Moves a file, copying when it has to cross drives. Waits a moment for a file in use, and
+/// fails without leaving a copy behind.
 fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    if std::fs::rename(from, to).is_ok() {
-        return Ok(());
+    let e = match patiently(|| std::fs::rename(from, to)) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    // Copying can't help a file that's in use (the original couldn't be removed after) or gone,
+    // and a big clip takes a while to copy.
+    if in_use(&e) || e.kind() == std::io::ErrorKind::NotFound {
+        return Err(e);
     }
     std::fs::copy(from, to)?;
-    std::fs::remove_file(from).inspect_err(|_| {
+    patiently(|| std::fs::remove_file(from)).inspect_err(|_| {
         let _ = std::fs::remove_file(to);
     })
 }
@@ -748,7 +803,7 @@ pub fn restore(dir: &Path, trashed: &Path) -> std::io::Result<PathBuf> {
 
 /// Deletes a file in Recently deleted for good.
 pub fn purge(dir: &Path, trashed: &Path) -> std::io::Result<()> {
-    std::fs::remove_file(trashed)?;
+    patiently(|| std::fs::remove_file(trashed))?;
     let _ = std::fs::remove_file(trashed.with_extension("srt"));
     let mut list = read_trash_list(dir);
     if let Some(n) = trashed.file_name() {
@@ -1128,6 +1183,86 @@ mod tests {
         assert_eq!(purge_expired(d, 5_000 + TRASH_SECONDS).len(), 1);
         assert!(!t3.exists());
         assert!(!trash_dir(d).join(TRASH_LIST).exists());
+    }
+
+    #[test]
+    fn same_name_deleted_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let clip = d.join("Game 2026-10-19 10-00-00.mp4");
+        std::fs::write(&clip, b"first").unwrap();
+        let t1 = trash(d, &clip, 1_000).unwrap();
+        std::fs::write(&clip, b"second").unwrap();
+        let t2 = trash(d, &clip, 2_000).unwrap();
+        assert_ne!(t1, t2);
+        assert_eq!(std::fs::read(&t1).unwrap(), b"first");
+        assert_eq!(std::fs::read(&t2).unwrap(), b"second");
+        assert!(trashed(d).iter().all(|t| t.from == clip));
+        // Both come back, the second where it was and the first beside it.
+        assert_eq!(restore(d, &t2).unwrap(), clip);
+        let back = restore(d, &t1).unwrap();
+        assert_ne!(back, clip);
+        assert_eq!(std::fs::read(&back).unwrap(), b"first");
+
+        // A file that's gone already is said so, and nothing is copied.
+        let e = trash(d, &d.join("Gone.mp4"), 3_000).unwrap_err();
+        assert_eq!(why(&e), "it isn't there any more");
+        assert!(trashed(d).is_empty());
+    }
+
+    /// On Windows a file another program has open the way ffmpeg opens files (not shared for
+    /// deleting) can't be moved. Deleting waits a moment for it; if it stays open, the clip stays
+    /// where it was, whole, with nothing left in Recently deleted.
+    #[cfg(windows)]
+    #[test]
+    fn clips_in_use_wait_or_stay_put() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let clip = d.join("Game 2026-10-19 10-00-00.mp4");
+        std::fs::write(&clip, b"clip").unwrap();
+        std::fs::write(clip.with_extension("srt"), b"1").unwrap();
+        // FILE_SHARE_READ | FILE_SHARE_WRITE, without FILE_SHARE_DELETE.
+        let open = |p: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1 | 2)
+                .open(p)
+                .unwrap()
+        };
+
+        // Open the whole time: it stays, and the notice can say why.
+        let held = open(&clip);
+        let e = trash(d, &clip, 1_000).unwrap_err();
+        assert!(in_use(&e), "{e}");
+        assert!(
+            why(&e).starts_with("it's open in another program"),
+            "{}",
+            why(&e)
+        );
+        drop(held);
+        assert_eq!(std::fs::read(&clip).unwrap(), b"clip");
+        assert!(clip.with_extension("srt").exists());
+        assert!(trashed(d).is_empty());
+        assert!(!trash_dir(d).join(TRASH_LIST).exists());
+
+        // Let go a moment later (a preview stopped, a virus scan done): it goes, and Undo works.
+        let held = open(&clip);
+        let let_go = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let to = trash(d, &clip, 1_000).unwrap();
+        let_go.join().unwrap();
+        assert!(!clip.exists() && to.exists() && to.with_extension("srt").exists());
+
+        // Deleting for good waits the same way, and keeps what it couldn't delete.
+        let held = open(&to);
+        assert!(in_use(&purge(d, &to).unwrap_err()));
+        assert_eq!(trashed(d).len(), 1);
+        drop(held);
+        assert_eq!(restore(d, &to).unwrap(), clip);
+        assert_eq!(std::fs::read(&clip).unwrap(), b"clip");
     }
 
     #[test]

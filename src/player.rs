@@ -418,6 +418,7 @@ impl Player {
     pub fn release_file(&mut self) {
         self.playing = None;
         self.still = None;
+        self.still_wanted = None;
     }
 
     fn request_still(&mut self, t: f64) {
