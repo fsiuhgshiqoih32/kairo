@@ -358,4 +358,44 @@ mod tests {
             .unwrap();
         assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
     }
+
+    /// A clip saved from a test picture and a test tone has its picture, its sound and a
+    /// thumbnail. Nothing is captured. Needs `KAIRO_HOME` set: settings and clips go there.
+    #[test]
+    #[ignore]
+    fn saves_a_clip_with_sound_and_thumbnail() {
+        assert!(std::env::var_os("KAIRO_HOME").is_some(), "set KAIRO_HOME");
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let mut settings = kairo::config::Settings {
+            fps: 30,
+            ..Default::default()
+        };
+        settings.save_dir = kairo::config::config_dir()
+            .join("clips")
+            .display()
+            .to_string();
+        let shared = Shared::new(settings);
+        let tone = start_tone(&shared);
+        let plan = VideoPlan {
+            source: Source::Test { w: 320, h: 240 },
+            encoder: *ffmpeg::working_encoders(&ff).first().expect("an encoder"),
+            codec: kairo::config::VideoCodec::H264,
+            fps: 30,
+            src_size: (320, 240),
+            max_height: None,
+            bitrate: 1_000_000,
+            cq: None,
+            vaapi_device: None,
+        };
+        record_for(&ff, &plan, &shared, Duration::from_secs(5));
+        let clip = save::save(&shared, Some(4), Some("Save test")).expect("saved");
+        shared.stop.store(true, Ordering::SeqCst);
+        let _ = tone.join();
+        let info = probe(&ff, &clip.path).unwrap();
+        assert!(
+            info.contains("Video: h264") && info.contains("Audio: aac"),
+            "{info}"
+        );
+        assert!(clip.thumbnail.is_some(), "no thumbnail");
+    }
 }

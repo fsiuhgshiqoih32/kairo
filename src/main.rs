@@ -141,6 +141,14 @@ fn main() {
         // SAFETY: the first thing main does; no other threads exist yet.
         unsafe { std::env::set_var("OPENBLAS_NUM_THREADS", "1") };
     }
+    // The pop-up after a save draws on the CPU: a new graphics device on a card busy with a game
+    // and the recording can stall the game. The graphics card stays the fallback.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "notify")
+        && std::env::var_os("ICED_BACKEND").is_none()
+    {
+        // SAFETY: as above, before any other thread exists.
+        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
+    }
     platform::init_process();
     let cli = Cli::parse();
     if cli.self_test || cli.ui_self_test {

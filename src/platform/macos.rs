@@ -127,6 +127,8 @@ pub fn foreground_title() -> Option<String> {
 
 pub fn hide_console(_cmd: &mut Command) {}
 
+pub fn hide_console_low_priority(_cmd: &mut Command) {}
+
 /// Games-only recording can't tell games apart here.
 pub fn game_in_front() -> Option<bool> {
     None

@@ -103,14 +103,13 @@ fn tie(child: &Child) {
 }
 
 /// Runs ffmpeg to completion, giving up after `timeout`. `Err` carries its error output.
+/// Below normal priority: these are saves, exports and pictures, made while a game may be
+/// running.
 pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
-    let mut child = spawn(
-        command(ffmpeg)
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped()),
-    )
-    .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    let mut cmd = command(ffmpeg);
+    platform::hide_console_low_priority(&mut cmd);
+    let mut child = spawn(cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped()))
+        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
     let mut stderr = child.stderr.take();
     let reader = std::thread::spawn(move || {
         let mut s = String::new();

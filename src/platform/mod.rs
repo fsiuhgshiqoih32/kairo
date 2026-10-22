@@ -7,6 +7,7 @@
 //! - `capture_sources(monitor)`: ways to capture a screen, best first.
 //! - `foreground_title()`: the active window's title, for naming clips.
 //! - `hide_console(cmd)`: start a child process without a console window.
+//! - `hide_console_low_priority(cmd)`: the same, below normal priority (Windows only).
 //! - `play_builtin(kind)`, `play_sound_file(path)`: the save sound (see `play_save_sound`).
 
 #[cfg(windows)]

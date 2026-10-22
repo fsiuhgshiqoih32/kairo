@@ -508,8 +508,9 @@ pub fn run(shared: Arc<Shared>) {
                 Outcome::Ended(e) => {
                     warning!("recording stopped: {e}");
                     good = Some((source, encoder, codec));
-                    // Pick everything again: the screen may have changed.
-                    if wait_or_stop(&shared, Duration::from_millis(500)) {
+                    // Pick everything again: the screen may have changed. Capture usually ends
+                    // because a game is switching display modes; let the switch finish first.
+                    if wait_or_stop(&shared, Duration::from_secs(2)) {
                         return;
                     }
                     restart_now = true;
@@ -551,6 +552,43 @@ fn wait_or_stop(shared: &Shared, d: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     shared.stop.load(Ordering::Relaxed)
+}
+
+/// Looks taken a second apart that must agree on a new screen size before capture restarts.
+const SETTLE_LOOKS: u32 = 3;
+
+/// Watches the screen's size while recording. A new size counts once it has held for
+/// [`SETTLE_LOOKS`] looks in a row: a game switching modes (sometimes several times in a few
+/// seconds) restarts the capture once, after the switch, rather than tearing down the capture
+/// and the encoder in the middle of it.
+struct SizeWatch {
+    recording: (u32, u32),
+    seen: Option<(u32, u32)>,
+    times: u32,
+}
+
+impl SizeWatch {
+    fn new(recording: (u32, u32)) -> SizeWatch {
+        SizeWatch {
+            recording,
+            seen: None,
+            times: 0,
+        }
+    }
+
+    /// Takes a look at the screen's size now (`None`: no screen found); the new size once it
+    /// has settled.
+    fn look(&mut self, now: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        let changed = now.filter(|s| *s != self.recording);
+        if changed != self.seen {
+            self.seen = changed;
+            self.times = 0;
+        }
+        if changed.is_some() {
+            self.times += 1;
+        }
+        changed.filter(|_| self.times >= SETTLE_LOOKS)
+    }
 }
 
 /// Records `plan` until it ends or is interrupted (stop, pause, or `video_generation` moving on
@@ -609,6 +647,7 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
     let started = Instant::now();
     let mut announced = false;
     let mut last_look = Instant::now();
+    let mut screen = SizeWatch::new(plan.src_size);
     let outcome = loop {
         if let Ok(Some(status)) = child.try_wait() {
             let _ = reader.join();
@@ -625,21 +664,18 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
         // A game changing the display mode changes the screen's size: start over at the new
         // size rather than keep scaling to the old one. (A test picture has no screen.)
         let resized = !matches!(plan.source, Source::Test { .. })
-            && last_look.elapsed() >= Duration::from_secs(2)
+            && last_look.elapsed() >= Duration::from_secs(1)
             && {
                 last_look = Instant::now();
                 let now = platform::choose_monitor(&shared.settings().monitor).map(|m| (m.w, m.h));
-                let changed = now.is_some_and(|s| s != plan.src_size);
-                if changed {
+                let settled = screen.look(now);
+                if let Some((w, h)) = settled {
                     info!(
-                        "the screen changed from {}x{} to {}x{}: starting over",
-                        plan.src_size.0,
-                        plan.src_size.1,
-                        now.map_or(0, |s| s.0),
-                        now.map_or(0, |s| s.1)
+                        "the screen changed from {}x{} to {w}x{h}: starting over",
+                        plan.src_size.0, plan.src_size.1
                     );
                 }
-                changed
+                settled.is_some()
             };
         let interrupted = shared.stop.load(Ordering::Relaxed)
             || shared.paused.load(Ordering::Relaxed)
@@ -683,4 +719,25 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
     };
     shared.status.lock().unwrap().recording = false;
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_screen_size_counts_once_it_settles() {
+        let mut w = SizeWatch::new((2560, 1440));
+        assert_eq!(w.look(Some((2560, 1440))), None);
+        // A game flips modes and back within a couple of seconds: no restart.
+        assert_eq!(w.look(Some((1920, 1440))), None);
+        assert_eq!(w.look(Some((1600, 900))), None);
+        assert_eq!(w.look(Some((2560, 1440))), None);
+        assert_eq!(w.look(Some((1600, 900))), None);
+        assert_eq!(w.look(None), None);
+        // The new mode holds: restart once it has for three looks.
+        assert_eq!(w.look(Some((1600, 900))), None);
+        assert_eq!(w.look(Some((1600, 900))), None);
+        assert_eq!(w.look(Some((1600, 900))), Some((1600, 900)));
+    }
 }

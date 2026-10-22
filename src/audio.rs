@@ -235,6 +235,12 @@ struct Open {
     split: Option<crate::platform::windows_app_audio::Split>,
     output_id: Option<String>,
     input_id: Option<String>,
+    /// The chosen microphone wasn't there, so the default one stands in for it.
+    mic_stand_in: bool,
+    /// What failed to open, for the log and the status.
+    errors: Vec<String>,
+    /// Which devices are open, for the log.
+    report: String,
 }
 
 impl Drop for Open {
@@ -306,14 +312,17 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     }
     if settings.microphone || settings.voice_clip {
         let wanted = settings.microphone_device.trim();
-        let device = if wanted.is_empty() {
-            host.default_input_device()
-        } else {
-            host.input_devices()
-                .ok()
-                .and_then(|mut it| it.find(|d| d.to_string() == wanted))
-                .or_else(|| host.default_input_device())
-        };
+        let chosen = (!wanted.is_empty())
+            .then(|| {
+                host.input_devices()
+                    .ok()
+                    .and_then(|mut it| it.find(|d| d.to_string() == wanted))
+            })
+            .flatten();
+        // The chosen microphone can be missing for a moment while devices switch over: use the
+        // default meanwhile, and the chosen one again once it's back (see `chosen_mic_back`).
+        open_now.mic_stand_in = !wanted.is_empty() && chosen.is_none();
+        let device = chosen.or_else(|| host.default_input_device());
         match device {
             Some(d) => {
                 open_now.input_id = d.id().ok().map(|i| format!("{i:?}"));
@@ -330,16 +339,42 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
             None => errors.push("microphone: none found".into()),
         }
     }
-    if !errors.is_empty() {
-        warning!("{}", errors.join("; "));
-    }
-    info!("audio: desktop {desktop_name:?}, microphone {mic_name:?}");
+    open_now.report = format!("audio: desktop {desktop_name:?}, microphone {mic_name:?}");
     let mut st = shared.status.lock().unwrap();
     st.desktop_audio = desktop_name;
     st.microphone = mic_name;
     st.chat = None;
     st.audio_error = (!errors.is_empty()).then(|| errors.join("; "));
+    open_now.errors = errors;
     open_now
+}
+
+/// The chosen microphone is there again after `start` had to use the default one instead.
+fn chosen_mic_back(open: &Open, settings: &Settings) -> bool {
+    let wanted = settings.microphone_device.trim();
+    open.mic_stand_in
+        && cpal::default_host()
+            .input_devices()
+            .is_ok_and(|mut it| it.any(|d| d.to_string() == wanted))
+}
+
+/// The wait before opening again what failed to open: 2 s, doubling up to 5 minutes. A device
+/// switching over usually opens on the next try; one that's gone isn't reopened all the time.
+#[derive(Default)]
+struct Backoff {
+    tries: u32,
+}
+
+impl Backoff {
+    fn next(&mut self) -> Duration {
+        let wait = Duration::from_secs(2 << self.tries.min(8)).min(Duration::from_secs(300));
+        self.tries += 1;
+        wait
+    }
+
+    fn reset(&mut self) {
+        self.tries = 0;
+    }
 }
 
 /// The default output or input device changed (headphones plugged in, say). Only a stream opened
@@ -359,7 +394,16 @@ fn defaults_changed(open: &Open, settings: &Settings) -> bool {
 /// Runs until `shared.stop` is set. Call on its own thread: cpal streams stay on the thread that
 /// opened them.
 pub fn run(shared: Arc<Shared>) {
+    // Devices are opened from COM's multithreaded apartment, which WASAPI expects of a thread
+    // without a message loop. cpal would make this thread single-threaded; after a device
+    // change, opening devices there failed with RPC_E_CHANGED_MODE ("Cannot change thread mode
+    // after it is set") and the sound stayed off. cpal works either way.
+    #[cfg(windows)]
+    crate::platform::windows_app_audio::join_mta();
     let failed: Arc<Mutex<Option<String>>> = Arc::default();
+    let mut backoff = Backoff::default();
+    let mut retrying = false;
+    let mut logged = String::new();
     while !shared.stop.load(Ordering::Relaxed) {
         let generation = shared.audio_generation.load(Ordering::SeqCst);
         let settings = shared.settings();
@@ -372,6 +416,23 @@ pub fn run(shared: Arc<Shared>) {
         } else {
             start(&shared, &settings, &failed)
         };
+        // A retry that fails the same way says nothing new.
+        let said = format!("{}\n{}", open_now.errors.join("; "), open_now.report);
+        if !paused && !(retrying && said == logged) {
+            if !open_now.errors.is_empty() {
+                warning!("{}", open_now.errors.join("; "));
+            }
+            info!("{}", open_now.report);
+        }
+        logged = said;
+        // Something asked for didn't open: try again soon, then less and less often.
+        let retry_at = if open_now.errors.is_empty() {
+            backoff.reset();
+            None
+        } else {
+            Some(Instant::now() + backoff.next())
+        };
+        retrying = false;
         let mut last_check = Instant::now();
         loop {
             std::thread::sleep(Duration::from_millis(100));
@@ -383,7 +444,12 @@ pub fn run(shared: Arc<Shared>) {
             }
             if let Some(e) = failed.lock().unwrap().take() {
                 warning!("audio stream error: {e}; reopening");
-                std::thread::sleep(Duration::from_millis(500));
+                // Usually a device switching over: give it a moment to finish.
+                std::thread::sleep(Duration::from_secs(1));
+                break;
+            }
+            if retry_at.is_some_and(|t| Instant::now() >= t) {
+                retrying = true;
                 break;
             }
             #[cfg(windows)]
@@ -402,8 +468,46 @@ pub fn run(shared: Arc<Shared>) {
                     info!("default audio device changed; reopening");
                     break;
                 }
+                if chosen_mic_back(&open_now, &settings) {
+                    info!("{} is back; reopening", settings.microphone_device.trim());
+                    break;
+                }
             }
         }
         drop(open_now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_audio_is_retried_less_and_less_often() {
+        let mut b = Backoff::default();
+        let waits: Vec<u64> = (0..10).map(|_| b.next().as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 64, 128, 256, 300, 300]);
+        b.reset();
+        assert_eq!(b.next(), Duration::from_secs(2));
+    }
+
+    /// cpal reads devices from a multithreaded COM thread, as the audio thread now is. Asks for
+    /// formats only: nothing is captured.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn devices_open_from_a_multithreaded_com_thread() {
+        std::thread::spawn(|| {
+            crate::platform::windows_app_audio::join_mta();
+            let host = cpal::default_host();
+            let out = host.default_output_device().expect("an output device");
+            out.default_output_config().expect("output format");
+            for d in host.input_devices().expect("inputs") {
+                d.default_input_config()
+                    .unwrap_or_else(|e| panic!("{d}: {e}"));
+            }
+        })
+        .join()
+        .unwrap();
     }
 }

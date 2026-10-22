@@ -295,14 +295,16 @@ pub fn save_inner(
         ("Microphone", &shared.mic),
         ("Voice chat", &shared.chat),
     ] {
-        let wav = {
-            let r = ring.lock().unwrap();
-            r.as_ref()
-                .map(|r| pcm::wav_f32(r.rate, r.channels, &r.extract(start, end)))
-        };
-        if let Some(bytes) = wav {
+        // Only the copy happens under the lock: the sound card's thread waits on it.
+        let samples = ring
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|r| (r.rate, r.channels, r.extract(start, end)));
+        if let Some((rate, channels, samples)) = samples {
             let p = work.join(format!("{name}.wav"));
-            std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+            std::fs::write(&p, pcm::wav_f32(rate, channels, &samples))
+                .map_err(|e| e.to_string())?;
             audio.push((p, name));
         }
     }

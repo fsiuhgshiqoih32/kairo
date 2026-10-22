@@ -275,6 +275,14 @@ pub fn hide_console(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
+/// Like `hide_console`, and below normal priority: a save or an export gives way to the game.
+pub fn hide_console_low_priority(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+}
+
 pub fn play_marker_sound() {
     static WAV: OnceLock<Vec<u8>> = OnceLock::new();
     play_wav(WAV.get_or_init(super::marker_sound_wav));

@@ -283,6 +283,12 @@ fn ensure_ring(shared: &Shared, track: crate::recorder::Track, keep_us: i64) {
     }
 }
 
+/// Puts this thread in COM's multithreaded apartment for the rest of its life (see `audio::run`).
+pub fn join_mta() {
+    // SAFETY: COM set-up for the calling thread only; never undone, as the thread keeps using it.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+}
+
 /// Starts capturing `app`'s sound into the chat ring and everything else into the desktop ring.
 /// Fails at once where process loopback doesn't exist (before Windows 11).
 pub fn start(shared: Arc<Shared>, app: String) -> Result<Split, String> {
