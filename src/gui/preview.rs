@@ -39,6 +39,14 @@ fn settings() -> iced::Settings {
 fn sample(now: SystemTime) -> Vec<ClipItem> {
     let real = super::load_clips(&kairo::config::default_save_dir());
     assert!(!real.is_empty(), "put clips in KAIRO_HOME/Clips");
+    // `KAIRO_SAMPLE_GAMES=Red Eclipse,SuperTuxKart` names them after the games in the website's
+    // licensed footage instead.
+    let names: Vec<String> = std::env::var("KAIRO_SAMPLE_GAMES")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let games = [
         ("Minecraft", ClipKind::Clip, 30.3, 3, false),
         ("VALORANT", ClipKind::Clip, 30.1, 21, true),
@@ -52,6 +60,11 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
         .iter()
         .enumerate()
         .map(|(i, (game, kind, secs, age_min, fav))| {
+            let game = if names.is_empty() {
+                game.to_string()
+            } else {
+                names[i % names.len()].clone()
+            };
             let src = &real[i % real.len()];
             ClipItem {
                 path: if i == 0 {
@@ -64,7 +77,7 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                 } else {
                     format!("{game} 2026-10-18 1{i}-00-00")
                 },
-                game: game.to_string(),
+                game,
                 size: (*secs * 2.1e6) as u64,
                 modified: now - Duration::from_secs(*age_min * 60),
                 duration: Some(*secs),
@@ -78,10 +91,13 @@ fn sample(now: SystemTime) -> Vec<ClipItem> {
                     6 => vec!["Clutch".into(), "Ranked".into()],
                     _ => Vec::new(),
                 },
-                link: (i == 3).then(|| kairo::library::Link {
-                    url: "https://files.catbox.moe/kairo-demo.mp4".into(),
-                    created: 0,
-                    expires: None,
+                link: (i == 3).then(|| {
+                    let created = crate::share::now_secs() - 3600;
+                    kairo::library::Link {
+                        url: "https://kairo-clips.bfs-worker.workers.dev/c/Ab3dE7fG".into(),
+                        created,
+                        expires: Some(created + crate::share::LIFETIME),
+                    }
                 }),
             }
         })
@@ -481,7 +497,7 @@ fn friends_previews(size: (f32, f32)) {
     shoot(app.view(), "iced-friends-signin", size);
     let me = Profile {
         id: "me".into(),
-        username: "konne".into(),
+        username: "kai".into(),
     };
     app.friends = super::friends::Friends::sample(
         true,
@@ -509,50 +525,50 @@ fn friends_previews(size: (f32, f32)) {
         created_at: at(mins),
         read_at: Some(at(mins)),
     };
-    let mut clip = msg(1, "fabio", "me", "yo you gotta see this", 52);
-    clip.clip_url = Some("https://files.catbox.moe/abc123.mp4".into());
-    clip.clip_title = Some("Rounds 2026-10-20 19-47-17".into());
+    let mut clip = msg(1, "jules", "me", "yo you gotta see this", 52);
+    clip.clip_url = Some("https://kairo-clips.bfs-worker.workers.dev/c/Ab3dE7fG".into());
+    clip.clip_title = Some("Red Eclipse".into());
     clip.clip_seconds = Some(122.0);
-    let mut unread = msg(4, "fabio", "me", "send me your ace from last night", 2);
+    let mut unread = msg(4, "jules", "me", "send me your ace from last night", 2);
     unread.read_at = None;
     let inbox = Inbox {
         me: Some(me),
         account: "me".into(),
         friends: vec![
-            friend("ana", Standing::Friends),
-            friend("fabio", Standing::Friends),
-            friend("jay", Standing::AskedYou),
+            friend("mika", Standing::Friends),
+            friend("jules", Standing::Friends),
+            friend("rio", Standing::AskedYou),
             friend("sam", Standing::YouAsked),
         ],
         messages: vec![
             clip,
-            msg(2, "me", "fabio", "LMAO that flick", 50),
-            msg(3, "ana", "me", "gg", 30),
+            msg(2, "me", "jules", "LMAO that flick", 50),
+            msg(3, "mika", "me", "gg", 30),
             unread,
         ],
     };
     app.friends = super::friends::Friends::sample(true, inbox.clone(), None);
     shoot(app.view(), "iced-friends-list", size);
-    app.friends = super::friends::Friends::sample(true, inbox.clone(), Some("fabio"));
+    app.friends = super::friends::Friends::sample(true, inbox.clone(), Some("jules"));
     shoot(app.view(), "iced-friends-chat", size);
     app.page = Page::Library;
     app.friends = super::friends::Friends::sample(true, inbox, None);
     app.dialog = Some(super::Dialog::SendTo {
         clip: app.clips[0].path.clone(),
-        picked: vec!["fabio".into()],
+        picked: vec!["jules".into()],
         note: "this one's crazy".into(),
     });
     shoot(app.view(), "iced-friends-send", size);
     app.dialog = None;
     let t = toast::Toast::new(toast::Message::Friend {
-        from: "fabio".into(),
-        text: "Sent a clip: Rounds 2026-10-20 19-47-17".into(),
-        link: Some("https://files.catbox.moe/abc123.mp4".into()),
+        from: "jules".into(),
+        text: "Sent a clip: Red Eclipse".into(),
+        link: Some("https://kairo-clips.bfs-worker.workers.dev/c/Ab3dE7fG".into()),
         request: false,
     });
     shoot(t.view(), "iced-toast-friend-clip", (380.0, 112.0));
     let t = toast::Toast::new(toast::Message::Friend {
-        from: "jay".into(),
+        from: "rio".into(),
         text: "wants to be your friend on Kairo.".into(),
         link: None,
         request: true,
