@@ -751,8 +751,11 @@ impl From<std::io::Error> for CopyError {
     }
 }
 
-/// Copies `from` to `to` through `<to>.part`, keeping its time changed. Leaves nothing behind if
-/// it fails or is cancelled.
+/// What a copy is called until it's whole (not ".part", which browsers use for downloads).
+const PART: &str = ".kairo-part";
+
+/// Copies `from` to `to` through `<to>.kairo-part`, keeping its time changed. Leaves nothing
+/// behind if it fails or is cancelled.
 fn copy(
     from: &Path,
     to: &Path,
@@ -760,7 +763,7 @@ fn copy(
     mut copied: impl FnMut(u64),
 ) -> Result<(), CopyError> {
     let mut part = to.as_os_str().to_owned();
-    part.push(".part");
+    part.push(PART);
     let part = PathBuf::from(part);
     let result = (|| {
         let mut src = std::fs::File::open(from)?;
@@ -803,6 +806,15 @@ pub fn run(
         let mut p = progress.lock().unwrap();
         p.total = plan.copies.len();
         p.total_bytes = plan.bytes();
+    }
+    // Copies cut off by quitting Kairo mid-import (they're in this plan again).
+    let dirs: HashSet<&Path> = plan.copies.iter().filter_map(|(_, p)| p.parent()).collect();
+    for dir in dirs {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().ends_with(PART) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
     }
     let mut record = Record::load(&to.record);
     for (item, planned) in &plan.copies {
@@ -1225,7 +1237,7 @@ mod tests {
             std::fs::read_dir(&s.kairo.clips)
                 .unwrap()
                 .flatten()
-                .all(|e| !e.file_name().to_string_lossy().ends_with(".part"))
+                .all(|e| !e.file_name().to_string_lossy().ends_with(PART))
         );
 
         // Medal's clips, settings and database are as they were: nothing moved, changed or added.
@@ -1343,11 +1355,34 @@ mod tests {
             .collect();
         assert!(
             left.iter()
-                .all(|e| !e.file_name().to_string_lossy().ends_with(".part"))
+                .all(|e| !e.file_name().to_string_lossy().ends_with(PART))
         );
         // The rest come next time.
         let rest = super::plan(&find(Some(&s.app_data), &[]), &s.kairo);
         assert_eq!((rest.copies.len(), rest.already), (4, 1));
+    }
+
+    #[test]
+    fn clears_copies_cut_off_last_time() {
+        let s = setup();
+        std::fs::create_dir_all(&s.kairo.clips).unwrap();
+        let cut_off = s
+            .kairo
+            .clips
+            .join("Valorant 2026-07-14 20-00-00.mp4.kairo-part");
+        let download = s.kairo.clips.join("movie.mp4.part");
+        std::fs::write(&cut_off, b"half a clip").unwrap();
+        std::fs::write(&download, b"someone else's").unwrap();
+        let plan = plan(&find(Some(&s.app_data), &[]), &s.kairo);
+        run(
+            &plan,
+            &s.kairo,
+            &Mutex::new(Progress::default()),
+            &AtomicBool::new(false),
+            &|_, _| {},
+        );
+        assert!(!cut_off.exists());
+        assert!(download.exists());
     }
 
     #[test]
