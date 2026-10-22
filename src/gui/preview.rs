@@ -289,7 +289,7 @@ fn preview() {
         seconds: 30.3,
         share: false,
     });
-    shoot(t.view(), "iced-light-toast", (380.0, 112.0));
+    shoot(t.view(), "iced-light-toast", (toast::W, toast::H));
     theme::set_light(false);
     app.save_menu = true;
     shoot(app.view(), "iced-save-menu", size);
@@ -467,20 +467,20 @@ fn preview() {
         seconds: 30.3,
         share: false,
     });
-    shoot(t.view(), "iced-toast", (380.0, 112.0));
+    shoot(t.view(), "iced-toast", (toast::W, toast::H));
     let t = toast::Toast::new(toast::Message::Screenshot(crate::save::thumb_for(
         &sample(now)[0].path,
     )));
-    shoot(t.view(), "iced-toast-shot", (380.0, 112.0));
+    shoot(t.view(), "iced-toast-shot", (toast::W, toast::H));
     let t = toast::Toast::new(toast::Message::Update {
         version: "0.3.0".into(),
         about: Some("Save and share".into()),
     });
-    shoot(t.view(), "iced-toast-update", (380.0, 112.0));
+    shoot(t.view(), "iced-toast-update", (toast::W, toast::H));
     let t = toast::Toast::new(toast::Message::Failed(
         "No screen capture is running.".into(),
     ));
-    shoot(t.view(), "iced-toast-failed", (380.0, 112.0));
+    shoot(t.view(), "iced-toast-failed", (toast::W, toast::H));
     friends_previews(size);
     let _: Option<Theme> = None;
 }
@@ -571,12 +571,12 @@ fn friends_previews(size: (f32, f32)) {
         link: Some("https://kairo-clips.bfs-worker.workers.dev/c/Ab3dE7fG".into()),
         request: false,
     });
-    shoot(t.view(), "iced-toast-friend-clip", (380.0, 112.0));
+    shoot(t.view(), "iced-toast-friend-clip", (toast::W, toast::H));
     let t = toast::Toast::new(toast::Message::Friend {
         from: "rio".into(),
         text: "wants to be your friend on Kairo.".into(),
         link: None,
         request: true,
     });
-    shoot(t.view(), "iced-toast-friend-request", (380.0, 112.0));
+    shoot(t.view(), "iced-toast-friend-request", (toast::W, toast::H));
 }

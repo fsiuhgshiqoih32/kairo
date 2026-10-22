@@ -18,8 +18,9 @@ use super::icons::{Icon, icon, icon_filled};
 use super::theme::{self, BOLD, MEDIUM};
 use crate::{platform, share};
 
-const W: f32 = 380.0;
-const H: f32 = 112.0;
+/// Wide enough for the picture and three buttons ("Copy" was cut off at 380).
+pub(super) const W: f32 = 400.0;
+pub(super) const H: f32 = 112.0;
 const MARGIN: f32 = 16.0;
 const SHOW_FOR: Duration = Duration::from_secs(6);
 
@@ -473,8 +474,8 @@ impl Toast {
                         .style(theme::well)
                         .into(),
                 };
-                let thumb = mouse_area(stack![
-                    picture,
+                // A play button on clips only: a screenshot just opens.
+                let play = matches!(self.msg, Message::Saved { .. }).then(|| {
                     container(
                         container(icon_filled(Icon::Play, 14.0, Color::WHITE))
                             .center(Length::Fixed(30.0))
@@ -485,12 +486,13 @@ impl Toast {
                                     ..Default::default()
                                 },
                                 ..Default::default()
-                            })
+                            }),
                     )
-                    .center(Fill),
-                ])
-                .on_press(Msg::Open)
-                .interaction(iced::mouse::Interaction::Pointer);
+                    .center(Fill)
+                });
+                let thumb = mouse_area(stack![picture].push(play))
+                    .on_press(Msg::Open)
+                    .interaction(iced::mouse::Interaction::Pointer);
                 let bottom: Element<'_, Msg> = if let Some(up) = &self.upload {
                     column![
                         text(up.label()).size(12).color(theme::ink_2()),
@@ -573,7 +575,12 @@ impl Toast {
                 .padding(10)
                 .width(Fill)
                 .height(Fill)
-                .style(theme::toast),
+                .style(|t| {
+                    // As round as the window: Windows 11 rounds it 8 px (`show_without_focus`).
+                    let mut s = theme::toast(t);
+                    s.border.radius = 8.0.into();
+                    s
+                }),
         )
         .on_enter(Msg::Hover(true))
         .on_exit(Msg::Hover(false))

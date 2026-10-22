@@ -410,7 +410,8 @@ pub fn work_area() -> Option<(i32, i32, u32, u32)> {
 }
 
 /// Shows a hidden window without activating it, so a game keeps the focus and the keyboard.
-/// Clicks on it don't activate it either.
+/// Clicks on it don't activate it either. On Windows 11 its corners are rounded, so no square
+/// corners show around the pop-up's rounded card (Windows 10 ignores this).
 pub fn show_without_focus(raw: u64) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetWindowLongPtrW, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
@@ -427,6 +428,16 @@ pub fn show_without_focus(raw: u64) -> bool {
             hwnd,
             GWL_EXSTYLE,
             ex | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize,
+        );
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+        };
+        let round = DWMWCP_ROUND;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &round as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&round) as u32,
         );
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(
