@@ -111,6 +111,7 @@ pub enum Msg {
     AskDelete,
     Back,
     GetLink,
+    SendToFriends,
     ShareExport,
     CancelLink,
     CopyLink(String),
@@ -232,6 +233,8 @@ pub struct ShareView {
     pub tags: Vec<String>,
     /// Every folder, for moving the clip.
     pub folders: Vec<String>,
+    /// Whether sending to friends is offered.
+    pub friends: bool,
 }
 
 /// What the editor asks of the window after a message.
@@ -256,6 +259,8 @@ pub enum Effect {
     CopyText(String),
     OpenUrl(String),
     ShowLink(PathBuf),
+    /// Pick friends to send the clip to.
+    SendToFriends(PathBuf),
     /// Post `file` (made from `clip`) to the Discord channel.
     SendToChannel {
         file: PathBuf,
@@ -1108,6 +1113,7 @@ impl Editor {
             Msg::Favorite => return Effect::Favorite(self.clip.clone()),
             Msg::AskDelete => return Effect::AskDelete(self.clip.clone()),
             Msg::Back => return Effect::Back,
+            Msg::SendToFriends => return Effect::SendToFriends(self.clip.clone()),
             Msg::GetLink => {
                 // With a style or captions, share the styled copy: make it, then upload it.
                 if self.styled() {
@@ -2589,6 +2595,27 @@ impl Editor {
             ]
             .spacing(8)
             .into()
+        };
+        let body: Element<'a, Msg> = if share.friends {
+            column![
+                body,
+                button(
+                    row![
+                        icon(Icon::Send, 15.0, theme::ink()),
+                        text("Send to friends").font(SEMIBOLD).size(14)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                )
+                .width(Fill)
+                .padding(Padding::from([9, 12]))
+                .style(theme::secondary)
+                .on_press(Msg::SendToFriends),
+            ]
+            .spacing(10)
+            .into()
+        } else {
+            body
         };
         match channel {
             Some(c) => panel("Share", column![body, divider(), c].spacing(14)),

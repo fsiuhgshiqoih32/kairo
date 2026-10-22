@@ -7,6 +7,7 @@ mod autostart;
 mod daemon;
 mod export;
 mod ffmpeg;
+mod friends;
 mod gui;
 mod hotkey;
 mod log;
@@ -65,6 +66,9 @@ enum Cmd {
         /// Open on the update and install it.
         #[arg(long, hide = true)]
         update: bool,
+        /// Open on Friends.
+        #[arg(long, hide = true)]
+        friends: bool,
     },
     /// Download and install the latest version.
     Update,
@@ -109,6 +113,17 @@ enum Cmd {
         /// One line about the newer version.
         #[arg(long)]
         about: Option<String>,
+        /// A friend's message (`--from`, `--text`, a clip's `--link`) or friend request.
+        #[arg(long)]
+        friend: bool,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        link: Option<String>,
+        #[arg(long)]
+        request: bool,
     },
     /// Check voice clipping on recordings: `voice-test "clip that" +said.wav -other.wav`.
     #[command(hide = true)]
@@ -181,9 +196,13 @@ fn main() {
     );
     let result = match cli.command {
         // The window starts the background process itself.
-        None => gui::run(None, false, false),
+        None => gui::run(None, false, false, false),
         Some(Cmd::Daemon { wait }) => daemon::run(wait),
-        Some(Cmd::Window { wait, update }) => gui::run(None, wait, update),
+        Some(Cmd::Window {
+            wait,
+            update,
+            friends,
+        }) => gui::run(None, wait, update, friends),
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Screenshot) => request(daemon::Request::Screenshot),
@@ -194,13 +213,26 @@ fn main() {
         Some(Cmd::Captions { clip }) => captions(&clip),
         Some(Cmd::Edit { clip }) => {
             let clip = std::path::absolute(&clip).unwrap_or(clip);
-            gui::run(Some(clip), false, false)
+            gui::run(Some(clip), false, false, false)
         }
         Some(Cmd::Notify {
             update: Some(version),
             about,
             ..
         }) => gui::toast::run(gui::toast::Message::Update { version, about }),
+        Some(Cmd::Notify {
+            friend: true,
+            from,
+            text,
+            link,
+            request,
+            ..
+        }) => gui::toast::run(gui::toast::Message::Friend {
+            from: from.unwrap_or_else(|| "A friend".into()),
+            text: text.unwrap_or_default(),
+            link,
+            request,
+        }),
         Some(Cmd::Notify {
             clip,
             seconds,

@@ -200,6 +200,13 @@ pub fn run(wait: bool) -> Result<(), String> {
                 .map_err(|e| e.to_string())?
         },
         {
+            let s = shared.clone();
+            std::thread::Builder::new()
+                .name("friends".into())
+                .spawn(move || crate::friends::run(s))
+                .map_err(|e| e.to_string())?
+        },
+        {
             let (s, s2) = (shared.clone(), shared.clone());
             std::thread::Builder::new()
                 .name("voice".into())

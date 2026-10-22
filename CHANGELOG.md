@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+
+- **Friends.** Sign in with Google, pick a username and add friends by theirs. Send them clips
+  and messages from the new Friends page, or press Send on any clip (or in the editor) and tick
+  who gets it: one friend, a few, or everyone. What friends send you shows up in Kairo with a
+  pop-up, and their clips play with one click.
+
 ## 0.5.0
 
 - **Smaller clips, same picture.** Clips take 15 to 60% less space at the same sharpness: on

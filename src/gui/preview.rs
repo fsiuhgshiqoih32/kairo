@@ -460,5 +460,102 @@ fn preview() {
         "No screen capture is running.".into(),
     ));
     shoot(t.view(), "iced-toast-failed", (380.0, 112.0));
+    friends_previews(size);
     let _: Option<Theme> = None;
+}
+
+/// Friends: signed out, picking a username, the list, a chat, sending a clip, and the pop-ups.
+/// Run with `KAIRO_SUPABASE_URL` and `KAIRO_SUPABASE_KEY` set (anything), or the page says it
+/// isn't set up.
+fn friends_previews(size: (f32, f32)) {
+    use crate::friends::{Friend, Inbox, Message, Profile, Standing};
+    let now = SystemTime::now();
+    let (mut app, _) = App::new(kairo::config::Settings::default());
+    app.now = Some(now);
+    app.clips = sample(now);
+    app.index_clips();
+    app.loaded = true;
+    app.report = Some(report());
+    app.page = Page::Friends;
+    app.friends = super::friends::Friends::sample(false, Inbox::default(), None);
+    shoot(app.view(), "iced-friends-signin", size);
+    let me = Profile {
+        id: "me".into(),
+        username: "konne".into(),
+    };
+    app.friends = super::friends::Friends::sample(
+        true,
+        Inbox {
+            account: "me".into(),
+            ..Default::default()
+        },
+        None,
+    );
+    shoot(app.view(), "iced-friends-username", size);
+    let friend = |id: &str, standing| Friend {
+        id: id.into(),
+        username: id.into(),
+        standing,
+    };
+    let at = |mins: i64| (chrono::Utc::now() - chrono::Duration::minutes(mins)).to_rfc3339();
+    let msg = |id: i64, from: &str, to: &str, body: &str, mins: i64| Message {
+        id,
+        sender: from.into(),
+        recipient: to.into(),
+        body: body.into(),
+        clip_url: None,
+        clip_title: None,
+        clip_seconds: None,
+        created_at: at(mins),
+        read_at: Some(at(mins)),
+    };
+    let mut clip = msg(1, "fabio", "me", "yo you gotta see this", 52);
+    clip.clip_url = Some("https://files.catbox.moe/abc123.mp4".into());
+    clip.clip_title = Some("Rounds 2026-10-20 19-47-17".into());
+    clip.clip_seconds = Some(122.0);
+    let mut unread = msg(4, "fabio", "me", "send me your ace from last night", 2);
+    unread.read_at = None;
+    let inbox = Inbox {
+        me: Some(me),
+        account: "me".into(),
+        friends: vec![
+            friend("ana", Standing::Friends),
+            friend("fabio", Standing::Friends),
+            friend("jay", Standing::AskedYou),
+            friend("sam", Standing::YouAsked),
+        ],
+        messages: vec![
+            clip,
+            msg(2, "me", "fabio", "LMAO that flick", 50),
+            msg(3, "ana", "me", "gg", 30),
+            unread,
+        ],
+    };
+    app.friends = super::friends::Friends::sample(true, inbox.clone(), None);
+    shoot(app.view(), "iced-friends-list", size);
+    app.friends = super::friends::Friends::sample(true, inbox.clone(), Some("fabio"));
+    shoot(app.view(), "iced-friends-chat", size);
+    app.page = Page::Library;
+    app.friends = super::friends::Friends::sample(true, inbox, None);
+    app.dialog = Some(super::Dialog::SendTo {
+        clip: app.clips[0].path.clone(),
+        picked: vec!["fabio".into()],
+        note: "this one's crazy".into(),
+    });
+    shoot(app.view(), "iced-friends-send", size);
+    app.dialog = None;
+    let t = toast::Toast::new(toast::Message::Friend {
+        from: "fabio".into(),
+        text: "Sent a clip: Rounds 2026-10-20 19-47-17".into(),
+        link: Some("https://files.catbox.moe/abc123.mp4".into()),
+        request: false,
+    });
+    shoot(t.view(), "iced-toast-friend-clip", (380.0, 112.0));
+    let t = toast::Toast::new(toast::Message::Friend {
+        from: "jay".into(),
+        text: "wants to be your friend on Kairo.".into(),
+        link: None,
+        request: true,
+    });
+    shoot(t.view(), "iced-toast-friend-request", (380.0, 112.0));
 }

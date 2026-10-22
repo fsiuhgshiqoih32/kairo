@@ -728,6 +728,13 @@ impl App {
             action(Icon::Share, "Get a share link", Message::Share(p.clone()))
         }]
         .spacing(4);
+        if crate::friends::available() {
+            r = r.push(action(
+                Icon::Send,
+                "Send to friends",
+                Message::SendTo(p.clone()),
+            ));
+        }
         r = r.push(action(Icon::Copy, "Copy file", Message::Copy(p.clone())));
         r = r.push(action(
             Icon::Folder,

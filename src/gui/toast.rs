@@ -37,6 +37,13 @@ pub enum Message {
         version: String,
         about: Option<String>,
     },
+    /// A friend sent a message or a clip (`link`), or asked to be friends (`request`).
+    Friend {
+        from: String,
+        text: String,
+        link: Option<String>,
+        request: bool,
+    },
 }
 
 pub(super) struct Toast {
@@ -62,6 +69,8 @@ pub(super) enum Msg {
     Copy,
     /// Open the window on the update and install it.
     UpdateNow,
+    /// Play a friend's clip in the browser.
+    Watch,
     Close,
 }
 
@@ -131,7 +140,9 @@ impl Toast {
         let (thumb, size) = match &msg {
             Message::Saved { clip, .. } => (picture(&crate::save::thumb_for(clip)), size_of(clip)),
             Message::Screenshot(p) => (picture(p), size_of(p)),
-            Message::Failed(_) | Message::Update { .. } => (None, String::new()),
+            Message::Failed(_) | Message::Update { .. } | Message::Friend { .. } => {
+                (None, String::new())
+            }
         };
         let share = matches!(msg, Message::Saved { share: true, .. });
         let mut toast = Toast {
@@ -166,7 +177,7 @@ impl Toast {
         match &self.msg {
             Message::Saved { clip, .. } => Some(clip),
             Message::Screenshot(p) => Some(p),
-            Message::Failed(_) | Message::Update { .. } => None,
+            Message::Failed(_) | Message::Update { .. } | Message::Friend { .. } => None,
         }
     }
 
@@ -243,6 +254,21 @@ impl Toast {
                     Message::Screenshot(p) => crate::app::open(p),
                     Message::Failed(_) => {}
                     Message::Update { .. } => return self.update(Msg::UpdateNow),
+                    Message::Friend { .. } => {
+                        if let Err(e) = crate::app::spawn_self(&["window", "--friends"]) {
+                            crate::log::warning!("{e}");
+                        }
+                    }
+                }
+                return iced::exit();
+            }
+            Msg::Watch => {
+                if let Message::Friend {
+                    link: Some(url), ..
+                } = &self.msg
+                    && crate::friends::is_clip_link(url)
+                {
+                    let _ = opener::open_browser(url);
                 }
                 return iced::exit();
             }
@@ -334,6 +360,75 @@ impl Toast {
                 .spacing(14)
                 .into()
             }
+            Message::Friend {
+                from,
+                text: said,
+                link,
+                request,
+            } => {
+                let small = |label: &'static str, m: Msg, primary: bool| {
+                    button(text(label).size(12).font(MEDIUM))
+                        .padding(Padding::from([5, 10]))
+                        .style(if primary {
+                            theme::primary
+                        } else {
+                            theme::secondary
+                        })
+                        .on_press(m)
+                };
+                let badge = container(icon(
+                    match (link.is_some(), *request) {
+                        (true, _) => Icon::Film,
+                        (false, true) => Icon::Users,
+                        (false, false) => Icon::Send,
+                    },
+                    20.0,
+                    theme::on_accent(),
+                ))
+                .center(Length::Fixed(48.0))
+                .style(|_| container::Style {
+                    background: Some(theme::accent().into()),
+                    border: iced::Border {
+                        radius: 24.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                let buttons = match (link.is_some(), *request) {
+                    (true, _) => row![
+                        small("Watch", Msg::Watch, true),
+                        small("Reply", Msg::Open, false),
+                    ],
+                    (false, true) => row![
+                        small("Open Kairo", Msg::Open, true),
+                        small("Later", Msg::Close, false),
+                    ],
+                    (false, false) => row![
+                        small("Reply", Msg::Open, true),
+                        small("Later", Msg::Close, false),
+                    ],
+                };
+                row![
+                    container(badge).center_y(Fill),
+                    column![
+                        row![
+                            dot(theme::accent()),
+                            text(from.clone()).font(BOLD).size(14),
+                            Space::new().width(Fill),
+                            close
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                        text(said.clone()).size(12).color(theme::ink_2()),
+                        Space::new().height(Fill),
+                        buttons.spacing(5),
+                    ]
+                    .spacing(3)
+                    .width(Fill),
+                ]
+                .spacing(14)
+                .into()
+            }
             Message::Failed(e) => column![
                 row![
                     dot(theme::accent()),
@@ -363,7 +458,9 @@ impl Toast {
                             .unwrap_or_default(),
                         self.size.clone(),
                     ),
-                    Message::Failed(_) | Message::Update { .. } => unreachable!(),
+                    Message::Failed(_) | Message::Update { .. } | Message::Friend { .. } => {
+                        unreachable!()
+                    }
                 };
                 let picture: Element<'_, Msg> = match &self.thumb {
                     Some(h) => image(h.clone())
@@ -508,6 +605,7 @@ fn system_notification(msg: &Message) -> Result<(), String> {
         ),
         Message::Screenshot(p) => ("Screenshot saved".to_string(), name(p), Some(p.clone())),
         Message::Failed(e) => ("Couldn't save".to_string(), e.clone(), None),
+        Message::Friend { from, text, .. } => (from.clone(), text.clone(), None),
     };
     let mut cmd = std::process::Command::new("notify-send");
     cmd.arg("--app-name=Kairo");

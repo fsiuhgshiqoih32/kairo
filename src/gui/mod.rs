@@ -3,6 +3,7 @@
 
 mod achievements;
 mod editor;
+mod friends;
 pub mod icons;
 mod library;
 mod settings;
@@ -84,6 +85,7 @@ pub enum Page {
     Library,
     Editor,
     Settings,
+    Friends,
 }
 
 enum Dialog {
@@ -110,6 +112,19 @@ enum Dialog {
         expires: Option<u64>,
         qr: Option<qr_code::Data>,
     },
+    /// Picking friends to send a clip to, and a line to go with it.
+    SendTo {
+        clip: PathBuf,
+        picked: Vec<String>,
+        note: String,
+    },
+}
+
+/// A clip on its way to friends: it goes once its upload has a link.
+struct FriendSend {
+    clip: PathBuf,
+    to: Vec<String>,
+    note: String,
 }
 
 struct Notice {
@@ -144,6 +159,8 @@ pub struct App {
     strip_order: Vec<PathBuf>,
     strip_loading: HashSet<PathBuf>,
     uploads: Vec<share::Upload>,
+    friends: friends::Friends,
+    friend_sends: Vec<FriendSend>,
     /// Clips on their way to the Discord channel.
     posts: Vec<share::Post>,
     /// What's in Recently deleted.
@@ -286,6 +303,14 @@ pub enum Message {
     OpenFolder,
     Editor(editor::Msg),
     Settings(settings::Msg),
+    Friends(friends::Msg),
+    /// Open "Send to friends" for a clip.
+    SendTo(PathBuf),
+    /// Tick a friend in it ("*" for everyone).
+    SendPick(String),
+    SendNote(String),
+    SendGo,
+    SentToFriends(Result<String, String>),
     Key(keyboard::Event),
     Opened(window::Id),
 }
@@ -325,6 +350,8 @@ impl App {
                 strip_order: Vec::new(),
                 strip_loading: HashSet::new(),
                 uploads: Vec::new(),
+                friends: friends::Friends::new(),
+                friend_sends: Vec::new(),
                 posts: Vec::new(),
                 trash: Vec::new(),
                 games: Vec::new(),
@@ -362,6 +389,7 @@ impl App {
         lock: Option<InstanceLock>,
         clip: Option<PathBuf>,
         update: bool,
+        friends: bool,
     ) -> (Self, Task<Message>) {
         let (settings, _) = config::load_or_create(&config::default_path());
         let (mut app, tasks) = App::new(settings);
@@ -372,6 +400,9 @@ impl App {
         if update {
             app.page = Page::Settings;
             app.setup.update.auto_install = true;
+        }
+        if friends {
+            app.page = Page::Friends;
         }
         app.whats_new(update);
         let mut all = vec![tasks, app.reload(), Task::done(Message::Tick)];
@@ -514,6 +545,50 @@ impl App {
         ));
     }
 
+    /// "fabio", "fabio and ana", "fabio, ana and jo": for notes.
+    fn friend_names(&self, ids: &[String]) -> String {
+        let names: Vec<String> = ids.iter().map(|i| self.friends.inbox.name_of(i)).collect();
+        match names.as_slice() {
+            [] => String::new(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        }
+    }
+
+    /// Sends `clip`'s share link `url` to the friends in `to`, in the background.
+    fn send_clip(
+        &self,
+        clip: PathBuf,
+        url: String,
+        to: Vec<String>,
+        note: String,
+    ) -> Task<Message> {
+        let (title, seconds) = self
+            .clips
+            .iter()
+            .find(|c| c.path == clip)
+            .map(|c| (c.name.clone(), c.duration.unwrap_or(0.0)))
+            .unwrap_or_else(|| {
+                let stem = clip
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                (stem, 0.0)
+            });
+        let names = self.friend_names(&to);
+        let link = crate::friends::ClipLink {
+            url,
+            title,
+            seconds,
+        };
+        Task::perform(
+            background(move || {
+                crate::friends::send(&to, &note, Some(&link)).map(|()| format!("Sent to {names}."))
+            }),
+            Message::SentToFriends,
+        )
+    }
+
     fn show_link(&mut self, link: &Link) -> Task<Message> {
         self.dialog = Some(Dialog::Link {
             url: link.url.clone(),
@@ -549,6 +624,11 @@ impl App {
                 continue;
             };
             let up = self.uploads.remove(i);
+            let (waiting, rest): (Vec<FriendSend>, Vec<FriendSend>) =
+                std::mem::take(&mut self.friend_sends)
+                    .into_iter()
+                    .partition(|s| s.clip == up.clip);
+            self.friend_sends = rest;
             match result {
                 Ok(link) => {
                     for c in self.clips.iter_mut().filter(|c| c.path == up.clip) {
@@ -557,11 +637,16 @@ impl App {
                     for s in self.shots.iter_mut().filter(|s| s.path == up.clip) {
                         s.link = Some(link.clone());
                     }
-                    self.note(
-                        "Link copied. Paste it anywhere: friends can watch it in their browser.",
-                        true,
-                    );
-                    tasks.push(self.show_link(&link));
+                    if waiting.is_empty() {
+                        self.note(
+                            "Link copied. Paste it anywhere: friends can watch it in their browser.",
+                            true,
+                        );
+                        tasks.push(self.show_link(&link));
+                    }
+                    for s in waiting {
+                        tasks.push(self.send_clip(s.clip, link.url.clone(), s.to, s.note));
+                    }
                     tasks.push(self.reload());
                 }
                 Err(e) if e == "Cancelled" => self.note("Upload cancelled.", true),
@@ -869,6 +954,7 @@ impl App {
             editor::Effect::CopyText(t) => return self.update(Message::CopyText(t)),
             editor::Effect::OpenUrl(u) => return self.update(Message::OpenUrl(u)),
             editor::Effect::ShowLink(p) => return self.update(Message::ShowLink(p)),
+            editor::Effect::SendToFriends(p) => return self.update(Message::SendTo(p)),
         }
         Task::none()
     }
@@ -882,6 +968,9 @@ impl App {
             self.page_in = Some(Instant::now());
             // The mic test and shortcut capture only run while Settings shows them (a capture
             // left armed would make the next key pressed anywhere a global shortcut).
+            if self.page != Page::Friends {
+                self.friends.left();
+            }
             if self.page != Page::Settings {
                 self.setup.stop_mic_test();
                 if self.welcome.is_none() {
@@ -1380,6 +1469,85 @@ impl App {
                     return self.editor_effect(effect);
                 }
             }
+            Message::Friends(m) => return self.friends.update(m).map(Message::Friends),
+            Message::SendTo(clip) => {
+                if !self.friends.can_send() {
+                    self.page = Page::Friends;
+                    self.note(
+                        "Sign in and add a friend here first, then send them clips.",
+                        false,
+                    );
+                    return Task::none();
+                }
+                self.dialog = Some(Dialog::SendTo {
+                    clip,
+                    picked: Vec::new(),
+                    note: String::new(),
+                });
+            }
+            Message::SendPick(id) => {
+                let everyone: Vec<String> = self
+                    .friends
+                    .inbox
+                    .friends_only()
+                    .map(|f| f.id.clone())
+                    .collect();
+                if let Some(Dialog::SendTo { picked, .. }) = &mut self.dialog {
+                    if id == "*" {
+                        *picked = if picked.len() == everyone.len() {
+                            Vec::new()
+                        } else {
+                            everyone
+                        };
+                    } else if let Some(i) = picked.iter().position(|p| *p == id) {
+                        picked.remove(i);
+                    } else {
+                        picked.push(id);
+                    }
+                }
+            }
+            Message::SendNote(s) => {
+                if let Some(Dialog::SendTo { note, .. }) = &mut self.dialog {
+                    *note = s;
+                }
+            }
+            Message::SendGo => {
+                let Some(Dialog::SendTo { clip, picked, note }) = self.dialog.take() else {
+                    return Task::none();
+                };
+                if picked.is_empty() {
+                    return Task::none();
+                }
+                let live = self
+                    .link_of(&clip)
+                    .filter(|l| {
+                        !l.expired(share::now_secs()) && crate::friends::is_clip_link(&l.url)
+                    })
+                    .map(|l| l.url.clone());
+                match live {
+                    Some(url) => return self.send_clip(clip, url, picked, note),
+                    None => {
+                        let names = self.friend_names(&picked);
+                        self.friend_sends.push(FriendSend {
+                            clip: clip.clone(),
+                            to: picked,
+                            note,
+                        });
+                        self.start_upload(clip.clone(), clip, None);
+                        self.note(format!("Uploading, then sending it to {names}."), true);
+                    }
+                }
+            }
+            Message::SentToFriends(r) => match r {
+                Ok(said) => {
+                    self.note(said, true);
+                    return self
+                        .friends
+                        .update(friends::Msg::Done(Ok(String::new())))
+                        .map(Message::Friends);
+                }
+                Err(e) => self.note(e, false),
+            },
             Message::Settings(m) => {
                 let (task, effect) = self.setup.update(&mut self.settings, m);
                 let task = task.map(Message::Settings);
@@ -1448,6 +1616,7 @@ impl App {
                     Dialog::Delete(_) => Message::DeleteConfirm,
                     Dialog::Link { .. } | Dialog::WhatsNew { .. } => Message::CloseDialog,
                     Dialog::Folder { .. } => Message::FolderConfirm,
+                    Dialog::SendTo { .. } => Message::SendGo,
                 });
             }
             return Task::none();
@@ -1505,6 +1674,11 @@ impl App {
         {
             self.notice = None;
         }
+        tasks.push(
+            self.friends
+                .tick(self.page == Page::Friends)
+                .map(Message::Friends),
+        );
         if let Some(text) = take_open_request() {
             if let Some(id) = self.window {
                 tasks.push(window::minimize(id, false));
@@ -1514,6 +1688,8 @@ impl App {
                 self.page = Page::Settings;
                 self.setup.update.auto_install = true;
                 tasks.push(Task::done(Message::Settings(settings::Msg::CheckNow)));
+            } else if text == FRIENDS_REQUEST {
+                self.page = Page::Friends;
             } else if !text.is_empty() {
                 tasks.push(self.open_editor(PathBuf::from(text)));
             }
@@ -1670,12 +1846,16 @@ impl App {
                         .map(share::Post::progress),
                     tags: self.tags.iter().map(|(t, _)| t.clone()).collect(),
                     folders: self.folders.iter().map(|(f, _)| f.clone()).collect(),
+                    friends: crate::friends::available(),
                 };
                 column![
                     Space::new().height(18),
                     e.view(item, share).map(Message::Editor)
                 ]
                 .into()
+            }
+            (Page::Friends, _) => {
+                column![self.top_bar(), self.friends.view().map(Message::Friends)].into()
             }
             (Page::Settings, _) => {
                 let used = self.clips.iter().map(|c| c.size).sum();
@@ -2043,6 +2223,80 @@ impl App {
                     shown,
                 )
             }
+            Dialog::SendTo { picked, note, .. } => {
+                let everyone: Vec<&crate::friends::Friend> =
+                    self.friends.inbox.friends_only().collect();
+                let tick = |on: bool, label: String, m: Message| {
+                    button(
+                        row![
+                            icon(
+                                if on { Icon::Selected } else { Icon::Square },
+                                17.0,
+                                if on { theme::accent() } else { theme::muted() }
+                            ),
+                            text(label).size(14).font(MEDIUM)
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(iced::Fill)
+                    .padding(Padding::from([7, 8]))
+                    .style(theme::ghost)
+                    .on_press(m)
+                };
+                let mut list = column![].spacing(2);
+                if everyone.len() > 1 {
+                    list = list.push(tick(
+                        picked.len() == everyone.len(),
+                        format!("Everyone ({})", everyone.len()),
+                        Message::SendPick("*".into()),
+                    ));
+                }
+                for f in &everyone {
+                    list = list.push(tick(
+                        picked.contains(&f.id),
+                        f.username.clone(),
+                        Message::SendPick(f.id.clone()),
+                    ));
+                }
+                let body = column![
+                    container(scrollable(list).style(theme::scroll)).max_height(260),
+                    text_input("Add a message (optional)", note)
+                        .on_input(Message::SendNote)
+                        .on_submit(Message::SendGo)
+                        .padding(Padding::from([9, 12]))
+                        .size(14)
+                        .style(theme::input),
+                    text("A clip without a link is uploaded to catbox.moe first. Anyone with the link can watch it.")
+                        .size(12)
+                        .color(theme::muted()),
+                ]
+                .spacing(12);
+                dialog(
+                    "Send to friends",
+                    body,
+                    row![
+                        button(text("Cancel").size(13).font(MEDIUM))
+                            .padding(Padding::from([8, 14]))
+                            .style(theme::ghost)
+                            .on_press(Message::CloseDialog),
+                        button(
+                            row![
+                                icon(Icon::Send, 14.0, iced::Color::WHITE),
+                                text("Send").size(13).font(SEMIBOLD)
+                            ]
+                            .spacing(7)
+                            .align_y(Alignment::Center)
+                        )
+                        .padding(Padding::from([8, 14]))
+                        .style(theme::primary)
+                        .on_press_maybe((!picked.is_empty()).then_some(Message::SendGo)),
+                    ]
+                    .spacing(8),
+                    Message::CloseDialog,
+                    shown,
+                )
+            }
             Dialog::Link { url, expires, qr } => {
                 let lasts = match expires {
                     None => "It stays up while people keep watching it (removed after 2 years without views).".to_string(),
@@ -2184,7 +2438,7 @@ impl App {
         .align_y(Alignment::Center);
 
         let favorites = self.clips.iter().filter(|c| c.favorite).count();
-        let in_library = self.page != Page::Settings;
+        let in_library = !matches!(self.page, Page::Settings | Page::Friends);
         let mut nav = column![
             nav_item(
                 Icon::Clips,
@@ -2337,6 +2591,18 @@ impl App {
                     ..Default::default()
                 })
                 .on_press(Message::Page(Page::Settings)),
+            );
+        }
+        if crate::friends::available() {
+            let waiting = self.friends.unread() + self.friends.requests();
+            bottom = bottom.push(
+                nav_item(
+                    Icon::Users,
+                    "Friends",
+                    Some(waiting),
+                    self.page == Page::Friends,
+                )
+                .on_press(Message::Page(Page::Friends)),
             );
         }
         bottom = bottom.push(self.engine_card()).push(
@@ -2531,6 +2797,7 @@ impl App {
     fn top_bar(&self) -> Element<'_, Message> {
         let title = match &self.page {
             Page::Settings => "Settings".to_string(),
+            Page::Friends => "Friends".to_string(),
             _ => match &self.filter {
                 Filter::All => "All clips".into(),
                 Filter::Favorites => "Favourites".into(),
@@ -2825,6 +3092,8 @@ impl std::fmt::Display for FolderPick {
 
 /// Asks the open window to install the update (instead of a clip to open).
 const UPDATE_REQUEST: &str = "kairo:update";
+/// Asks the open window to show Friends.
+const FRIENDS_REQUEST: &str = "kairo:friends";
 
 fn take_open_request() -> Option<String> {
     let p = open_request_path();
@@ -2982,7 +3251,7 @@ pub fn self_test() -> Result<(), String> {
 
 /// Opens the window (on `clip` in the editor), or asks the open one to come forward.
 /// `wait`: after an update, the old window may still be closing.
-pub fn run(clip: Option<PathBuf>, wait: bool, update: bool) -> Result<(), String> {
+pub fn run(clip: Option<PathBuf>, wait: bool, update: bool, friends: bool) -> Result<(), String> {
     let lock = if wait {
         single_instance::acquire_patiently(single_instance::WINDOW)?
     } else {
@@ -2991,6 +3260,8 @@ pub fn run(clip: Option<PathBuf>, wait: bool, update: bool) -> Result<(), String
     let Some(lock) = lock else {
         let text = if update {
             UPDATE_REQUEST.to_string()
+        } else if friends {
+            FRIENDS_REQUEST.to_string()
         } else {
             clip.map(|p| p.display().to_string()).unwrap_or_default()
         };
@@ -3006,7 +3277,7 @@ pub fn run(clip: Option<PathBuf>, wait: bool, update: bool) -> Result<(), String
     let mut app = iced::application(
         move || {
             let (lock, clip) = start.take().expect("window booted once");
-            App::boot(Some(lock), clip, update)
+            App::boot(Some(lock), clip, update, friends)
         },
         App::update,
         App::view,

@@ -55,6 +55,7 @@ pub enum Icon {
     Flame,
     Lock,
     Clock,
+    Users,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -114,6 +115,7 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Flame => file!("flame"),
         Icon::Lock => file!("lock"),
         Icon::Clock => file!("clock"),
+        Icon::Users => file!("users"),
     }
 }
 
