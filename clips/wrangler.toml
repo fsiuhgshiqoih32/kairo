@@ -1,0 +1,19 @@
+# Kairo's clip pages on Cloudflare Workers (free plan). Deploy: `npx wrangler deploy` in clips/.
+name = "kairo-clips"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# The pages: one key per clip, deleted by KV after two days.
+[[kv_namespaces]]
+binding = "CLIPS"
+id = "FILL_IN_AFTER_wrangler_kv_namespace_create"
+
+# At most 20 new links a minute from one address.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60

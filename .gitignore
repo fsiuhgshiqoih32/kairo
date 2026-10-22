@@ -5,3 +5,7 @@
 # The README demo and the website's loop are the videos kept in the repo.
 !docs/media/**/*.mp4
 /.taste-skill
+
+# Clip pages (Cloudflare Worker)
+clips/node_modules/
+clips/.wrangler/

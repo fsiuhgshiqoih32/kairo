@@ -537,12 +537,7 @@ impl App {
         if self.upload_progress(&clip).is_some() {
             return;
         }
-        self.uploads.push(share::start(
-            &file,
-            &clip,
-            &self.settings.share_expiry,
-            range,
-        ));
+        self.uploads.push(share::start(&file, &clip, range));
     }
 
     /// "fabio", "fabio and ana", "fabio, ana and jo": for notes.
@@ -2310,7 +2305,7 @@ impl App {
                     }
                 };
                 let mut body = column![
-                    text("Copied. Paste it in Discord, a group chat or anywhere: anyone with the link can watch.")
+                    text("Copied. Paste it anywhere: it plays right in Discord, and anyone with the link can watch it in their browser, with a button to download it.")
                         .size(14)
                         .color(theme::ink_2()),
                     row![

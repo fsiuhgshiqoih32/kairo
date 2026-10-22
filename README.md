@@ -25,7 +25,7 @@ unless you ask for a share link.
   chat, and make square, 4:5 and 9:16 copies.
 - **Captions** of what's said, recognised offline, to edit, keep as .srt or burn in.
 - **Share links.** One click uploads a clip and copies a link friends can watch in their browser
-  (Discord plays it inline), with a QR code for phones. Links last forever or 1 hour to 3 days.
+  (Discord plays it inline), with a QR code for phones. Links open a clip page and last 2 days.
 - **Share for Discord.** One click makes a copy under 10 MB (or 50/500 MB for Nitro) and puts it
   on the clipboard, or posts it straight to a channel you connected with a webhook.
 - **Voice clipping.** Say "clip that" and it saves a clip. Speech is recognised offline (Vosk).

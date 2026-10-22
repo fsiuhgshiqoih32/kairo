@@ -1,6 +1,10 @@
-//! Share links: uploads a clip to catbox.moe (kept while people keep watching it) or to
-//! litterbox.catbox.moe (gone after 1 to 72 hours) and returns the link. Anyone with the link
-//! can watch the clip; Discord plays the video right in the chat.
+//! Share links: uploads a clip to a free file host and copies a link to its page on Kairo's
+//! clip site (clips/ in this repository, on Cloudflare), which plays it in browsers and right in
+//! Discord's chat. Links last two days.
+//!
+//! The hosts are tried in turn, each twice, until one takes the file: litterbox.catbox.moe
+//! (keeps it three days), pomf2.lain.la and catbox.moe. Catbox alone failed often. If the clip
+//! site can't make a page, the link is the file's own.
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -12,41 +16,79 @@ use kairo::library::{Library, Link};
 
 use crate::log::{info, warning};
 
-const CATBOX: &str = "https://catbox.moe/user/api.php";
-const LITTERBOX: &str = "https://litterbox.catbox.moe/resources/internals/api.php";
-/// Catbox's upload limits.
-const CATBOX_MAX: u64 = 200_000_000;
-const LITTERBOX_MAX: u64 = 1_000_000_000;
-/// Catbox refuses GIFs over 20 MB.
-const CATBOX_GIF_MAX: u64 = 20_000_000;
+/// How long a share link works.
+pub const LIFETIME: u64 = 2 * 24 * 3600;
 
-/// Where an upload goes and how long it lasts.
+/// Kairo's clip site; `KAIRO_CLIP_SITE` points a copy at another (a local `wrangler dev`).
+const CLIP_SITE: &str = "https://kairo-clips.SUBDOMAIN.workers.dev";
+
+/// Clips over this can't be shared as a link: the hosts take about 1 GB.
+const MAX: u64 = 1_000_000_000;
+
+/// How many times each host is tried when it's down, and the pause between.
+const TRIES: u32 = 2;
+#[cfg(not(test))]
+const PAUSE: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const PAUSE: Duration = Duration::from_millis(10);
+
+/// A free file host a link's file can go to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Expiry {
-    Forever,
-    Hours(u32),
+enum Host {
+    Litterbox,
+    Pomf2,
+    Catbox,
 }
 
-impl Expiry {
-    /// From the `share_expiry` setting: "forever", "72h", "24h", "12h", "1h".
-    pub fn from_setting(s: &str) -> Expiry {
-        match s.trim_end_matches('h').parse::<u32>() {
-            Ok(h) if matches!(h, 1 | 12 | 24 | 72) => Expiry::Hours(h),
-            _ => Expiry::Forever,
+impl Host {
+    /// The order they're tried in.
+    const ORDER: [Host; 3] = [Host::Litterbox, Host::Pomf2, Host::Catbox];
+
+    fn site(self) -> &'static str {
+        match self {
+            Host::Litterbox => "litterbox.catbox.moe",
+            Host::Pomf2 => "pomf2.lain.la",
+            Host::Catbox => "catbox.moe",
         }
     }
 
-    /// What it will be for a file this big: catbox takes at most 200 MB (20 MB for GIFs), so
-    /// bigger files get a 3-day link.
-    pub fn for_file(self, size: u64, gif: bool) -> Result<Expiry, String> {
-        if size > LITTERBOX_MAX {
-            return Err("Clips over 1 GB can't be shared as a link. Trim it shorter first.".into());
+    fn api(self) -> &'static str {
+        match self {
+            Host::Litterbox => "https://litterbox.catbox.moe/resources/internals/api.php",
+            Host::Pomf2 => "https://pomf2.lain.la/upload.php",
+            Host::Catbox => "https://catbox.moe/user/api.php",
         }
-        let catbox_max = if gif { CATBOX_GIF_MAX } else { CATBOX_MAX };
-        Ok(match self {
-            Expiry::Forever if size > catbox_max => Expiry::Hours(72),
-            e => e,
-        })
+    }
+
+    /// The biggest file it takes (catbox refuses GIFs over 20 MB).
+    fn max(self, gif: bool) -> u64 {
+        match self {
+            Host::Litterbox => 1_000_000_000,
+            Host::Pomf2 => 1_073_741_824,
+            Host::Catbox if gif => 20_000_000,
+            Host::Catbox => 200_000_000,
+        }
+    }
+
+    /// The form's other fields, and the file's field.
+    fn form(self) -> (Vec<(&'static str, String)>, &'static str) {
+        match self {
+            // Three days: the link lasts two, so the file outlives it.
+            Host::Litterbox => (
+                vec![("reqtype", "fileupload".into()), ("time", "72h".into())],
+                "fileToUpload",
+            ),
+            Host::Pomf2 => (Vec::new(), "files[]"),
+            Host::Catbox => (vec![("reqtype", "fileupload".into())], "fileToUpload"),
+        }
+    }
+
+    /// The link in its answer, or what went wrong.
+    fn read(self, status: u16, text: &str) -> Result<String, Failure> {
+        match self {
+            Host::Pomf2 => judge_pomf(self.site(), status, text),
+            _ => judge(self.site(), status, text),
+        }
     }
 }
 
@@ -107,7 +149,7 @@ const COPY_TARGET: u64 = 190_000_000;
 
 /// Starts sharing `file` (or its `range`, in seconds) on a thread. When it works, the link is
 /// remembered for `clip` (the clip the file was made from, usually the file itself).
-pub fn start(file: &Path, clip: &Path, setting: &str, range: Option<(f64, f64)>) -> Upload {
+pub fn start(file: &Path, clip: &Path, range: Option<(f64, f64)>) -> Upload {
     let up = Upload {
         clip: clip.to_path_buf(),
         preparing: Arc::new(AtomicU64::new(0)),
@@ -124,7 +166,6 @@ pub fn start(file: &Path, clip: &Path, setting: &str, range: Option<(f64, f64)>)
         up.cancel.clone(),
         up.result.clone(),
     );
-    let expiry = Expiry::from_setting(setting);
     std::thread::spawn(move || {
         let copy = prepare(&file, range, &preparing, &cancel);
         preparing.store(DONE, Ordering::Relaxed);
@@ -134,7 +175,7 @@ pub fn start(file: &Path, clip: &Path, setting: &str, range: Option<(f64, f64)>)
                 std::fs::metadata(send).map(|m| m.len()).unwrap_or(1).max(1),
                 Ordering::Relaxed,
             );
-            let r = upload(send, expiry, &sent, &cancel);
+            let r = share_file(send, &clip, &sent, &cancel);
             if let Some(c) = &c {
                 let _ = std::fs::remove_file(c);
             }
@@ -227,72 +268,209 @@ enum Failure {
     Cancelled,
 }
 
-/// Uploads `file` and returns its link. A link meant to last goes to catbox; if catbox is
-/// down, a 3-day link from litterbox is better than none. An expiring link never becomes a
-/// lasting one.
-pub fn upload(
-    file: &Path,
-    expiry: Expiry,
+/// Uploads `send` (made from `clip`) and its poster, and makes its page: the link.
+fn share_file(
+    send: &Path,
+    clip: &Path,
     sent: &Arc<AtomicU64>,
     cancel: &Arc<AtomicBool>,
 ) -> Result<Link, String> {
+    let hosts: Vec<(Host, &str)> = Host::ORDER.iter().map(|h| (*h, h.api())).collect();
+    let (video, host) = upload_to(&hosts, send, sent, cancel)?;
+    let created = now_secs();
+    let mut about = About {
+        title: title_of(clip),
+        ..Default::default()
+    };
+    let mut poster = None;
+    if send
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"))
+    {
+        if let Ok(info) = crate::ffmpeg::path().and_then(|ff| crate::ffmpeg::probe_clip(&ff, send))
+        {
+            about.seconds = Some(info.duration);
+            about.width = Some(info.width);
+            about.height = Some(info.height);
+        }
+        let thumb = crate::save::thumb_for(clip);
+        if thumb.exists() {
+            // The host that took the clip first, so the poster lasts as long.
+            let order: Vec<(Host, &str)> = std::iter::once(host)
+                .chain(Host::ORDER.into_iter().filter(|h| *h != host))
+                .map(|h| (h, h.api()))
+                .collect();
+            poster = upload_to(&order, &thumb, &Arc::default(), cancel)
+                .ok()
+                .map(|(u, _)| u);
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".into());
+    }
+    let url = match make_page(&clip_site(), &video, poster.as_deref(), &about) {
+        Ok(page) => {
+            info!("clip page {page} for {video}");
+            page
+        }
+        Err(e) => {
+            warning!("{e} Sharing the file's own link.");
+            video
+        }
+    };
+    Ok(Link {
+        url,
+        created,
+        expires: Some(created + LIFETIME),
+    })
+}
+
+/// Uploads `file` to the first of `hosts` that takes it: each is tried twice when it's down,
+/// and skipped when the file's too big for it or it refuses the file. The link and the host.
+fn upload_to(
+    hosts: &[(Host, &str)],
+    file: &Path,
+    sent: &Arc<AtomicU64>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(String, Host), String> {
     let size = std::fs::metadata(file)
         .map_err(|e| format!("{}: {e}", file.display()))?
         .len();
+    if size > MAX {
+        return Err("Clips over 1 GB can't be shared as a link. Trim it shorter first.".into());
+    }
     let gif = file
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
-    let first = expiry.for_file(size, gif)?;
-    let mut tries = vec![(host(first), first)];
-    if first == Expiry::Forever {
-        tries.push((LITTERBOX, Expiry::Hours(72)));
-    }
-    try_hosts(&tries, file, sent, cancel)
-}
-
-fn host(e: Expiry) -> &'static str {
-    match e {
-        Expiry::Forever => CATBOX,
-        Expiry::Hours(_) => LITTERBOX,
-    }
-}
-
-/// Tries each site in turn until one takes the file.
-fn try_hosts(
-    tries: &[(&str, Expiry)],
-    file: &Path,
-    sent: &Arc<AtomicU64>,
-    cancel: &Arc<AtomicBool>,
-) -> Result<Link, String> {
-    let mut last = String::new();
-    for &(url, e) in tries {
-        sent.store(0, Ordering::Relaxed);
-        let fields: Vec<(&str, String)> = match e {
-            Expiry::Forever => vec![("reqtype", "fileupload".into())],
-            Expiry::Hours(h) => vec![("reqtype", "fileupload".into()), ("time", format!("{h}h"))],
-        };
-        match post_file(url, &fields, file, sent, cancel) {
-            Ok(link_url) => {
-                let created = now_secs();
-                info!("shared {} as {link_url}", file.display());
-                return Ok(Link {
-                    url: link_url,
-                    created,
-                    expires: match e {
-                        Expiry::Forever => None,
-                        Expiry::Hours(h) => Some(created + h as u64 * 3600),
-                    },
-                });
+    let mut last = None;
+    for &(host, api) in hosts {
+        if size > host.max(gif) {
+            continue;
+        }
+        let (fields, field) = host.form();
+        for attempt in 0..TRIES {
+            if attempt > 0 {
+                std::thread::sleep(PAUSE);
             }
-            Err(Failure::Cancelled) => return Err("Cancelled".into()),
-            Err(Failure::Refused(why)) => return Err(why),
-            Err(Failure::Unavailable(why)) => {
-                warning!("{url}: {why}");
-                last = why;
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled".into());
+            }
+            sent.store(0, Ordering::Relaxed);
+            let answer = post_form(api, &fields, field, file, sent, cancel)
+                .and_then(|(status, text)| host.read(status, &text));
+            match answer {
+                Ok(url) => {
+                    info!("shared {} as {url}", file.display());
+                    return Ok((url, host));
+                }
+                Err(Failure::Cancelled) => return Err("Cancelled".into()),
+                Err(Failure::Refused(why)) => {
+                    warning!("{why}");
+                    last = Some(why);
+                    break;
+                }
+                Err(Failure::Unavailable(why)) => {
+                    warning!("{api}: {why}");
+                    last = Some(why);
+                }
             }
         }
     }
-    Err(format!("{last} Try again in a few minutes."))
+    Err(match last {
+        Some(why) => format!(
+            "{why} Kairo tried every file host it uses. Check your internet connection or try \
+             again in a few minutes."
+        ),
+        None => "No file host Kairo uses takes a file this big. Trim it shorter first.".into(),
+    })
+}
+
+/// What a clip page shows.
+#[derive(Debug, Default, PartialEq)]
+struct About {
+    title: String,
+    seconds: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+/// The page's title: the game for Kairo's own names ("VALORANT 2026-10-20 19-47-17"), else the
+/// name the clip was given.
+fn title_of(clip: &Path) -> String {
+    let name = clip
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let game = kairo::library::game_of(&name);
+    if !game.is_empty() && name.starts_with(&game) {
+        game
+    } else {
+        name
+    }
+}
+
+fn clip_site() -> String {
+    std::env::var("KAIRO_CLIP_SITE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| CLIP_SITE.into())
+        .trim()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Asks the clip site at `site` for a page for `video` (with `poster`); the page's link.
+fn make_page(
+    site: &str,
+    video: &str,
+    poster: Option<&str>,
+    about: &About,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "video": video,
+        "thumb": poster,
+        "title": about.title,
+        "seconds": about.seconds,
+        "width": about.width,
+        "height": about.height,
+    });
+    let mut r = agent()
+        .post(format!("{site}/api/clips"))
+        .send_json(body)
+        .map_err(|e| format!("Couldn't reach Kairo's clip site ({e})."))?;
+    let status = r.status().as_u16();
+    let v: serde_json::Value = r.body_mut().read_json().unwrap_or_default();
+    match v["url"].as_str() {
+        Some(url) if status == 201 && url.starts_with(&format!("{site}/c/")) => Ok(url.into()),
+        _ => Err(format!(
+            "Kairo's clip site didn't make a page (error {status}{}).",
+            v["error"]
+                .as_str()
+                .map(|e| format!(": {e}"))
+                .unwrap_or_default()
+        )),
+    }
+}
+
+/// Whether `url` is a link Kairo makes: a clip page, or a file on one of its hosts.
+pub fn is_link(url: &str) -> bool {
+    if let Some(id) = url.strip_prefix(&format!("{}/c/", clip_site())) {
+        return id.len() == 8 && id.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    [
+        "https://litter.catbox.moe/",
+        "https://pomf2.lain.la/f/",
+        "https://files.catbox.moe/",
+    ]
+    .iter()
+    .any(|p| {
+        url.strip_prefix(p).is_some_and(|rest| {
+            !rest.is_empty()
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        })
+    })
 }
 
 /// What a site's answer means, from its status and text.
@@ -330,6 +508,29 @@ fn judge(site: &str, status: u16, text: &str) -> Result<String, Failure> {
         )))
     } else {
         Err(Failure::Refused(format!("{site} wouldn't take it: {what}")))
+    }
+}
+
+/// What a pomf site's JSON answer means: `{"success":true,"files":[{"url":...}]}`, or
+/// `{"success":false,"description":...}` when it says no.
+fn judge_pomf(site: &str, status: u16, text: &str) -> Result<String, Failure> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return judge(site, status, text);
+    };
+    if v["success"] == true
+        && let Some(url) = v["files"][0]["url"].as_str()
+        && url.starts_with("https://")
+        && !url.contains(char::is_whitespace)
+    {
+        return Ok(url.to_string());
+    }
+    match v["description"].as_str().or(v["error"].as_str()) {
+        Some(why) if status < 500 => {
+            Err(Failure::Refused(format!("{site} wouldn't take it: {why}")))
+        }
+        _ => Err(Failure::Unavailable(format!(
+            "{site} isn't working right now (error {status})."
+        ))),
     }
 }
 
@@ -390,19 +591,6 @@ impl<R: Read> Read for Counting<R> {
         self.sent.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
     }
-}
-
-/// POSTs `file` with `fields` as multipart/form-data and returns the response text (the link).
-fn post_file(
-    url: &str,
-    fields: &[(&str, String)],
-    file: &Path,
-    sent: &Arc<AtomicU64>,
-    cancel: &Arc<AtomicBool>,
-) -> Result<String, Failure> {
-    let site = url.split('/').nth(2).unwrap_or(url).to_string();
-    let (status, text) = post_form(url, fields, "fileToUpload", file, sent, cancel)?;
-    judge(&site, status, &text)
 }
 
 /// POSTs `file` (as `file_field`) with `fields` as multipart/form-data; the status and text of
@@ -647,31 +835,25 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
 
     #[test]
-    fn expiry_from_settings_and_size() {
-        assert_eq!(Expiry::from_setting("forever"), Expiry::Forever);
-        assert_eq!(Expiry::from_setting("72h"), Expiry::Hours(72));
-        assert_eq!(Expiry::from_setting("5h"), Expiry::Forever);
-        assert_eq!(
-            Expiry::Forever.for_file(150_000_000, false),
-            Ok(Expiry::Forever)
-        );
-        assert_eq!(
-            Expiry::Forever.for_file(250_000_000, false),
-            Ok(Expiry::Hours(72))
-        );
-        assert_eq!(
-            Expiry::Forever.for_file(25_000_000, true),
-            Ok(Expiry::Hours(72))
-        );
-        assert_eq!(
-            Expiry::Hours(1).for_file(250_000_000, false),
-            Ok(Expiry::Hours(1))
-        );
-        assert!(Expiry::Forever.for_file(2_000_000_000, false).is_err());
+    fn hosts_take_what_fits_them() {
+        assert_eq!(Host::ORDER, [Host::Litterbox, Host::Pomf2, Host::Catbox]);
+        assert!(Host::Catbox.max(false) < 250_000_000);
+        assert!(Host::Litterbox.max(false) >= 250_000_000);
+        assert!(Host::Catbox.max(true) < 25_000_000);
+        assert_eq!(Host::Litterbox.form().0[1], ("time", "72h".to_string()));
+        assert_eq!(Host::Pomf2.form().1, "files[]");
     }
 
     /// A one-request HTTP server that records the request and answers with `reply`.
     fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<(String, Vec<u8>)>) {
+        serve_with("200 OK", reply)
+    }
+
+    /// Like [`serve_once`], answering with `status`.
+    fn serve_with(
+        status: &'static str,
+        reply: &'static str,
+    ) -> (String, std::thread::JoinHandle<(String, Vec<u8>)>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/api.php", listener.local_addr().unwrap());
         let t = std::thread::spawn(move || {
@@ -693,7 +875,7 @@ mod tests {
             let mut body = vec![0u8; length];
             r.read_exact(&mut body).unwrap();
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             );
             s.write_all(resp.as_bytes()).unwrap();
@@ -714,8 +896,12 @@ mod tests {
             ("reqtype", "fileupload".to_string()),
             ("time", "72h".to_string()),
         ];
-        let link = post_file(&url, &fields, &file, &sent, &Arc::default()).unwrap();
-        assert_eq!(link, "https://files.catbox.moe/abc123.mp4");
+        let (status, text) =
+            post_form(&url, &fields, "fileToUpload", &file, &sent, &Arc::default()).unwrap();
+        assert_eq!(
+            Host::Litterbox.read(status, &text),
+            Ok("https://files.catbox.moe/abc123.mp4".into())
+        );
         let (headers, body) = server.join().unwrap();
         let lower = headers.to_ascii_lowercase();
         assert!(
@@ -757,7 +943,16 @@ mod tests {
         let file = dir.path().join("a.mp4");
         std::fs::write(&file, b"x").unwrap();
         let (url, server) = serve_once("File type not allowed.");
-        let e = post_file(&url, &[], &file, &Arc::default(), &Arc::default()).unwrap_err();
+        let (status, text) = post_form(
+            &url,
+            &[],
+            "fileToUpload",
+            &file,
+            &Arc::default(),
+            &Arc::default(),
+        )
+        .unwrap();
+        let e = Host::Catbox.read(status, &text).unwrap_err();
         assert!(
             matches!(&e, Failure::Refused(m) if m.contains("File type not allowed")),
             "{e:?}"
@@ -796,17 +991,179 @@ mod tests {
     }
 
     #[test]
-    fn a_lasting_link_falls_back_to_a_three_day_one() {
-        // Both sites "down": the message comes from the last one tried, and says to retry.
+    fn a_host_thats_down_is_tried_again_then_the_next_one() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.mp4");
         std::fs::write(&file, b"x").unwrap();
-        let tries = [
-            ("http://127.0.0.1:9/a", Expiry::Forever),
-            ("http://127.0.0.1:9/b", Expiry::Hours(72)),
-        ];
-        let e = try_hosts(&tries, &file, &Arc::default(), &Arc::default()).unwrap_err();
-        assert!(e.contains("Try again"), "{e}");
+        // Two "hosts" lose the upload (catbox's empty answer), and their retries find nobody
+        // there; the third takes it.
+        let (down1, s1) = serve_once(" \n");
+        let (down2, s2) = serve_once(" \n");
+        let (up, s3) = serve_once(
+            r#"{"success":true,"files":[{"hash":"x","name":"a.mp4","url":"https://pomf2.lain.la/f/8m87cizz.mp4","size":1}]}"#,
+        );
+        let e = upload_to(
+            &[
+                (Host::Catbox, &down1),
+                (Host::Litterbox, &down2),
+                (Host::Pomf2, &up),
+            ],
+            &file,
+            &Arc::default(),
+            &Arc::default(),
+        );
+        assert_eq!(
+            e,
+            Ok((
+                "https://pomf2.lain.la/f/8m87cizz.mp4".to_string(),
+                Host::Pomf2
+            ))
+        );
+        for s in [s1, s2, s3] {
+            let _ = s.join();
+        }
+    }
+
+    #[test]
+    fn when_every_host_fails_it_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let e = upload_to(
+            &[
+                (Host::Litterbox, "http://127.0.0.1:9/a"),
+                (Host::Pomf2, "http://127.0.0.1:9/b"),
+            ],
+            &file,
+            &Arc::default(),
+            &Arc::default(),
+        )
+        .unwrap_err();
+        assert!(e.contains("tried every file host"), "{e}");
+        // A refusal moves on to the next host instead of giving up.
+        let (no, s1) = serve_once("File type not allowed.");
+        let (yes, s2) = serve_once("https://litter.catbox.moe/abc123.mp4");
+        let r = upload_to(
+            &[(Host::Catbox, &no), (Host::Litterbox, &yes)],
+            &file,
+            &Arc::default(),
+            &Arc::default(),
+        );
+        assert_eq!(
+            r,
+            Ok((
+                "https://litter.catbox.moe/abc123.mp4".to_string(),
+                Host::Litterbox
+            ))
+        );
+        let _ = (s1.join(), s2.join());
+    }
+
+    #[test]
+    fn pomf_answers_read_as_links_or_reasons() {
+        assert_eq!(
+            judge_pomf(
+                "pomf2.lain.la",
+                200,
+                r#"{"success":true,"files":[{"url":"https:\/\/pomf2.lain.la\/f\/8m87cizz.mp4"}]}"#
+            ),
+            Ok("https://pomf2.lain.la/f/8m87cizz.mp4".into())
+        );
+        assert_eq!(
+            judge_pomf(
+                "pomf2.lain.la",
+                400,
+                r#"{"success":false,"errorcode":400,"description":"File too large"}"#
+            ),
+            Err(Failure::Refused(
+                "pomf2.lain.la wouldn't take it: File too large".into()
+            ))
+        );
+        assert!(matches!(
+            judge_pomf("pomf2.lain.la", 502, "<html><title>502 Bad Gateway</title>"),
+            Err(Failure::Unavailable(_))
+        ));
+        assert!(matches!(
+            judge_pomf("pomf2.lain.la", 200, r#"{"success":false}"#),
+            Err(Failure::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn a_page_comes_from_the_clip_site() {
+        let (site, server) = serve_with(
+            "201 Created",
+            r#"{"id":"Ab3dE7fG","url":"SITE/c/Ab3dE7fG","expires":1}"#,
+        );
+        let site = site.trim_end_matches("/api.php").to_string();
+        // The fake answers with a placeholder; a real site answers with its own address.
+        let about = About {
+            title: "VALORANT".into(),
+            seconds: Some(30.4),
+            width: Some(1920),
+            height: Some(1080),
+        };
+        let r = make_page(&site, "https://litter.catbox.moe/abc123.mp4", None, &about);
+        assert!(r.is_err(), "a page somewhere else isn't taken: {r:?}");
+        let (headers, body) = server.join().unwrap();
+        assert!(headers.starts_with("POST /api/clips HTTP/1.1"), "{headers}");
+        let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "video": "https://litter.catbox.moe/abc123.mp4",
+                "thumb": null,
+                "title": "VALORANT",
+                "seconds": 30.4,
+                "width": 1920,
+                "height": 1080,
+            })
+        );
+        let (bad, server) = serve_with("400 Bad Request", r#"{"error":"Send a clip."}"#);
+        let e = make_page(bad.trim_end_matches("/api.php"), "x", None, &about).unwrap_err();
+        assert!(e.contains("error 400: Send a clip."), "{e}");
+        let _ = server.join();
+    }
+
+    #[test]
+    fn titles_are_the_game_or_the_given_name() {
+        assert_eq!(
+            title_of(Path::new("C:/c/VALORANT 2026-10-20 19-47-17.mp4")),
+            "VALORANT"
+        );
+        assert_eq!(
+            title_of(Path::new("C:/c/Ace on Ascent.mp4")),
+            "Ace on Ascent"
+        );
+    }
+
+    /// The real thing: `KAIRO_CLIP_SITE=http://127.0.0.1:8787 KAIRO_SHARE_TEST=<a .mp4>
+    /// cargo test -- --ignored live_share` (with `wrangler dev` running in clips/).
+    #[test]
+    #[ignore]
+    fn live_share_uploads_and_makes_a_page() {
+        let file = PathBuf::from(std::env::var("KAIRO_SHARE_TEST").expect("a clip to share"));
+        let sent = Arc::new(AtomicU64::new(0));
+        let link = share_file(&file, &file, &sent, &Arc::default()).unwrap();
+        eprintln!("link: {link:?}");
+        assert!(
+            link.url.starts_with(&format!("{}/c/", clip_site())),
+            "{link:?}"
+        );
+        assert_eq!(link.expires, Some(link.created + LIFETIME));
+        assert_eq!(sent.load(Ordering::Relaxed) > 0, true);
+    }
+
+    #[test]
+    fn knows_kairos_links() {
+        assert!(is_link(&format!("{CLIP_SITE}/c/Ab3dE7fG")));
+        assert!(!is_link(&format!("{CLIP_SITE}/c/Ab3dE7fG?x")));
+        assert!(!is_link(&format!("{CLIP_SITE}/c/short")));
+        assert!(is_link("https://litter.catbox.moe/nc5mz6.mp4"));
+        assert!(is_link("https://pomf2.lain.la/f/8m87cizz.mp4"));
+        assert!(is_link("https://files.catbox.moe/d4fknf.mp4"));
+        assert!(!is_link("https://evil.example/files.catbox.moe/a.mp4"));
+        assert!(!is_link("https://files.catbox.moe/a.mp4?x=<script>"));
     }
 
     #[test]

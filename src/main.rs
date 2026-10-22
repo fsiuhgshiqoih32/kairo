@@ -77,12 +77,7 @@ enum Cmd {
     /// Save a screenshot now (asks the background process).
     Screenshot,
     /// Upload a clip and print a link anyone can watch it with.
-    Share {
-        clip: PathBuf,
-        /// How long the link lasts: forever, 72h, 24h or 1h (default: as in Settings).
-        #[arg(long)]
-        lasts: Option<String>,
-    },
+    Share { clip: PathBuf },
     /// Pause or resume recording.
     Pause,
     /// Stop the background process.
@@ -206,7 +201,7 @@ fn main() {
         Some(Cmd::Update) => update(),
         Some(Cmd::Save) => request(daemon::Request::Save),
         Some(Cmd::Screenshot) => request(daemon::Request::Screenshot),
-        Some(Cmd::Share { clip, lasts }) => share_clip(&clip, lasts),
+        Some(Cmd::Share { clip }) => share_clip(&clip),
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
@@ -305,10 +300,8 @@ fn captions(clip: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-fn share_clip(clip: &std::path::Path, lasts: Option<String>) -> Result<(), String> {
-    let (settings, _) = kairo::config::load_or_create(&kairo::config::default_path());
-    let lasts = lasts.unwrap_or(settings.share_expiry);
-    let up = share::start(clip, clip, &lasts, None);
+fn share_clip(clip: &std::path::Path) -> Result<(), String> {
+    let up = share::start(clip, clip, None);
     let mut shown = String::new();
     loop {
         if let Some(r) = up.take() {

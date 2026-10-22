@@ -300,7 +300,6 @@ pub struct Editor {
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
     last_export: Option<(PathBuf, bool)>,
     discord_mb: u32,
-    share_expiry: String,
     /// Upload the trimmed copy once it's made.
     share_after_export: bool,
     /// Post the Discord copy to the channel once it's made.
@@ -398,7 +397,6 @@ impl Editor {
                 encoders,
                 last_export: None,
                 discord_mb,
-                share_expiry: settings.share_expiry.clone(),
                 share_after_export: false,
                 send_after_export: false,
                 tag_text: String::new(),
@@ -2562,13 +2560,7 @@ impl Editor {
             .spacing(10)
             .into()
         } else {
-            let lasts = match self.share_expiry.as_str() {
-                "forever" => "It stays up while people watch it.",
-                "72h" => "It works for 3 days.",
-                "24h" => "It works for a day.",
-                "12h" => "It works for 12 hours.",
-                _ => "It works for an hour.",
-            };
+            let lasts = "It works for 2 days.";
             column![
                 button(
                     row![

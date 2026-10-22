@@ -13,8 +13,7 @@ use iced::{Alignment, Element, Fill, FillPortion, Length, Padding, Task};
 use kairo::args::{self, Encoder};
 use kairo::config::{
     ACCENTS, GameRule, MAX_CLIP_SECONDS, MAX_GAME_RULES, MAX_QUICK_SAVES, MIN_CLIP_SECONDS,
-    Quality, QuickSave, Resolution, SAVE_SOUNDS, SHARE_EXPIRIES, Settings, Storage, VideoCodec,
-    normalize_phrase,
+    Quality, QuickSave, Resolution, SAVE_SOUNDS, Settings, Storage, VideoCodec, normalize_phrase,
 };
 
 use super::icons::{Icon, icon};
@@ -124,7 +123,6 @@ pub enum Msg {
     Voice(bool),
     VoiceInstalled(Result<(), String>),
     Phrase(String),
-    ShareExpiry(&'static str),
     ClipSeconds(u32),
     ClipText(String),
     AddQuickSave,
@@ -870,10 +868,6 @@ impl State {
                     s.voice_phrase = n;
                     return changed;
                 }
-            }
-            Msg::ShareExpiry(e) => {
-                s.share_expiry = e.to_string();
-                return changed;
             }
             Msg::ClipSeconds(v) => {
                 s.clip_seconds = v;
@@ -2120,11 +2114,6 @@ impl State {
             ),
             (None, None) => format!("You have Kairo {}.", updater::current_version()),
         };
-        let expiry = SHARE_EXPIRIES
-            .iter()
-            .copied()
-            .find(|e| *e == s.share_expiry)
-            .unwrap_or("forever");
         let share_error = report.and_then(|r| r.share_hotkey_error.clone());
         let mut share_row = row![self.key_capture(Target::Share, &s.share_hotkey, share_error)]
             .spacing(8)
@@ -2142,28 +2131,10 @@ impl State {
             vec![setting(
                 "Save and share",
                 Some(
-                    "One key saves a clip, uploads it and copies the link, ready to paste in a chat."
+                    "One key saves a clip, uploads it and copies the link, ready to paste in a chat.                      Links work for 2 days; anyone with one can watch, and Discord plays it in the chat."
                         .into(),
                 ),
                 share_row,
-            ),
-            setting(
-                "Links last",
-                Some(
-                    "Share links upload the clip to catbox.moe (forever) or litterbox.catbox.moe (for a while). \
-                     Anyone with a link can watch. Forever links are removed after two years without views."
-                        .into(),
-                ),
-                segmented(
-                    vec![
-                        ("forever", "Forever".to_string()),
-                        ("72h", "3 days".to_string()),
-                        ("24h", "1 day".to_string()),
-                        ("1h", "1 hour".to_string()),
-                    ],
-                    expiry,
-                    Msg::ShareExpiry,
-                ),
             )],
         ));
 

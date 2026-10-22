@@ -166,8 +166,7 @@ impl Toast {
         if self.upload.is_none()
             && let Some(f) = self.file()
         {
-            let (settings, _) = kairo::config::load_or_create(&kairo::config::default_path());
-            self.upload = Some(share::start(f, f, &settings.share_expiry, None));
+            self.upload = Some(share::start(f, f, None));
             self.status = None;
         }
     }

@@ -803,16 +803,7 @@ pub fn send(to: &[String], body: &str, clip: Option<&ClipLink>) -> Result<(), St
 
 /// A share link the friends server takes (it checks the same).
 pub fn is_clip_link(url: &str) -> bool {
-    ["https://files.catbox.moe/", "https://litter.catbox.moe/"]
-        .iter()
-        .any(|p| {
-            url.strip_prefix(p).is_some_and(|rest| {
-                !rest.is_empty()
-                    && rest
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-            })
-        })
+    crate::share::is_link(url)
 }
 
 /// Marks `friend`'s messages to you as read.
