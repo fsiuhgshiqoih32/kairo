@@ -69,6 +69,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_Security",
     "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
 ] }
 
 
@@ -82,6 +83,9 @@ objc2-core-audio-types = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 security-framework = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["randr"] }

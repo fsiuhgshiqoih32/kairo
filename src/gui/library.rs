@@ -1023,6 +1023,17 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
+        if self.medal.installed {
+            tips = tips.push(Space::new().height(4)).push(
+                icon_button(
+                    Icon::Download,
+                    "Coming from Medal? Import your clips",
+                    theme::ink_2(),
+                )
+                .style(theme::secondary)
+                .on_press(Message::Medal(super::medal::Msg::Start(None))),
+            );
+        }
         container(
             column![
                 container(text(key.clone()).font(BOLD).size(30))

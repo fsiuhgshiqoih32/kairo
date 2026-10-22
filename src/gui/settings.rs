@@ -169,6 +169,7 @@ pub enum Msg {
     WebcamSize(u32),
     PickFolder,
     Folder(Option<PathBuf>),
+    ImportMedal,
     DefaultFolder,
     Notify(bool),
     Sound(bool),
@@ -200,6 +201,8 @@ pub enum Effect {
     Restart,
     /// Open a link in the browser.
     OpenUrl(String),
+    /// Look for Medal's clips to import.
+    ImportMedal,
 }
 
 impl State {
@@ -1054,6 +1057,7 @@ impl State {
                 return changed;
             }
             Msg::Folder(None) => {}
+            Msg::ImportMedal => return (Task::none(), Effect::ImportMedal),
             Msg::DefaultFolder => {
                 s.save_dir.clear();
                 return changed;
@@ -2107,6 +2111,13 @@ impl State {
             "Saving",
             vec![
                 setting("Clips folder", Some(s.save_dir().display().to_string()), folder),
+                setting(
+                    "Import from Medal",
+                    Some("Copies your Medal clips and screenshots into Kairo. Medal's own files stay where they are.".into()),
+                    icon_button(Icon::Download, "Import", theme::ink_2())
+                        .style(theme::secondary)
+                        .on_press(Msg::ImportMedal),
+                ),
                 setting(
                     "Clean up old clips",
                     Some(format!(

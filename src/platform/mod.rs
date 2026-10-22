@@ -9,6 +9,7 @@
 //! - `hide_console(cmd)`: start a child process without a console window.
 //! - `hide_console_low_priority(cmd)`: the same, below normal priority (Windows only).
 //! - `play_builtin(kind)`, `play_sound_file(path)`: the save sound (see `play_save_sound`).
+//! - `free_space(dir)`: bytes free on a folder's drive (macOS and Linux share the one here).
 
 #[cfg(windows)]
 mod windows;
@@ -192,6 +193,27 @@ pub fn clean_title(title: &str) -> Option<String> {
     (!cut.is_empty()).then_some(cut)
 }
 
+/// Bytes free for this user on the drive `dir` is on (`dir` must exist).
+#[cfg(unix)]
+// The fields' types differ between macOS and Linux.
+#[allow(clippy::unnecessary_cast)]
+pub fn free_space(dir: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: plain numbers, for statvfs to fill in.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a NUL-terminated path and a struct for the answer.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
+}
+
+/// Bytes free where `path` would go: on the drive of its nearest folder that exists.
+pub fn free_space_for(path: &std::path::Path) -> Option<u64> {
+    path.ancestors().find(|d| d.is_dir()).and_then(free_space)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +234,13 @@ mod tests {
         // Whatever is in front while the tests run; it only has to answer.
         let _ = game_in_front();
         let _ = prefers_light();
+    }
+
+    #[test]
+    fn free_space_where_a_folder_will_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = free_space_for(&dir.path().join("not/made/yet"));
+        assert!(free.is_some_and(|b| b > 0));
     }
 
     #[test]

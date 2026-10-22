@@ -35,6 +35,30 @@ pub fn thumb_for(clip: &Path) -> PathBuf {
     thumbs_dir().join(format!("{name}.jpg"))
 }
 
+/// Makes the gallery picture for a clip that came from elsewhere, the way saving does; if ffmpeg
+/// can't, from `picture` (the other app's own picture of it).
+pub fn make_thumb(clip: &Path, picture: Option<&Path>) {
+    let thumb = thumb_for(clip);
+    let _ = std::fs::create_dir_all(thumbs_dir());
+    let made = ffmpeg::path().is_ok_and(|ff| {
+        ffmpeg::run(
+            &ff,
+            &args::thumbnail_args(clip, &thumb),
+            Duration::from_secs(20),
+        )
+        .is_ok()
+    });
+    let Some(picture) = picture.filter(|_| !made || !thumb.is_file()) else {
+        return;
+    };
+    // As wide as the ones ffmpeg makes.
+    let small =
+        image::open(picture).map(|p| p.resize(320, 320 * 4, image::imageops::FilterType::Triangle));
+    if let Err(e) = small.and_then(|p| p.to_rgb8().save(&thumb)) {
+        warning!("couldn't make a picture for {}: {e}", clip.display());
+    }
+}
+
 /// Where a clip's keys and clicks are kept (for the overlay).
 pub fn keys_for(clip: &Path) -> PathBuf {
     let name = clip

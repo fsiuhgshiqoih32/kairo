@@ -485,6 +485,39 @@ fn preview() {
     let _: Option<Theme> = None;
 }
 
+/// Importing from Medal: asking (and with too little room), copying, Medal not found, what came
+/// of it, the empty library's offer and the row in Settings.
+#[test]
+#[ignore = "renders the windows to PNGs; needs KAIRO_HOME with clips and KAIRO_SNAPSHOTS"]
+fn medal() {
+    use super::medal::Import;
+    let size = (1280.0, 800.0);
+    let now = SystemTime::now();
+    let (mut app, _) = App::new(kairo::config::Settings::default());
+    app.now = Some(now);
+    app.clips = sample(now);
+    app.index_clips();
+    app.loaded = true;
+    app.report = Some(report());
+    app.medal = Import::sample(0, false);
+    shoot(app.view(), "iced-medal-ask", size);
+    app.medal = Import::sample(0, true);
+    shoot(app.view(), "iced-medal-full", size);
+    app.medal = Import::sample(1, false);
+    shoot(app.view(), "iced-medal-copying", size);
+    app.medal = Import::sample(2, false);
+    shoot(app.view(), "iced-medal-missing", size);
+    app.medal = Import::sample(3, false);
+    app.note("Imported 87 clips and 13 screenshots from Medal.", true);
+    shoot(app.view(), "iced-medal-done", size);
+    app.notice = None;
+    app.clips.clear();
+    app.index_clips();
+    shoot(app.view(), "iced-medal-empty", size);
+    app.page = Page::Settings;
+    shoot(app.view(), "iced-medal-settings", (1280.0, 3400.0));
+}
+
 /// Friends: signed out, picking a username, the list, a chat, sending a clip, and the pop-ups.
 /// Run with `KAIRO_SUPABASE_URL` and `KAIRO_SUPABASE_KEY` set (anything), or the page says it
 /// isn't set up.

@@ -6,6 +6,7 @@ mod editor;
 mod friends;
 pub mod icons;
 mod library;
+pub mod medal;
 mod settings;
 mod stats;
 pub mod theme;
@@ -201,6 +202,8 @@ pub struct App {
     /// The picked clips, in the order picked.
     selected: Vec<PathBuf>,
     montage: Option<crate::export::Montage>,
+    /// Importing clips from Medal.
+    medal: medal::Import,
     _lock: Option<InstanceLock>,
 }
 
@@ -304,6 +307,7 @@ pub enum Message {
     Editor(editor::Msg),
     Settings(settings::Msg),
     Friends(friends::Msg),
+    Medal(medal::Msg),
     /// Open "Send to friends" for a clip.
     SendTo(PathBuf),
     /// Tick a friend in it ("*" for everyone).
@@ -379,6 +383,7 @@ impl App {
                 selecting: false,
                 selected: Vec::new(),
                 montage: None,
+                medal: medal::Import::new(),
                 _lock: None,
             },
             tasks.map(Message::Settings),
@@ -1010,6 +1015,7 @@ impl App {
             && [
                 self.page_in.map(|s| (s, PAGE_IN_MS)),
                 self.dialog_in.map(|s| (s, DIALOG_IN_MS)),
+                self.medal.opened.map(|s| (s, DIALOG_IN_MS)),
                 self.notice.as_ref().map(|n| (n.at, NOTICE_IN_MS)),
             ]
             .into_iter()
@@ -1469,6 +1475,21 @@ impl App {
                 }
             }
             Message::Friends(m) => return self.friends.update(m).map(Message::Friends),
+            Message::Medal(m) => {
+                let (task, effect) = self.medal.update(m, &self.settings);
+                let task = task.map(Message::Medal);
+                return match effect {
+                    medal::Effect::None => task,
+                    medal::Effect::Say(text, ok) => {
+                        self.note(text, ok);
+                        task
+                    }
+                    medal::Effect::Done(text, ok) => {
+                        self.note(text, ok);
+                        Task::batch([task, self.reload()])
+                    }
+                };
+            }
             Message::SendTo(clip) => {
                 if !self.friends.can_send() {
                     self.page = Page::Friends;
@@ -1556,6 +1577,9 @@ impl App {
                         self.changed_at = Some(Instant::now());
                         task
                     }
+                    settings::Effect::ImportMedal => {
+                        Task::batch([task, self.update(Message::Medal(medal::Msg::Start(None)))])
+                    }
                     settings::Effect::OpenUrl(u) => {
                         crate::app::open(Path::new(&u));
                         task
@@ -1594,6 +1618,12 @@ impl App {
                 self.changed_at = Some(Instant::now());
             }
             return Task::none();
+        }
+        if self.medal.showing() {
+            return match self.medal.key(&key) {
+                Some(m) => self.update(Message::Medal(m)),
+                None => Task::none(),
+            };
         }
         if matches!(key.as_ref(), Key::Named(Named::Escape)) {
             if self.dialog.is_some() {
@@ -1790,6 +1820,12 @@ impl App {
         if self.montage.is_some() {
             subs.push(iced::time::every(Duration::from_millis(200)).map(|_| Message::MontageTick));
         }
+        if self.medal.busy() {
+            subs.push(
+                iced::time::every(Duration::from_millis(200))
+                    .map(|_| Message::Medal(medal::Msg::Tick)),
+            );
+        }
         if self.animating() {
             subs.push(window::frames().map(|_| Message::AnimTick));
         }
@@ -1922,6 +1958,12 @@ impl App {
         }
         if let Some(d) = &self.dialog {
             layers = layers.push(self.dialog_view(d));
+        }
+        if let Some(d) = self
+            .medal
+            .view(self.entrance(self.medal.opened, DIALOG_IN_MS))
+        {
+            layers = layers.push(d.map(Message::Medal));
         }
         layers.into()
     }
