@@ -396,6 +396,11 @@ fn preview() {
     app.settings.voice_clip = true;
     shoot(app.view(), "iced-settings-tall", (1280.0, 2400.0));
     app.settings.voice_clip = false;
+    // The microphone row: the list, Refresh, and which mic is recording.
+    app.settings.microphone = true;
+    app.settings.microphone_device = "Microphone (Shure MV7+)".into();
+    shoot(app.view(), "iced-settings-mic", (1280.0, 3400.0));
+    app.settings.microphone = false;
 
     // The editor, on the first real clip, with a trim.
     let clip = app.clips[0].path.clone();

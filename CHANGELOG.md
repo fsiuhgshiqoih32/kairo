@@ -9,6 +9,10 @@
 - **Share links that work.** A link now opens a clip page with the title, a player and Download
   and Copy link buttons, and it plays right in Discord's chat. Uploads no longer fail when catbox
   is down: Kairo tries litterbox, then pomf2.lain.la, then catbox, each twice. Links last 2 days.
+- **Your microphone, found.** If your mic isn't ready when Kairo starts, or Windows renames it
+  (a wireless headset's dongle in another USB port), Kairo finds it and switches to it within a
+  few seconds instead of keeping a stand-in. Settings has a Refresh button for the list and says
+  which mic is recording.
 
 ## 0.5.0
 
