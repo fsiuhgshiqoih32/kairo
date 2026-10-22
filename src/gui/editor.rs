@@ -1229,7 +1229,11 @@ impl Editor {
         };
         let was_playing = self.player.is_playing();
         self.player.release_file();
-        let effect = match std::fs::rename(&self.clip, &to) {
+        // The filmstrip and other previews read the clip too.
+        let held = crate::ffmpeg::stop_reading(&self.clip);
+        let renamed = std::fs::rename(&self.clip, &to);
+        drop(held);
+        let effect = match renamed {
             Ok(()) => {
                 crate::save::move_sidecars(&self.clip, &to);
                 let from = std::mem::replace(&mut self.clip, to.clone());
@@ -1239,7 +1243,7 @@ impl Editor {
             }
             Err(e) => {
                 self.name = current;
-                Effect::Note(format!("Couldn't rename: {e}"), false)
+                Effect::Note(format!("Couldn't rename it: {}.", library::why(&e)), false)
             }
         };
         let pos = self.player.position;

@@ -1305,8 +1305,12 @@ impl App {
                         return Task::none();
                     }
                 };
-                if let Err(e) = std::fs::rename(&*path, &to) {
-                    *error = Some(format!("Couldn't rename: {e}"));
+                // Kairo's own previews read the clip; Windows won't rename a file that's open.
+                let held = crate::ffmpeg::stop_reading(path);
+                let renamed = std::fs::rename(&*path, &to);
+                drop(held);
+                if let Err(e) = renamed {
+                    *error = Some(format!("Couldn't rename it: {}.", lib::why(&e)));
                     return Task::none();
                 }
                 crate::save::move_sidecars(path, &to);
