@@ -92,8 +92,10 @@ fn stored() -> Option<Stored> {
     crate::secret::get(SECRET).and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// This process's access token and when it runs out (Unix seconds).
-static ACCESS: Mutex<Option<(String, i64)>> = Mutex::new(None);
+/// This process's access token: whose it is, the token, and when it runs out (Unix seconds).
+/// Another process may sign out or in as someone else meanwhile, so it counts only for the
+/// account in the password store.
+static ACCESS: Mutex<Option<(String, String, i64)>> = Mutex::new(None);
 
 pub fn signed_in() -> bool {
     stored().is_some()
@@ -112,7 +114,8 @@ struct Account {
 
 fn account(server: &Server) -> Result<Account, String> {
     let s = stored().ok_or(SIGNED_OUT)?;
-    if let Some((token, until)) = ACCESS.lock().unwrap().clone()
+    if let Some((user, token, until)) = ACCESS.lock().unwrap().clone()
+        && user == s.user_id
         && until - now() > 120
     {
         return Ok(Account {
@@ -178,14 +181,14 @@ fn keep_session(v: &Value) -> Result<(String, String), String> {
         SECRET,
         &serde_json::to_string(&s).map_err(|e| e.to_string())?,
     )?;
-    *ACCESS.lock().unwrap() = Some((token.clone(), until));
+    *ACCESS.lock().unwrap() = Some((id.clone(), token.clone(), until));
     Ok((id, token))
 }
 
 /// Forgets the account on this computer (and ends the session on the server, if it can).
 pub fn sign_out() {
     if let Some(server) = server()
-        && let Some(Some((token, _))) = ACCESS.lock().ok().map(|a| a.clone())
+        && let Some(Some((_, token, _))) = ACCESS.lock().ok().map(|a| a.clone())
     {
         let _ = call(&server, "POST", "/auth/v1/logout", Some(&token), None, &[]);
     }
@@ -214,27 +217,7 @@ pub fn sign_in(cancel: &AtomicBool) -> Result<(), String> {
         percent(CALLBACK)
     );
     opener::open_browser(&url).map_err(|e| format!("Couldn't open the browser: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(300);
-    let code = loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".into());
-        }
-        if Instant::now() > deadline {
-            return Err("The sign-in took too long. Try again.".into());
-        }
-        match listener.accept() {
-            Ok((stream, _)) => match answer_browser(stream) {
-                Some(Ok(code)) => break code,
-                Some(Err(e)) => return Err(e),
-                // Something else the browser asked for (its icon): keep waiting.
-                None => {}
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => return Err(e.to_string()),
-        }
-    };
+    let code = wait_for_code(&listener, cancel, Instant::now() + Duration::from_secs(300))?;
     let (status, v) = call(
         &server,
         "POST",
@@ -249,6 +232,33 @@ pub fn sign_in(cancel: &AtomicBool) -> Result<(), String> {
     keep_session(&v)?;
     info!("signed in to friends");
     Ok(())
+}
+
+/// Waits on `listener` (non-blocking) for the browser to come back with the sign-in's code.
+fn wait_for_code(
+    listener: &TcpListener,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<String, String> {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
+        if Instant::now() > deadline {
+            return Err("The sign-in took too long. Try again.".into());
+        }
+        match listener.accept() {
+            Ok((stream, _)) => match answer_browser(stream) {
+                Some(result) => return result,
+                // Something else the browser asked for (its icon): keep waiting.
+                None => {}
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 /// Reads the browser's request: `Some(Ok(code))` for the sign-in coming back, `Some(Err)` when it
@@ -869,10 +879,8 @@ fn news(inbox: &Inbox, told: &mut Told, viewing: Option<&str>) -> Vec<Vec<String
     for f in asked {
         told.requests.push(f.id.clone());
         out.push(vec![
-            "--from".into(),
-            f.username.clone(),
-            "--text".into(),
-            "wants to be your friend on Kairo.".into(),
+            format!("--from={}", f.username),
+            "--text=wants to be your friend on Kairo.".into(),
             "--request".into(),
         ]);
     }
@@ -893,13 +901,11 @@ fn news(inbox: &Inbox, told: &mut Told, viewing: Option<&str>) -> Vec<Vec<String
     let skip = fresh.len().saturating_sub(3);
     for m in &fresh[skip..] {
         let mut args = vec![
-            "--from".into(),
-            inbox.name_of(&m.sender),
-            "--text".into(),
-            m.preview(),
+            format!("--from={}", inbox.name_of(&m.sender)),
+            format!("--text={}", m.preview()),
         ];
         if let Some(url) = &m.clip_url {
-            args.extend(["--link".into(), url.clone()]);
+            args.push(format!("--link={url}"));
         }
         out.push(args);
     }
@@ -1115,8 +1121,8 @@ mod tests {
         let mut told = Told::default();
         let due = news(&inbox, &mut told, None);
         assert_eq!(due.len(), 2, "{due:?}");
-        assert!(due[0].contains(&"newbie".to_string()) && due[0].contains(&"--request".into()));
-        assert!(due[1].contains(&"fabio".to_string()) && due[1].contains(&"hi 1".into()));
+        assert!(due[0].contains(&"--from=newbie".into()) && due[0].contains(&"--request".into()));
+        assert!(due[1].contains(&"--from=fabio".into()) && due[1].contains(&"--text=hi 1".into()));
         assert!(news(&inbox, &mut told, None).is_empty(), "told once");
         // A new one while that chat is open: no pop-up, and none later either.
         inbox.add(vec![msg(3, "f", "me")]);
@@ -1126,7 +1132,7 @@ mod tests {
         inbox.add((4..14).map(|i| msg(i, "f", "me")).collect());
         let due = news(&inbox, &mut told, None);
         assert_eq!(due.len(), 3);
-        assert!(due[2].contains(&"hi 13".to_string()));
+        assert!(due[2].contains(&"--text=hi 13".into()));
     }
 
     #[test]
@@ -1146,6 +1152,183 @@ mod tests {
         assert_eq!(ids, [1, 2, 3]);
         assert_eq!(inbox.unread("f"), 1);
         assert_eq!(inbox.chat("f").count(), 3);
+    }
+
+    /// Plays the browser: connects and sends `request`, returns the answer.
+    fn browse(port: u16, request: &str) -> String {
+        use std::io::Read;
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = s.read_to_string(&mut answer);
+        answer
+    }
+
+    fn listener() -> (TcpListener, u16) {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        l.set_nonblocking(true).unwrap();
+        let port = l.local_addr().unwrap().port();
+        (l, port)
+    }
+
+    #[test]
+    fn the_browser_hands_the_code_back() {
+        let (l, port) = listener();
+        let browser = std::thread::spawn(move || {
+            let icon = browse(port, "GET /favicon.ico HTTP/1.1\r\nHost: x\r\n\r\n");
+            let page = browse(
+                port,
+                "GET /callback?code=9f3b2c1a-0000-4000-8000-000000000000 HTTP/1.1\r\n\r\n",
+            );
+            (icon, page)
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = wait_for_code(&l, &AtomicBool::new(false), deadline);
+        let (icon, page) = browser.join().unwrap();
+        assert_eq!(code, Ok("9f3b2c1a-0000-4000-8000-000000000000".into()));
+        assert!(icon.starts_with("HTTP/1.1 404"), "{icon}");
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("You're signed in"));
+    }
+
+    #[test]
+    fn a_refused_sign_in_says_why() {
+        let (l, port) = listener();
+        let browser = std::thread::spawn(move || {
+            browse(
+                port,
+                "GET /callback?error=access_denied&error_description=The+user+said+%3Cno%3E HTTP/1.1\r\n\r\n",
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let r = wait_for_code(&l, &AtomicBool::new(false), deadline);
+        let page = browser.join().unwrap();
+        assert_eq!(
+            r,
+            Err("Google sign-in didn't work: The user said <no>".into())
+        );
+        assert!(page.contains("The user said &lt;no&gt;"), "escaped: {page}");
+        let (l, _) = listener();
+        let r = wait_for_code(&l, &AtomicBool::new(true), deadline);
+        assert_eq!(r, Err("Cancelled".into()));
+    }
+
+    /// A one-request server: answers `status` and `body`, returns what it was sent.
+    fn fake_server(
+        status: &'static str,
+        body: &'static str,
+    ) -> (Server, std::thread::JoinHandle<String>) {
+        use std::io::Read;
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            // Headers, then as much body as Content-Length says.
+            loop {
+                let n = s.read(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text
+                        .to_ascii_lowercase()
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let answer = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            s.write_all(answer.as_bytes()).unwrap();
+            String::from_utf8_lossy(&got).to_string()
+        });
+        let server = Server {
+            url: format!("http://127.0.0.1:{port}"),
+            key: "sb_publishable_test".into(),
+        };
+        (server, seen)
+    }
+
+    #[test]
+    fn requests_carry_the_key_the_token_and_the_rows() {
+        let (server, seen) = fake_server("201 Created", "");
+        let rows = message_rows(&["f".into()], "gg", None);
+        let (status, v) = call(
+            &server,
+            "POST",
+            "/rest/v1/messages",
+            Some("user-token"),
+            Some(rows.clone()),
+            &[("Prefer", "return=minimal")],
+        )
+        .unwrap();
+        assert_eq!((status, v), (201, Value::Null));
+        let req = seen.join().unwrap();
+        let lower = req.to_ascii_lowercase();
+        assert!(req.starts_with("POST /rest/v1/messages HTTP/1.1"), "{req}");
+        assert!(lower.contains("apikey: sb_publishable_test"), "{req}");
+        assert!(lower.contains("authorization: bearer user-token"), "{req}");
+        assert!(lower.contains("prefer: return=minimal"), "{req}");
+        let body = &req[req.find("\r\n\r\n").unwrap() + 4..];
+        assert_eq!(serde_json::from_str::<Value>(body).unwrap(), rows);
+    }
+
+    #[test]
+    fn filters_reach_the_server_as_written_and_errors_come_back_in_words() {
+        let (server, seen) = fake_server(
+            "409 Conflict",
+            r#"{"code":"23505","message":"duplicate key value violates unique constraint"}"#,
+        );
+        let path = "/rest/v1/friendships?select=requester,accepted&or=(and(requester.eq.a,addressee.eq.b),and(requester.eq.b,addressee.eq.a))";
+        let (status, v) = call(&server, "GET", path, Some("t"), None, &[]).unwrap();
+        let req = seen.join().unwrap();
+        assert!(req.starts_with(&format!("GET {path} HTTP/1.1")), "{req}");
+        assert_eq!(status, 409);
+        assert_eq!(
+            problem(status, &v),
+            "duplicate key value violates unique constraint"
+        );
+        assert_eq!(
+            problem(503, &Value::Null),
+            "Kairo's friends server isn't working right now (error 503)."
+        );
+        assert_eq!(
+            problem(429, &Value::Null),
+            "Too many tries at once. Wait a minute and try again."
+        );
+    }
+
+    #[test]
+    fn a_session_keeps_whose_token_it_is() {
+        // What Supabase Auth answers for a sign-in or a refresh.
+        let v = json!({
+            "access_token": "a.b.c",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "expires_at": now() + 3600,
+            "refresh_token": "r1",
+            "user": {"id": "u1", "email": "x@example.com", "user_metadata": {"full_name": "X"}}
+        });
+        let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        assert_eq!(field("access_token").as_deref(), Some("a.b.c"));
+        let s = Stored {
+            refresh_token: field("refresh_token").unwrap(),
+            user_id: v["user"]["id"].as_str().unwrap().into(),
+            email: v["user"]["email"].as_str().map(str::to_string),
+        };
+        // What goes in Credential Manager stays far under its 2560-byte limit.
+        assert!(serde_json::to_string(&s).unwrap().len() < 300);
     }
 
     #[test]

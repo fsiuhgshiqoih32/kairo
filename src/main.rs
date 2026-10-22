@@ -401,3 +401,38 @@ fn test_record(seconds: u64, save_secs: u32) -> Result<(), String> {
     println!("saved {} ({:.2} s)", clip.path.display(), clip.seconds);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The background process passes a friend's message as `--text=<message>`, so one starting
+    /// with "-" (a "-_-") is still the message, not an option.
+    #[test]
+    fn a_friends_message_reaches_the_pop_up_whatever_it_starts_with() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "notify",
+            "--friend",
+            "--from=fabio",
+            "--text=-_- --help",
+            "--link=https://files.catbox.moe/a.mp4",
+        ])
+        .unwrap();
+        let Some(Cmd::Notify {
+            friend,
+            from,
+            text,
+            link,
+            request,
+            ..
+        }) = cli.command
+        else {
+            panic!("not a notify");
+        };
+        assert!(friend && !request);
+        assert_eq!(from.as_deref(), Some("fabio"));
+        assert_eq!(text.as_deref(), Some("-_- --help"));
+        assert_eq!(link.as_deref(), Some("https://files.catbox.moe/a.mp4"));
+    }
+}

@@ -35,6 +35,7 @@ pub struct Friends {
     syncing: bool,
     synced: Option<Instant>,
     read_at: Instant,
+    viewing_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +77,7 @@ impl Friends {
             syncing: false,
             synced: None,
             read_at: Instant::now(),
+            viewing_at: Instant::now(),
         }
     }
 
@@ -117,7 +119,11 @@ impl Friends {
     /// the background process fetched (for the sidebar's count).
     pub fn tick(&mut self, on_page: bool) -> Task<Msg> {
         if on_page {
-            net::set_viewing(self.chat.as_deref());
+            // Refreshed while a chat is open (it counts for 20 s), so no pop-up comes for it.
+            if self.chat.is_some() && self.viewing_at.elapsed() >= Duration::from_secs(5) {
+                self.viewing_at = Instant::now();
+                net::set_viewing(self.chat.as_deref());
+            }
             if self.signed_in && !self.syncing && self.synced.is_none_or(|t| t.elapsed() >= EVERY) {
                 return self.sync_now();
             }
