@@ -25,6 +25,11 @@ use crate::daemon::{self, Report, Request};
 use crate::platform::{self, Monitor};
 use crate::{autostart, hotkey, updater};
 
+/// Lists the microphones on a thread of its own: it can take a moment.
+fn list_mics() -> Task<Msg> {
+    Task::perform(background(crate::audio::microphones), Msg::Mics)
+}
+
 /// A choice in a pick list: what's stored and what's shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
@@ -40,7 +45,9 @@ impl std::fmt::Display for Choice {
 
 pub struct State {
     monitors: Vec<Monitor>,
-    mics: Vec<String>,
+    /// The microphones, once listed, and whether they're being listed again.
+    mics: Option<Vec<String>>,
+    listing_mics: bool,
     /// The cameras, once listed.
     cameras: Option<Vec<crate::webcam::Camera>>,
     /// The mic test while it runs, and its meter (0 to 1, falling back slowly).
@@ -146,6 +153,9 @@ pub enum Msg {
     DesktopAudio(bool),
     Microphone(bool),
     Mic(Choice),
+    /// Lists the microphones again, and has the background process open them again.
+    RefreshMics,
+    Mics(Vec<String>),
     /// The microphone's volume in clips, in percent.
     MicVolume(u32),
     /// Starts or stops the mic test.
@@ -214,7 +224,8 @@ impl State {
             }),
             Msg::Cameras,
         );
-        let mut tasks = vec![encoders, cameras];
+        let mics = list_mics();
+        let mut tasks = vec![encoders, cameras, mics];
         let mut update = Updates::default();
         if settings.check_updates && std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_none() {
             update.checking = true;
@@ -223,7 +234,8 @@ impl State {
         (
             State {
                 monitors: platform::monitors(),
-                mics: crate::audio::microphones(),
+                mics: None,
+                listing_mics: true,
                 cameras: None,
                 mic_test: None,
                 mic_level: 0.0,
@@ -561,6 +573,12 @@ impl State {
             );
         }
         rows
+    }
+
+    /// Lists the microphones again (Settings opened, or Refresh), off the window's thread.
+    pub fn refresh_mics(&mut self) -> Task<Msg> {
+        self.listing_mics = true;
+        list_mics()
     }
 
     fn start_mic_test(&mut self, s: &Settings) {
@@ -969,6 +987,19 @@ impl State {
                     self.start_mic_test(s);
                 }
                 return changed;
+            }
+            Msg::RefreshMics => {
+                if s.microphone || s.voice_clip {
+                    let _ = daemon::request(Request::ReopenAudio);
+                }
+                if self.mic_test.is_some() {
+                    self.start_mic_test(s);
+                }
+                return (self.refresh_mics(), Effect::None);
+            }
+            Msg::Mics(m) => {
+                self.mics = Some(m);
+                self.listing_mics = false;
             }
             Msg::MicVolume(v) => {
                 s.mic_volume = v.min(kairo::config::MAX_MIC_VOLUME);
@@ -1782,22 +1813,73 @@ impl State {
             value: String::new(),
             label: "Default microphone".into(),
         }];
-        for m in &self.mics {
+        for m in self.mics.iter().flatten() {
             mics.push(Choice {
                 value: m.clone(),
                 label: m.clone(),
+            });
+        }
+        // The chosen microphone stays in the list while it isn't connected, so it shows.
+        let wanted = &s.microphone_device;
+        if self.mics.is_some() && !wanted.is_empty() && !mics.iter().any(|c| &c.value == wanted) {
+            mics.push(Choice {
+                value: wanted.clone(),
+                label: format!("{wanted} (not connected)"),
             });
         }
         let mic = mics
             .iter()
             .find(|c| c.value == s.microphone_device)
             .cloned();
-        let mic_pick = pick_list(mics, mic, Msg::Mic)
-            .text_size(13)
-            .padding(Padding::from([7, 12]))
-            .width(260)
-            .style(theme::pick)
-            .menu_style(theme::menu);
+        let mic_pick: Element<'a, Msg> = if self.mics.is_none() {
+            text("Looking for microphones...")
+                .size(13)
+                .color(theme::muted())
+                .into()
+        } else {
+            pick_list(mics, mic, Msg::Mic)
+                .text_size(13)
+                .padding(Padding::from([7, 12]))
+                .width(220)
+                .style(theme::pick)
+                .menu_style(theme::menu)
+                .into()
+        };
+        let mic_refresh = icon_button(
+            Icon::Refresh,
+            if self.listing_mics {
+                "Looking..."
+            } else {
+                "Refresh"
+            },
+            theme::ink_2(),
+        )
+        .style(theme::secondary)
+        .on_press_maybe((!self.listing_mics).then_some(Msg::RefreshMics));
+        // Which microphone records, or why none does.
+        let mic_line = report.filter(|_| s.microphone).and_then(|r| {
+            let st = &r.status;
+            match (&st.mic_error, &st.mic_note, &st.microphone) {
+                (Some(e), _, _) => Some((e.clone(), theme::RED)),
+                (None, Some(n), _) => Some((n.clone(), theme::GOLD)),
+                (None, None, Some(name)) => Some((format!("Recording {name}"), theme::GREEN)),
+                (None, None, None) => None,
+            }
+        });
+        let mic_control: Element<'a, Msg> = if s.microphone {
+            let controls = row![mic_pick, mic_refresh, switch(s.microphone, Msg::Microphone)]
+                .spacing(12)
+                .align_y(Alignment::Center);
+            match mic_line {
+                Some((line, color)) => column![controls, text(line).size(12).color(color)]
+                    .spacing(6)
+                    .align_x(Alignment::End)
+                    .into(),
+                None => controls.into(),
+            }
+        } else {
+            switch(s.microphone, Msg::Microphone)
+        };
         let mut sound_rows: Vec<Element<'a, Msg>> = Vec::new();
         if cfg!(windows) {
             let mut chat_col = row![switch(s.chat_track, Msg::ChatTrack)]
@@ -1852,9 +1934,7 @@ impl State {
                 setting(
                     "Microphone",
                     Some("Mixed into the clip and kept on its own track too.".into()),
-                    row![if s.microphone { Element::from(mic_pick) } else { Space::new().into() }, switch(s.microphone, Msg::Microphone)]
-                        .spacing(12)
-                        .align_y(Alignment::Center),
+                    mic_control,
                 ),
                 setting(
                     "Mic volume",

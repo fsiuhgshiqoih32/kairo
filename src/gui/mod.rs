@@ -963,9 +963,13 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let page = (self.page, self.filter.clone(), self.welcome);
         let had_dialog = self.dialog.is_some();
-        let task = self.handle(message);
+        let mut task = self.handle(message);
         if (self.page, self.filter.clone(), self.welcome) != page {
             self.page_in = Some(Instant::now());
+            // Settings lists the microphones afresh, with any connected since it last showed.
+            if self.page == Page::Settings && page.0 != Page::Settings {
+                task = Task::batch([task, self.setup.refresh_mics().map(Message::Settings)]);
+            }
             // The mic test and shortcut capture only run while Settings shows them (a capture
             // left armed would make the next key pressed anywhere a global shortcut).
             if self.page != Page::Friends {

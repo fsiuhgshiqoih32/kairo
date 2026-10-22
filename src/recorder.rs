@@ -61,6 +61,10 @@ pub struct Status {
     pub memory_mb: f64,
     pub desktop_audio: Option<String>,
     pub microphone: Option<String>,
+    /// Why the microphone recording isn't the one chosen, for Settings.
+    pub mic_note: Option<String>,
+    /// Why no microphone records, for Settings.
+    pub mic_error: Option<String>,
     /// The voice-chat track's state, when it's on.
     pub chat: Option<String>,
     pub error: Option<String>,

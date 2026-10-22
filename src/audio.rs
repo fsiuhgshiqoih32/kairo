@@ -21,10 +21,154 @@ use crate::log::{info, warning};
 use crate::recorder::{Shared, now_us};
 
 pub fn microphones() -> Vec<String> {
-    let host = cpal::default_host();
+    inputs(&cpal::default_host())
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// The input devices and their names. One whose name can't be read (it's going away) is left
+/// out rather than stopping the list.
+fn inputs(host: &cpal::Host) -> Vec<(String, cpal::Device)> {
     host.input_devices()
-        .map(|it| it.map(|d| d.to_string()).collect())
+        .map(|it| {
+            it.filter_map(|d| Some((d.description().ok()?.name().to_string(), d)))
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+fn id_of(d: &cpal::Device) -> Option<String> {
+    d.id().ok().map(|i| format!("{i:?}"))
+}
+
+/// How the microphone to open was found, best first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Found {
+    /// The one chosen in the settings.
+    Chosen,
+    /// The chosen one under a slightly different name: Windows numbers a device again when it
+    /// moves to another USB port ("Headset Microphone (2- Logitech G535 Gaming Headset)").
+    Renamed,
+    /// The only input of the chosen one's device, under another name.
+    SameDevice,
+    /// The system's default input.
+    Default,
+    /// With no default set, the first input that opens.
+    First,
+}
+
+/// A device's name as people would say it: without the number Windows puts in front of a
+/// device it has seen before ("Microphone (2- Shure MV7+)"), in lower case, spaces tidied.
+fn plain_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut rest = name.trim();
+    loop {
+        // "2- " at the start, or just inside a bracket.
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits > 0 && rest[digits..].starts_with("- ") {
+            rest = &rest[digits + 2..];
+        }
+        match rest.find('(') {
+            Some(at) => {
+                out.push_str(&rest[..=at]);
+                rest = &rest[at + 1..];
+            }
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    out.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The device in an input's name: "shure mv7+" in "microphone (shure mv7+)".
+fn device_part(plain: &str) -> Option<&str> {
+    let (_, rest) = plain.split_once('(')?;
+    Some(rest.strip_suffix(')').unwrap_or(rest).trim()).filter(|d| !d.is_empty())
+}
+
+/// The inputs to try for the microphone, best first, by their place in `names`: the one chosen
+/// (`wanted`) under its name or one close to it; else the default input (`default`); else, with
+/// no default set, each input in turn.
+fn mic_order(wanted: &str, names: &[String], default: Option<usize>) -> Vec<(usize, Found)> {
+    let wanted = wanted.trim();
+    if !wanted.is_empty() {
+        if let Some(i) = names.iter().position(|n| n == wanted) {
+            return vec![(i, Found::Chosen)];
+        }
+        let plain = plain_name(wanted);
+        let plains: Vec<String> = names.iter().map(|n| plain_name(n)).collect();
+        if let Some(i) = plains.iter().position(|n| *n == plain) {
+            return vec![(i, Found::Renamed)];
+        }
+        // Another input of the same device only counts when it's the device's one input: a
+        // sound card's line-in is no stand-in for its microphone.
+        if let Some(device) = device_part(&plain) {
+            let same: Vec<usize> = (0..names.len())
+                .filter(|&i| device_part(&plains[i]) == Some(device))
+                .collect();
+            if let [i] = same[..] {
+                return vec![(i, Found::SameDevice)];
+            }
+        }
+    }
+    match default {
+        Some(i) => vec![(i, Found::Default)],
+        None => (0..names.len()).map(|i| (i, Found::First)).collect(),
+    }
+}
+
+/// The microphones to try for `wanted`, best first (see `mic_order`), with their names.
+fn mic_choices(host: &cpal::Host, wanted: &str) -> Vec<(cpal::Device, String, Found)> {
+    let mut list = inputs(host);
+    // The default is opened as the device it is now, not as "whatever is the default": on
+    // Windows that kind failed to open after device changes ("Cannot change thread mode after
+    // it is set"), and a change of default is followed here anyway (`defaults_changed`).
+    let default = host.default_input_device();
+    let default_id = default.as_ref().and_then(id_of);
+    let mut at = default_id
+        .as_ref()
+        .and_then(|id| list.iter().position(|(_, d)| id_of(d).as_ref() == Some(id)));
+    // Where the default isn't in the list (some Linux set-ups list it apart), it's added.
+    if at.is_none()
+        && let Some(d) = default
+        && let Ok(desc) = d.description()
+    {
+        list.push((desc.name().to_string(), d));
+        at = Some(list.len() - 1);
+    }
+    let names: Vec<String> = list.iter().map(|(n, _)| n.clone()).collect();
+    let mut list: Vec<Option<(String, cpal::Device)>> = list.into_iter().map(Some).collect();
+    mic_order(wanted, &names, at)
+        .into_iter()
+        .filter_map(|(i, found)| list[i].take().map(|(name, d)| (d, name, found)))
+        .collect()
+}
+
+/// The microphone clips would get for `wanted` (see `mic_order`) and its name, for the mic test.
+pub fn microphone_for(wanted: &str) -> Option<(cpal::Device, String)> {
+    mic_choices(&cpal::default_host(), wanted)
+        .into_iter()
+        .next()
+        .map(|(d, name, _)| (d, name))
+}
+
+/// What the log says about the microphone opened, and why it's that one.
+fn mic_report(name: &str, found: Found, wanted: &str) -> String {
+    match found {
+        Found::Chosen => format!("{name:?}"),
+        Found::Renamed | Found::SameDevice => format!("{name:?} (chosen as {wanted:?})"),
+        Found::Default if wanted.is_empty() => format!("{name:?} (the default)"),
+        Found::Default => format!("{name:?} (the default, until {wanted:?} is connected)"),
+        Found::First => format!("{name:?} (the first that opens; no default is set)"),
+    }
 }
 
 /// Which ring a stream fills.
@@ -234,10 +378,13 @@ struct Open {
     #[cfg(windows)]
     split: Option<crate::platform::windows_app_audio::Split>,
     output_id: Option<String>,
-    input_id: Option<String>,
-    /// The chosen microphone wasn't there, so the default one stands in for it.
-    mic_stand_in: bool,
-    /// What failed to open, for the log and the status.
+    /// The default input when the sound was opened, to notice it changing.
+    input_default_id: Option<String>,
+    /// How the open microphone was found.
+    mic: Option<Found>,
+    /// A microphone is wanted but none is connected; `better_mic` looks for one.
+    no_mic: bool,
+    /// What failed to open, for the log and the status; it's tried again later.
     errors: Vec<String>,
     /// Which devices are open, for the log.
     report: String,
@@ -259,6 +406,9 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let mut errors: Vec<String> = Vec::new();
     let mut desktop_name = None;
     let mut mic_name = None;
+    let mut mic_said = "off".to_string();
+    let mut mic_note = None;
+    let mut mic_error = None;
     for t in crate::recorder::Track::ALL {
         shared.set_ring(t, None);
     }
@@ -311,51 +461,94 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
         }
     }
     if settings.microphone || settings.voice_clip {
+        // The chosen microphone can be missing for a while (unplugged, or a wireless headset
+        // turned off): something close to it, or the default, is used meanwhile, and the
+        // chosen one again once it's back (see `better_mic`).
         let wanted = settings.microphone_device.trim();
-        let chosen = (!wanted.is_empty())
-            .then(|| {
-                host.input_devices()
-                    .ok()
-                    .and_then(|mut it| it.find(|d| d.to_string() == wanted))
-            })
-            .flatten();
-        // The chosen microphone can be missing for a moment while devices switch over: use the
-        // default meanwhile, and the chosen one again once it's back (see `chosen_mic_back`).
-        open_now.mic_stand_in = !wanted.is_empty() && chosen.is_none();
-        let device = chosen.or_else(|| host.default_input_device());
-        match device {
-            Some(d) => {
-                open_now.input_id = d.id().ok().map(|i| format!("{i:?}"));
-                match open(shared, &d, Kind::Mic, settings.microphone, failed) {
-                    Ok(s) => {
-                        if settings.microphone {
-                            mic_name = Some(d.to_string());
-                        }
-                        open_now.streams.push(s);
+        open_now.input_default_id = host.default_input_device().as_ref().and_then(id_of);
+        let choices = mic_choices(&host, wanted);
+        open_now.no_mic = choices.is_empty();
+        let mut first_error = None;
+        for (d, name, found) in choices {
+            match open(shared, &d, Kind::Mic, settings.microphone, failed) {
+                Ok(s) => {
+                    open_now.streams.push(s);
+                    open_now.mic = Some(found);
+                    mic_said = mic_report(&name, found, wanted);
+                    if !settings.microphone {
+                        mic_said = format!("off (voice clipping hears {mic_said})");
                     }
-                    Err(e) => errors.push(format!("microphone: {e}")),
+                    if found == Found::Default && !wanted.is_empty() {
+                        mic_note = Some(format!(
+                            "{wanted} isn't connected, so Kairo records {name} until it is."
+                        ));
+                    }
+                    if settings.microphone {
+                        mic_name = Some(name);
+                    }
+                    first_error = None;
+                    break;
+                }
+                Err(e) => {
+                    first_error.get_or_insert(e);
                 }
             }
-            None => errors.push("microphone: none found".into()),
+        }
+        if open_now.no_mic {
+            mic_said = "none found; looking for one every few seconds".into();
+            mic_error = Some(
+                "No microphone found. Kairo starts using one as soon as you connect it.".into(),
+            );
+        } else if let Some(e) = first_error {
+            mic_said = "none".into();
+            mic_error = Some(format!("Couldn't open the microphone: {e}"));
+            errors.push(format!("microphone: {e}"));
         }
     }
-    open_now.report = format!("audio: desktop {desktop_name:?}, microphone {mic_name:?}");
+    let desktop_said = match &desktop_name {
+        Some(name) => format!("{name:?}"),
+        None if settings.desktop_audio => "none".into(),
+        None => "off".into(),
+    };
+    open_now.report = format!("audio: desktop {desktop_said}, microphone {mic_said}");
     let mut st = shared.status.lock().unwrap();
     st.desktop_audio = desktop_name;
     st.microphone = mic_name;
+    st.mic_note = mic_note;
     st.chat = None;
-    st.audio_error = (!errors.is_empty()).then(|| errors.join("; "));
+    st.audio_error = errors
+        .iter()
+        .cloned()
+        .chain(
+            open_now
+                .no_mic
+                .then(|| "microphone: none found".to_string()),
+        )
+        .reduce(|a, b| format!("{a}; {b}"));
+    st.mic_error = mic_error;
     open_now.errors = errors;
     open_now
 }
 
-/// The chosen microphone is there again after `start` had to use the default one instead.
-fn chosen_mic_back(open: &Open, settings: &Settings) -> bool {
+/// A better microphone than the open one is there now: the chosen one is back, or one was
+/// connected where there was none. Returns its name, for the log.
+fn better_mic(open: &Open, settings: &Settings) -> Option<String> {
     let wanted = settings.microphone_device.trim();
-    open.mic_stand_in
-        && cpal::default_host()
-            .input_devices()
-            .is_ok_and(|mut it| it.any(|d| d.to_string() == wanted))
+    let best = if wanted.is_empty() {
+        Found::Default
+    } else {
+        Found::Chosen
+    };
+    let now = match open.mic {
+        _ if open.no_mic => None,
+        Some(f) if f > best => Some(f),
+        // The best one is open, or the one found wouldn't open (that's tried again later).
+        _ => return None,
+    };
+    let (_, name, found) = mic_choices(&cpal::default_host(), wanted)
+        .into_iter()
+        .next()?;
+    now.is_none_or(|f| found < f).then_some(name)
 }
 
 /// The wait before opening again what failed to open: 2 s, doubling up to 5 minutes. A device
@@ -378,17 +571,17 @@ impl Backoff {
 }
 
 /// The default output or input device changed (headphones plugged in, say). Only a stream opened
-/// on a device counts: the voice-chat split captures by process, whatever the device.
+/// on a device counts: the voice-chat split captures by process, whatever the device. The
+/// microphone counts while it's the default (or the first input, with no default set).
 fn defaults_changed(open: &Open, settings: &Settings) -> bool {
     let host = cpal::default_host();
-    let id = |d: Option<cpal::Device>| d.and_then(|d| d.id().ok()).map(|i| format!("{i:?}"));
+    let id = |d: Option<cpal::Device>| d.as_ref().and_then(id_of);
     (cfg!(windows)
         && settings.desktop_audio
         && open.output_id.is_some()
         && id(host.default_output_device()) != open.output_id)
-        || ((settings.microphone || settings.voice_clip)
-            && settings.microphone_device.trim().is_empty()
-            && id(host.default_input_device()) != open.input_id)
+        || (matches!(open.mic, Some(Found::Default | Found::First))
+            && id(host.default_input_device()) != open.input_default_id)
 }
 
 /// Runs until `shared.stop` is set. Call on its own thread: cpal streams stay on the thread that
@@ -468,8 +661,8 @@ pub fn run(shared: Arc<Shared>) {
                     info!("default audio device changed; reopening");
                     break;
                 }
-                if chosen_mic_back(&open_now, &settings) {
-                    info!("{} is back; reopening", settings.microphone_device.trim());
+                if let Some(name) = better_mic(&open_now, &settings) {
+                    info!("microphone {name:?} is there now; reopening");
                     break;
                 }
             }
@@ -489,6 +682,110 @@ mod tests {
         assert_eq!(waits, [2, 4, 8, 16, 32, 64, 128, 256, 300, 300]);
         b.reset();
         assert_eq!(b.next(), Duration::from_secs(2));
+    }
+
+    /// Inputs as Windows lists them on a PC with a USB mic, a wireless headset and virtual ones.
+    fn listed() -> Vec<String> {
+        [
+            "CABLE Output (VB-Audio Virtual Cable)",
+            "Microphone (Voicemod)",
+            "Microphone (HD Pro Webcam C920)",
+            "Microphone (Shure MV7+)",
+            "Headset Microphone (4- Logitech G535 Gaming Headset)",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    #[test]
+    fn device_names_drop_windows_numbering() {
+        assert_eq!(
+            plain_name("Headset Microphone (4- Logitech G535 Gaming Headset)"),
+            "headset microphone (logitech g535 gaming headset)"
+        );
+        assert_eq!(
+            plain_name("12- Microphone  (Shure MV7+) "),
+            "microphone (shure mv7+)"
+        );
+        // A number that's part of the name stays.
+        assert_eq!(
+            plain_name("Mic (2-channel Realtek(R) Audio)"),
+            "mic (2-channel realtek(r) audio)"
+        );
+        assert_eq!(
+            device_part("microphone (realtek(r) audio)"),
+            Some("realtek(r) audio")
+        );
+        assert_eq!(device_part("line in"), None);
+    }
+
+    #[test]
+    fn the_chosen_microphone_is_found_by_its_name() {
+        let names = listed();
+        assert_eq!(
+            mic_order("Microphone (Shure MV7+)", &names, Some(1)),
+            [(3, Found::Chosen)]
+        );
+    }
+
+    #[test]
+    fn a_microphone_numbered_again_is_still_found() {
+        // The headset's dongle moved to another USB port: "4-" became "2-", or went.
+        let mut names = listed();
+        names[4] = "Headset Microphone (2- Logitech G535 Gaming Headset)".into();
+        let wanted = "Headset Microphone (4- Logitech G535 Gaming Headset)";
+        assert_eq!(mic_order(wanted, &names, Some(1)), [(4, Found::Renamed)]);
+        names[4] = "Headset Microphone (Logitech G535 Gaming Headset)".into();
+        assert_eq!(mic_order(wanted, &names, Some(1)), [(4, Found::Renamed)]);
+        // Renamed in Windows' sound settings: still the device's one input.
+        names[4] = "Headset Mic (2- Logitech G535 Gaming Headset)".into();
+        assert_eq!(mic_order(wanted, &names, Some(1)), [(4, Found::SameDevice)]);
+    }
+
+    #[test]
+    fn another_input_of_the_same_card_isnt_the_microphone() {
+        let names = [
+            "Line In (Realtek(R) Audio)".to_string(),
+            "Stereo Mix (Realtek(R) Audio)".to_string(),
+        ];
+        assert_eq!(
+            mic_order("Microphone (Realtek(R) Audio)", &names, Some(1)),
+            [(1, Found::Default)]
+        );
+    }
+
+    #[test]
+    fn a_missing_microphone_falls_back_to_the_default_then_the_first_that_opens() {
+        let mut names = listed();
+        names.remove(3);
+        assert_eq!(
+            mic_order("Microphone (Shure MV7+)", &names, Some(1)),
+            [(1, Found::Default)]
+        );
+        assert_eq!(mic_order("", &names, Some(0)), [(0, Found::Default)]);
+        // No default set: every input in turn, until one opens.
+        assert_eq!(
+            mic_order("", &names[..2], None),
+            [(0, Found::First), (1, Found::First)]
+        );
+        assert_eq!(mic_order("Microphone (Shure MV7+)", &[], None), []);
+    }
+
+    #[test]
+    fn the_log_says_why_a_microphone_was_used() {
+        let wanted = "Microphone (Shure MV7+)";
+        assert_eq!(
+            mic_report("Microphone (Shure MV7+)", Found::Chosen, wanted),
+            "\"Microphone (Shure MV7+)\""
+        );
+        assert_eq!(
+            mic_report("Microphone (Voicemod)", Found::Default, wanted),
+            "\"Microphone (Voicemod)\" (the default, until \"Microphone (Shure MV7+)\" is connected)"
+        );
+        assert_eq!(
+            mic_report("Microphone (Voicemod)", Found::Default, ""),
+            "\"Microphone (Voicemod)\" (the default)"
+        );
     }
 
     /// cpal reads devices from a multithreaded COM thread, as the audio thread now is. Asks for

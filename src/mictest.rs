@@ -120,17 +120,9 @@ fn run(
     phase: &Mutex<Phase>,
     name: &Mutex<String>,
 ) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = if wanted.is_empty() {
-        host.default_input_device()
-    } else {
-        host.input_devices()
-            .ok()
-            .and_then(|mut it| it.find(|d| d.to_string() == wanted))
-            .or_else(|| host.default_input_device())
-    }
-    .ok_or("No microphone found.")?;
-    *name.lock().unwrap() = device.to_string();
+    // The one clips get, so the test hears what they will.
+    let (device, found) = crate::audio::microphone_for(wanted).ok_or("No microphone found.")?;
+    *name.lock().unwrap() = found;
     let config = device.default_input_config().map_err(|e| e.to_string())?;
     let (rate, channels) = (config.sample_rate(), config.channels());
     let take: Arc<Mutex<Option<Vec<f32>>>> = Arc::default();
