@@ -1151,7 +1151,7 @@ mod tests {
             "{link:?}"
         );
         assert_eq!(link.expires, Some(link.created + LIFETIME));
-        assert_eq!(sent.load(Ordering::Relaxed) > 0, true);
+        assert!(sent.load(Ordering::Relaxed) > 0);
     }
 
     #[test]
