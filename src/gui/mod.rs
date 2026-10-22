@@ -697,17 +697,25 @@ impl App {
         }
     }
 
-    /// Moves files to Recently deleted, with Undo on the notice.
+    /// Moves files to Recently deleted, with Undo on the notice. A file that can't be moved stays
+    /// where it is, and the notice says why.
     fn delete(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
+        if paths.is_empty() {
+            return Task::none();
+        }
         let dir = self.settings.save_dir();
         let now = share::now_secs();
-        let (mut moved, mut failed) = (Vec::new(), None);
+        let (mut moved, mut failed) = (Vec::new(), Vec::new());
         for p in &paths {
+            // Windows can't move a file something has open, so first stop what in Kairo reads it:
+            // the editor's player and filmstrip, a hover preview, the banner picture.
             if let Some(e) = &mut self.editor
                 && e.clip == *p
             {
                 e.release();
             }
+            let _held = crate::ffmpeg::stop_reading(p);
+            self.forget_preview(p);
             match lib::trash(&dir, p, now) {
                 Ok(to) => {
                     moved.push(to);
@@ -720,28 +728,67 @@ impl App {
                         self.page = Page::Library;
                     }
                 }
-                Err(e) => failed = Some(e.to_string()),
+                Err(e) => {
+                    crate::log::warning!("couldn't move {} to Recently deleted: {e}", p.display());
+                    failed.push((p.clone(), self.why_not(p, &e)));
+                }
             }
         }
         if self.selected.is_empty() {
             self.selecting = false;
         }
-        match failed {
-            Some(e) => self.note(format!("Couldn't delete: {e}"), false),
-            None => {
-                self.note(
-                    match moved.len() {
-                        1 => "Moved to Recently deleted.".to_string(),
-                        n => format!("Moved {n} files to Recently deleted."),
-                    },
-                    true,
-                );
-                if let Some(n) = &mut self.notice {
-                    n.undo = moved;
+        let text = match (moved.len(), failed.as_slice()) {
+            (1, []) => "Moved to Recently deleted.".to_string(),
+            (n, []) => format!("Moved {n} files to Recently deleted."),
+            (n, [(p, why), rest @ ..]) => {
+                let what = match rest.len() {
+                    0 => format!("\"{}\"", stem(p)),
+                    more => format!("\"{}\" and {more} more", stem(p)),
+                };
+                match n {
+                    0 => format!("Couldn't move {what} to Recently deleted: {why}."),
+                    1 => format!("Moved 1 file to Recently deleted. Couldn't move {what}: {why}."),
+                    n => {
+                        format!("Moved {n} files to Recently deleted. Couldn't move {what}: {why}.")
+                    }
                 }
             }
+        };
+        self.note(text, failed.is_empty());
+        // Undo puts back what did move, even when something didn't.
+        if let Some(n) = &mut self.notice {
+            n.undo = moved;
         }
         self.reload()
+    }
+
+    /// Why `p` couldn't be moved or deleted, in plain words; when it's Kairo itself still using
+    /// it, says what.
+    fn why_not(&self, p: &Path, e: &std::io::Error) -> String {
+        if lib::in_use(e) {
+            if self.uploads.iter().any(|u| u.clip == p) {
+                return "Kairo is still making its copy to share. Wait for the link, or cancel it, \
+                        then try again"
+                    .into();
+            }
+            if self
+                .editor
+                .as_ref()
+                .is_some_and(|ed| ed.clip == p && ed.busy())
+            {
+                return "Kairo is still working on it in the editor. Wait for that to finish, then \
+                        try again"
+                    .into();
+            }
+        }
+        lib::why(e)
+    }
+
+    /// Drops the hover preview of `p`: one stopped part way (for a delete) isn't kept.
+    fn forget_preview(&mut self, p: &Path) {
+        self.strips.remove(p);
+        self.strip_order.retain(|q| q != p);
+        self.strip_loading.remove(p);
     }
 
     /// Puts files in Recently deleted back where they were.
@@ -754,11 +801,18 @@ impl App {
         for p in &paths {
             match lib::restore(&dir, p) {
                 Ok(_) => self.trash.retain(|t| t.path != *p),
-                Err(e) => failed = Some(e.to_string()),
+                Err(e) => {
+                    crate::log::warning!("couldn't put back {}: {e}", p.display());
+                    failed = Some(format!(
+                        "Couldn't put \"{}\" back: {}.",
+                        stem(p),
+                        lib::why(&e)
+                    ));
+                }
             }
         }
         match failed {
-            Some(e) => self.note(format!("Couldn't put it back: {e}"), false),
+            Some(e) => self.note(e, false),
             None if paths.len() > 1 => self.note(format!("Put back {} files.", paths.len()), true),
             None => self.note("Put back.", true),
         }
@@ -1152,7 +1206,10 @@ impl App {
                 }
             }
             Message::Strip(p, frames) => {
-                self.strip_loading.remove(&p);
+                // Not waited for any more: stopped part way, as its clip was being deleted.
+                if !self.strip_loading.remove(&p) {
+                    return Task::none();
+                }
                 self.strip_order.retain(|q| *q != p);
                 self.strip_order.push(p.clone());
                 self.strips.insert(p, frames);
@@ -1413,12 +1470,19 @@ impl App {
                             l.forget(&from);
                             self.trash.retain(|t| t.path != *p);
                         }
-                        Err(e) => failed = Some(e.to_string()),
+                        Err(e) => {
+                            crate::log::warning!("couldn't delete {}: {e}", p.display());
+                            failed = Some(format!(
+                                "Couldn't delete \"{}\" for good: {}.",
+                                stem(&from),
+                                lib::why(&e)
+                            ));
+                        }
                     }
                 }
                 let _ = l.save();
                 match failed {
-                    Some(e) => self.note(format!("Couldn't delete: {e}"), false),
+                    Some(e) => self.note(e, false),
                     None if gone > 1 => self.note(format!("Deleted {gone} files for good."), true),
                     None => self.note("Deleted for good.", true),
                 }

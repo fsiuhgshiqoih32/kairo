@@ -2988,11 +2988,14 @@ pub(super) fn filmstrip(
     else {
         return Vec::new();
     };
+    // Deleting the clip stops it (it reads the whole file, which takes a while for a big one).
+    let out = child.stdout.take();
+    let reading = ffmpeg::Reading::new(clip, child);
     let mut bytes = Vec::new();
-    if let Some(out) = child.stdout.as_mut() {
+    if let Some(mut out) = out {
         let _ = out.read_to_end(&mut bytes);
     }
-    let _ = child.wait();
+    let _ = reading.wait();
     let n = size.0 as usize * size.1 as usize * 4;
     bytes
         .chunks_exact(n)

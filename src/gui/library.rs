@@ -158,10 +158,11 @@ pub fn hero_picture(clip: &Path, at: f64) -> Option<image::Handle> {
     if made.is_none() || made < clip_time {
         let ff = crate::ffmpeg::path().ok()?;
         let _ = std::fs::create_dir_all(crate::save::thumbs_dir());
-        crate::ffmpeg::run(
+        crate::ffmpeg::run_reading(
             &ff,
             &kairo::args::hero_args(clip, at, &out),
             std::time::Duration::from_secs(20),
+            clip,
         )
         .ok()?;
     }
