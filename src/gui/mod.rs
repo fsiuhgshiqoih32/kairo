@@ -1233,7 +1233,7 @@ impl App {
             Message::UploadTick => return self.poll_uploads(),
             Message::CancelUpload(p) => {
                 for u in self.uploads.iter().filter(|u| u.clip == p) {
-                    u.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    u.cancel();
                 }
             }
             Message::TakeScreenshot => {

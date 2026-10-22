@@ -23,6 +23,9 @@ pub(super) const W: f32 = 400.0;
 pub(super) const H: f32 = 112.0;
 const MARGIN: f32 = 16.0;
 const SHOW_FOR: Duration = Duration::from_secs(6);
+/// How long a press of the close button waits for the second press that stops an upload.
+const STOP_WITHIN: Duration = Duration::from_secs(5);
+const STOP_ASK: &str = "Close again to stop the upload.";
 
 pub enum Message {
     /// With `share`, the clip is uploaded straight away and its link copied.
@@ -54,7 +57,10 @@ pub(super) struct Toast {
     shown: Instant,
     hovered: bool,
     status: Option<(String, bool)>,
+    /// Runs in this process: closing the card ends it, so the card stays until it's done.
     upload: Option<share::Upload>,
+    /// When close was pressed during the upload; a second press soon after stops it.
+    stopping: Option<Instant>,
     id: Option<window::Id>,
 }
 
@@ -154,6 +160,7 @@ impl Toast {
             hovered: false,
             status: None,
             upload: None,
+            stopping: None,
             id: None,
         };
         if share {
@@ -221,22 +228,33 @@ impl Toast {
             Msg::Tick => {
                 if let Some(up) = &self.upload {
                     self.shown = Instant::now();
+                    if self.stopping.is_some_and(|t| t.elapsed() > STOP_WITHIN) {
+                        self.stopping = None;
+                        if self.status.as_ref().is_some_and(|(s, _)| s == STOP_ASK) {
+                            self.status = None;
+                        }
+                    }
                     if let Some(result) = up.take() {
                         self.upload = None;
+                        self.stopping = None;
                         match result {
                             Ok(link) => {
                                 self.status =
                                     Some(("Link copied! Paste it anywhere.".into(), true));
                                 return iced::clipboard::write(link.url);
                             }
-                            Err(e) => self.status = Some((e, false)),
+                            // The whole reason is in the log; the card has room for a line.
+                            Err(e) => self.status = Some((share::brief(&e), false)),
                         }
                     }
                     return Task::none();
                 }
+                // A failed share stays longer, with Get link to try again.
                 let limit = if matches!(self.msg, Message::Update { .. }) {
                     SHOW_FOR * 4
-                } else if matches!(self.msg, Message::Failed(_)) {
+                } else if matches!(self.msg, Message::Failed(_))
+                    || matches!(self.status, Some((_, false)))
+                {
                     SHOW_FOR * 2
                 } else {
                     SHOW_FOR
@@ -250,6 +268,17 @@ impl Toast {
             Msg::Hover(h) => self.hovered = h,
             Msg::Open => {
                 match &self.msg {
+                    // The link is made in this process: the card stays until it's done.
+                    Message::Saved { clip, .. } if self.upload.is_some() => {
+                        crate::app::open_clip(clip);
+                        self.status = Some(("Opened. The link is on its way.".into(), true));
+                        return Task::none();
+                    }
+                    Message::Screenshot(p) if self.upload.is_some() => {
+                        crate::app::open(p);
+                        self.status = Some(("Opened. The link is on its way.".into(), true));
+                        return Task::none();
+                    }
                     Message::Saved { clip, .. } => crate::app::open_clip(clip),
                     Message::Screenshot(p) => crate::app::open(p),
                     Message::Failed(_) => {}
@@ -289,8 +318,14 @@ impl Toast {
                 }
             }
             Msg::Close => {
+                // Closing ends the upload with this process: the first press says so.
                 if let Some(up) = &self.upload {
-                    up.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if !self.stopping.is_some_and(|t| t.elapsed() <= STOP_WITHIN) {
+                        self.stopping = Some(Instant::now());
+                        self.status = Some((STOP_ASK.into(), false));
+                        return Task::none();
+                    }
+                    up.cancel();
                 }
                 return iced::exit();
             }
@@ -555,11 +590,15 @@ impl Toast {
                                 .wrapping(text::Wrapping::None)
                         )
                         .clip(true),
-                        text(line).size(11).color(if ok {
-                            theme::muted()
-                        } else {
-                            theme::accent()
-                        }),
+                        // One line: the card's height is fixed, and a longer one would push the
+                        // buttons out.
+                        container(
+                            text(line)
+                                .size(11)
+                                .wrapping(text::Wrapping::None)
+                                .color(if ok { theme::muted() } else { theme::accent() })
+                        )
+                        .clip(true),
                         Space::new().height(Fill),
                         bottom,
                     ]
@@ -622,4 +661,100 @@ fn system_notification(msg: &Message) -> Result<(), String> {
     cmd.status()
         .map(|_| ())
         .map_err(|e| format!("notify-send: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved() -> Toast {
+        Toast::new(Message::Saved {
+            clip: PathBuf::from("VALORANT 2026-10-22 16-43-40.mp4"),
+            seconds: 62.0,
+            share: false,
+        })
+    }
+
+    #[test]
+    fn closing_during_an_upload_asks_first() {
+        let mut t = saved();
+        t.upload = Some(share::Upload::frozen(Path::new("a.mp4"), 300, 0, 1));
+        let _ = t.update(Msg::Close);
+        assert!(t.upload.is_some(), "the first press only warns");
+        assert_eq!(t.status, Some((STOP_ASK.into(), false)));
+        let _ = t.update(Msg::Close);
+        let up = t.upload.as_ref().unwrap();
+        assert_eq!(
+            up.take(),
+            Some(Err("Cancelled".into())),
+            "the second stops it"
+        );
+    }
+
+    /// A share that ends without a link says so in the card's one line, and the buttons come
+    /// back for another go.
+    #[test]
+    fn a_stopped_share_says_so() {
+        let mut t = saved();
+        t.upload = Some(share::Upload::frozen(Path::new("a.mp4"), UPLOADING, 0, 1));
+        t.upload.as_ref().unwrap().cancel();
+        let _ = t.update(Msg::Tick);
+        assert!(t.upload.is_none());
+        assert_eq!(t.status, Some(("Stopped.".into(), false)));
+    }
+
+    /// What `share::Upload` keeps in its copy progress once the copy's done.
+    const UPLOADING: u64 = u64::MAX;
+
+    /// The card while a link is made, when it fails and when it's asked to close, drawn without
+    /// a window: `KAIRO_SNAPSHOTS=<dir> cargo test -- --ignored toast::tests::sharing_pictures`.
+    #[test]
+    #[ignore]
+    fn sharing_pictures() {
+        let dir = PathBuf::from(std::env::var("KAIRO_SNAPSHOTS").expect("set KAIRO_SNAPSHOTS"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shoot = |t: &Toast, name: &str| {
+            let settings = iced::Settings {
+                fonts: theme::FONTS
+                    .iter()
+                    .map(|f| std::borrow::Cow::Borrowed(*f))
+                    .collect(),
+                default_font: theme::FONT,
+                ..Default::default()
+            };
+            // A picture already there is compared, not replaced.
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                if e.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{name}-"))
+                {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+            let mut ui = iced_test::Simulator::with_size(settings, (W, H), t.view());
+            let snap = ui.snapshot(&theme::theme()).expect("snapshot");
+            snap.matches_image(dir.join(format!("{name}.png")))
+                .expect("write png");
+        };
+        let mut t = saved();
+        t.upload = Some(share::Upload::frozen(Path::new("a.mp4"), 420, 0, 1));
+        shoot(&t, "toast-preparing");
+        t.upload = Some(share::Upload::frozen(Path::new("a.mp4"), UPLOADING, 9, 10));
+        shoot(&t, "toast-uploading");
+        let _ = t.update(Msg::Close);
+        shoot(&t, "toast-close-again");
+        t.upload = None;
+        t.stopping = None;
+        t.status = Some((
+            share::brief(
+                "litterbox.catbox.moe isn't working right now (error 502). Kairo tried every \
+                 file host it uses. Check your internet connection or try again in a few minutes.",
+            ),
+            false,
+        ));
+        shoot(&t, "toast-failed");
+        // Whatever comes, the line stays one line.
+        t.status = Some(("x ".repeat(80), false));
+        shoot(&t, "toast-long-line");
+    }
 }

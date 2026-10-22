@@ -53,7 +53,11 @@ impl Job {
     }
 
     pub fn finished(&self) -> bool {
-        self.status.lock().unwrap().result.is_some()
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .result
+            .is_some()
     }
 }
 
@@ -111,16 +115,19 @@ pub fn start(
                 )),
                 progress: (0.0, 1.0),
             };
-            let result = if kairo::cuts::cuts_into(range, &cuts) {
-                run_cut(&job, &cuts, &encoders, &eff, &status, &cancel)
-            } else {
-                run(&job, &encoders, &eff, &status, &cancel)
-            };
+            // A panic is an error too: the editor waits on the result (its Get link with it).
+            let result = crate::app::unless_panic(|| {
+                if kairo::cuts::cuts_into(range, &cuts) {
+                    run_cut(&job, &cuts, &encoders, &eff, &status, &cancel)
+                } else {
+                    run(&job, &encoders, &eff, &status, &cancel)
+                }
+            });
             let _ = std::fs::remove_dir_all(&job.burns_dir);
             if let Err(e) = &result {
                 warning!("export failed: {e}");
             }
-            status.lock().unwrap().result = Some(result);
+            status.lock().unwrap_or_else(|e| e.into_inner()).result = Some(result);
         });
     }
     Job {
@@ -683,7 +690,11 @@ fn encode(
     })
 }
 
+/// How long an encode may go without getting further before it's taken as stuck.
+const STUCK_AFTER: Duration = Duration::from_secs(180);
+
 /// Runs one ffmpeg encode, reporting how far along it is (0 to 1) from its `-progress` lines.
+/// Cancelling ends ffmpeg at once, even while it prints nothing, and so does getting stuck.
 pub fn encode_with(
     ff: &Path,
     a: &[String],
@@ -691,6 +702,18 @@ pub fn encode_with(
     part: &Path,
     cancel: &AtomicBool,
     progress: &dyn Fn(f32),
+) -> Result<(), String> {
+    encode_watched(ff, a, length, part, cancel, progress, STUCK_AFTER)
+}
+
+fn encode_watched(
+    ff: &Path,
+    a: &[String],
+    length: f64,
+    part: &Path,
+    cancel: &AtomicBool,
+    progress: &dyn Fn(f32),
+    stuck_after: Duration,
 ) -> Result<(), String> {
     let mut child = ffmpeg::spawn(
         ffmpeg::command(ff)
@@ -705,20 +728,55 @@ pub fn encode_with(
         let _ = std::io::Read::read_to_string(&mut BufReader::new(err), &mut s);
         s
     });
+    // Its progress is read on a thread of its own, so this one can watch for a cancel.
     let out = BufReader::new(child.stdout.take().expect("piped"));
-    for line in out.lines() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in out.lines() {
+            let Ok(line) = line else { break };
+            if let Some(t) = media::progress_secs(&line)
+                && tx.send(t).is_err()
+            {
+                break;
+            }
+        }
+    });
+    let stop = |child: &mut std::process::Child, why: &str| {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(part);
+        Err(why.to_string())
+    };
+    let (mut done, mut moved) = (-1.0, std::time::Instant::now());
+    let st = loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(t) => {
+                if t > done {
+                    done = t;
+                    moved = std::time::Instant::now();
+                }
+                progress((t / length.max(0.01)).clamp(0.0, 1.0) as f32);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // Its output closed: it's finishing.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+        }
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_file(part);
-            return Err("Cancelled".into());
+            return stop(&mut child, "Cancelled");
         }
-        let Ok(line) = line else { break };
-        if let Some(t) = media::progress_secs(&line) {
-            progress((t / length.max(0.01)).clamp(0.0, 1.0) as f32);
+        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
+            break st;
         }
-    }
-    let st = child.wait().map_err(|e| e.to_string())?;
+        if moved.elapsed() > stuck_after {
+            warning!("ffmpeg got stuck at {done:.1} s of {length:.1} s; stopping it");
+            return stop(
+                &mut child,
+                "ffmpeg stopped getting anywhere, so Kairo ended it. Try again.",
+            );
+        }
+    };
     let text = errors.join().unwrap_or_default();
     if cancel.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(part);
@@ -734,6 +792,50 @@ pub fn encode_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for an ffmpeg that hangs: it runs half a minute and reports no progress.
+    fn hanging() -> (PathBuf, Vec<String>) {
+        if cfg!(windows) {
+            let a = ["-n", "30", "127.0.0.1"];
+            ("ping".into(), a.map(String::from).to_vec())
+        } else {
+            ("sleep".into(), vec!["30".into()])
+        }
+    }
+
+    /// The friend's "broke and stopped" could be an ffmpeg that hung: the card sat at
+    /// "Preparing" and Cancel did nothing, as nothing was read until ffmpeg printed a line.
+    #[test]
+    fn a_stuck_encode_is_ended() {
+        let (ff, args) = hanging();
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("x.mp4");
+        std::fs::write(&part, b"half").unwrap();
+        let started = std::time::Instant::now();
+        let stuck = Duration::from_millis(500);
+        let no = AtomicBool::new(false);
+        let e = encode_watched(&ff, &args, 10.0, &part, &no, &|_| {}, stuck).unwrap_err();
+        assert!(e.contains("stopped getting anywhere"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!part.exists());
+    }
+
+    #[test]
+    fn cancelling_ends_an_encode_that_prints_nothing() {
+        let (ff, args) = hanging();
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("x.mp4");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let c = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            c.store(true, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        let e = encode_with(&ff, &args, 10.0, &part, &cancel, &|_| {}).unwrap_err();
+        assert_eq!(e, "Cancelled");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     /// Burns animated text into a copy of a made-up clip, and keeps a few frames
     /// to look at: `KAIRO_SNAPSHOTS=<dir> cargo test -- --ignored export::tests::stamps`.

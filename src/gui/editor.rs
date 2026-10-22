@@ -2507,11 +2507,27 @@ impl Editor {
             ]
             .spacing(10)
             .into()
-        } else if preparing {
-            text("Making the trimmed part to share...")
-                .size(13)
-                .color(theme::ink_2())
-                .into()
+        } else if let Some(job) = self.job.as_ref().filter(|_| preparing) {
+            // The styled copy comes first; it can take a while, so it shows how far it is.
+            let p = job.status.lock().map_or(0.0, |s| s.progress);
+            column![
+                row![
+                    text(format!("Preparing {:.0}%", p * 100.0))
+                        .size(13)
+                        .font(MEDIUM),
+                    space::horizontal(),
+                    text("Making the styled copy")
+                        .size(12)
+                        .color(theme::muted())
+                ],
+                progress_bar(0.0..=1.0, p).girth(6).style(theme::progress),
+                button(text("Cancel").size(12).font(MEDIUM))
+                    .padding(Padding::from([6, 10]))
+                    .style(theme::ghost)
+                    .on_press(Msg::CancelExport),
+            ]
+            .spacing(10)
+            .into()
         } else if let Some(link) = share.link {
             let url = link.url.clone();
             column![

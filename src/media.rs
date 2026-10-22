@@ -922,6 +922,8 @@ pub struct SharePlan {
     pub height: Option<u32>,
     /// Drop to this frame rate, if lower than the clip's.
     pub fps: Option<u32>,
+    /// Encode with a faster setting: a link copy's bitrate leaves room, and it's waited on.
+    pub quick: bool,
 }
 
 /// The lowest video bitrate worth sending; below it, ask for a shorter clip instead.
@@ -965,6 +967,7 @@ pub fn share_plan(
         audio_bps,
         height,
         fps,
+        quick: false,
     })
 }
 
@@ -979,7 +982,29 @@ pub fn web_plan(limit_bytes: u64, duration: f64, src: &Info) -> Result<SharePlan
     if src.fps > 61.0 {
         p.fps = Some(p.fps.map_or(60, |f| f.min(60)));
     }
+    p.quick = true;
     Ok(p)
+}
+
+/// The video options for a share copy by `plan`: a quick plan takes the encoder's faster
+/// setting (a quarter faster on NVIDIA, more on the CPU, about the same picture at its
+/// bitrate).
+fn share_video_opts(encoder: Encoder, plan: &SharePlan, fps: u32) -> Vec<String> {
+    let mut v = export_video_opts(encoder, plan.video_bps, fps, true);
+    let faster = match encoder {
+        Encoder::Nvenc => Some(("-preset", "p4")),
+        Encoder::X264 => Some(("-preset", "superfast")),
+        Encoder::Amf => Some(("-quality", "balanced")),
+        _ => None,
+    };
+    if plan.quick
+        && let Some((option, value)) = faster
+        && let Some(i) = v.iter().position(|o| o == option)
+        && i + 1 < v.len()
+    {
+        v[i + 1] = value.to_string();
+    }
+    v
 }
 
 /// Encodes `start..end` of the clip by `plan`, sound track 1 only (what Discord plays), with
@@ -1015,7 +1040,7 @@ pub fn share_args(
             s("-c:v"),
             s(encoder.ffmpeg_name()),
         ]);
-        a.extend(export_video_opts(encoder, plan.video_bps, out_fps, true));
+        a.extend(share_video_opts(encoder, plan, out_fps));
         a.extend([s("-c:a"), s("aac"), s("-b:a"), plan.audio_bps.to_string()]);
         a.extend([
             s("-movflags"),
@@ -1052,7 +1077,7 @@ pub fn share_args(
         a.extend([s("-vf"), filters.join(",")]);
     }
     a.extend([s("-c:v"), s(encoder.ffmpeg_name())]);
-    a.extend(export_video_opts(encoder, plan.video_bps, fps, true));
+    a.extend(share_video_opts(encoder, plan, fps));
     a.extend([s("-c:a"), s("aac"), s("-b:a"), plan.audio_bps.to_string()]);
     a.extend([
         s("-movflags"),
@@ -1265,6 +1290,48 @@ At least one output file must be specified";
         // Total bits stay under the limit.
         let p = share_plan(10_000_000, 45.0, &src, 1.0).unwrap();
         assert!(((p.video_bps + p.audio_bps) as f64 * 45.0 / 8.0) < 10_000_000.0 * 0.93);
+    }
+
+    /// Link copies (1440p at 120 fps here) are 1080p60 H.264 made with the encoder's faster
+    /// setting; Discord copies keep the careful one, their bitrate is tight.
+    #[test]
+    fn link_copies_are_quick() {
+        let src = Info {
+            duration: 30.0,
+            width: 2560,
+            height: 1440,
+            fps: 120.0,
+            video_codec: "h264".into(),
+            ..Default::default()
+        };
+        let link = web_plan(190_000_000, 30.0, &src).unwrap();
+        assert!(link.quick);
+        assert_eq!((link.height, link.fps), (Some(1080), Some(60)));
+        assert_eq!(link.video_bps, 12_000_000);
+        let args = |plan: &SharePlan, e: Encoder| {
+            let eff = Effects::default();
+            let out = Path::new("o.mp4");
+            share_args(Path::new("i.mp4"), 0.0, 30.0, &src, &eff, plan, e, out).join(" ")
+        };
+        let a = args(&link, Encoder::Nvenc);
+        assert!(
+            a.contains("-vf fps=60,scale=-2:1080 -c:v h264_nvenc -preset p4 -rc cbr"),
+            "{a}"
+        );
+        assert!(args(&link, Encoder::X264).contains("libx264 -preset superfast"));
+        // VA-API copies are made on the CPU.
+        assert!(args(&link, Encoder::Vaapi).contains("libx264 -preset superfast"));
+        assert!(args(&link, Encoder::Amf).contains("h264_amf -quality balanced"));
+        let mf = args(&link, Encoder::MediaFoundation);
+        assert!(
+            mf.contains("h264_mf -hw_encoding 1 -rate_control cbr"),
+            "{mf}"
+        );
+        let discord = share_plan(10_000_000, 30.0, &src, 1.0).unwrap();
+        assert!(!discord.quick);
+        assert!(args(&discord, Encoder::Nvenc).contains("-preset p5"));
+        assert!(args(&discord, Encoder::X264).contains("-preset veryfast"));
+        assert!(args(&discord, Encoder::Amf).contains("-quality quality"));
     }
 
     #[test]
