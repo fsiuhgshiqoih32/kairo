@@ -2836,6 +2836,7 @@ dependencies = [
  "iced",
  "iced_test",
  "image",
+ "libc",
  "libloading 0.8.9",
  "log",
  "objc2 0.6.5",

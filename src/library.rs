@@ -315,11 +315,15 @@ impl Library {
     /// Reads clips.json, changes it with `f` and writes it back, with no other writer in
     /// between (the background process and the window both keep it).
     pub fn edit(f: impl FnOnce(&mut Library)) -> Result<(), String> {
-        let path = Self::path();
-        with_lock(&path, || {
-            let mut lib = Self::load_from(&path);
+        Self::edit_at(&Self::path(), f)
+    }
+
+    /// [`Library::edit`] on the clips.json at `path`.
+    pub fn edit_at(path: &Path, f: impl FnOnce(&mut Library)) -> Result<(), String> {
+        with_lock(path, || {
+            let mut lib = Self::load_from(path);
             f(&mut lib);
-            lib.save_to(&path)
+            lib.save_to(path)
         })
     }
 

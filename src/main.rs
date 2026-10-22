@@ -88,6 +88,15 @@ enum Cmd {
     Captions { clip: PathBuf },
     /// List screens, microphones and the encoders that work.
     Devices,
+    /// Copy your clips and screenshots from Medal into Kairo. Medal's own files stay as they are.
+    ImportMedal {
+        /// The folder Medal keeps its clips in, if Kairo doesn't find it.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Only say what would be imported, and where to.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show the "clip saved" notification.
     #[command(hide = true)]
     Notify {
@@ -205,6 +214,7 @@ fn main() {
         Some(Cmd::Pause) => request(daemon::Request::TogglePause),
         Some(Cmd::Quit) => request(daemon::Request::Quit),
         Some(Cmd::Devices) => devices(),
+        Some(Cmd::ImportMedal { from, dry_run }) => import_medal(from.as_deref(), dry_run),
         Some(Cmd::Captions { clip }) => captions(&clip),
         Some(Cmd::Edit { clip }) => {
             let clip = std::path::absolute(&clip).unwrap_or(clip);
@@ -366,6 +376,121 @@ fn devices() -> Result<(), String> {
     for e in ffmpeg::working_encoders(&ff) {
         println!("  {}", e.label());
     }
+    Ok(())
+}
+
+fn import_medal(from: Option<&std::path::Path>, dry_run: bool) -> Result<(), String> {
+    use kairo::medal::{self, Kind};
+    let settings = kairo::config::load(&kairo::config::default_path()).unwrap_or_default();
+    let app_data = medal::app_data();
+    let found = match from {
+        Some(dir) => medal::scan_folder(dir, app_data.as_deref()),
+        None => medal::find(app_data.as_deref(), &medal::default_folders()),
+    };
+    if found.items.is_empty() {
+        return Err(match from {
+            Some(dir) => format!("There are no Medal clips in {}.", dir.display()),
+            None => "Medal's clips weren't found. Say where they are with --from <folder>.".into(),
+        });
+    }
+    let folders: Vec<String> = found
+        .folders
+        .iter()
+        .map(|f| f.display().to_string())
+        .collect();
+    let games: std::collections::HashSet<&str> = found
+        .items
+        .iter()
+        .filter(|i| i.kind == Kind::Clip)
+        .map(|i| i.game.as_str())
+        .collect();
+    println!(
+        "Found {} ({}{}) in {}.",
+        medal::describe(
+            found.count(Kind::Clip),
+            found.count(Kind::Screenshot),
+            "Medal"
+        ),
+        gui::human_size(found.bytes()),
+        match games.len() {
+            0 => String::new(),
+            1 => ", from 1 game".into(),
+            n => format!(", from {n} games"),
+        },
+        folders.join(" and ")
+    );
+    let to = medal::Target::kairo(&settings);
+    let plan = medal::plan(&found, &to);
+    match plan.already {
+        0 => {}
+        1 => println!("1 is in Kairo already."),
+        n => println!("{n} are in Kairo already."),
+    }
+    if plan.copies.is_empty() {
+        println!("Nothing new to import.");
+        return Ok(());
+    }
+    let clips = plan.count(Kind::Clip);
+    let what = medal::describe(clips, plan.count(Kind::Screenshot), "");
+    let free = platform::free_space_for(&to.clips);
+    if dry_run {
+        for (item, dest) in &plan.copies {
+            println!("  {} -> {}", item.path.display(), dest.display());
+        }
+    }
+    println!(
+        "{} {what} ({}) to {}{}{}. They're copied; Medal's files stay where they are.",
+        if dry_run { "Would import" } else { "Importing" },
+        gui::human_size(plan.bytes()),
+        to.clips.display(),
+        free.map(|f| format!(" ({} free)", gui::human_size(f)))
+            .unwrap_or_default(),
+        if clips > 0 {
+            format!(", clips in the folder {}", medal::FOLDER)
+        } else {
+            String::new()
+        }
+    );
+    if !medal::fits(plan.bytes(), free) {
+        return Err(format!(
+            "Not enough room: importing needs {} free, and there's {}.",
+            gui::human_size(plan.bytes() + medal::SPARE_BYTES),
+            gui::human_size(free.unwrap_or(0))
+        ));
+    }
+    if dry_run {
+        return Ok(());
+    }
+    let progress = std::sync::Arc::new(std::sync::Mutex::new(medal::Progress::default()));
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let job = {
+        let (p, c) = (progress.clone(), cancel.clone());
+        std::thread::spawn(move || gui::medal::copy(&plan, &to, &p, &c))
+    };
+    // A line each time a file is done.
+    let mut shown = None;
+    while !job.is_finished() {
+        {
+            let p = progress.lock().unwrap();
+            if p.total > 0 && shown != Some(p.done) {
+                eprintln!(
+                    "Importing {} of {} ({} of {})",
+                    (p.done + 1).min(p.total),
+                    p.total,
+                    gui::human_size(p.bytes),
+                    gui::human_size(p.total_bytes)
+                );
+                shown = Some(p.done);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = job.join();
+    let (said, ok) = progress.lock().unwrap().summary();
+    if !ok {
+        return Err(said);
+    }
+    println!("{said}");
     Ok(())
 }
 

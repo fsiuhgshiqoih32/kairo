@@ -452,3 +452,18 @@ pub fn show_without_focus(raw: u64) -> bool {
     }
     true
 }
+
+/// Bytes free for this user on the drive `dir` is on (`dir` must exist).
+pub fn free_space(dir: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free = 0u64;
+    // SAFETY: a NUL-terminated path, and a u64 to write to; the totals aren't asked for.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, null_mut(), null_mut()) };
+    (ok != 0).then_some(free)
+}
