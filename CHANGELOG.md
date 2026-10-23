@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.2
+
+- **Tell Kairo what to do with a clip.** After your voice phrase saves a clip, say "rename it
+  to Insane Clutch" or "trim it to thirty seconds" (or "keep the last minute") and Kairo does
+  it to that clip, no window needed. A trimmed clip's full version waits in Recently deleted.
+- **Pop-ups you can turn off.** Settings has a Notifications section, and the tray menu has
+  Show pop-ups: off means nothing pops up while you play, update notices included.
+- **Easier on your PC while you play.** Saving a clip writes half as much to disk, Kairo's
+  window comes back by itself if the graphics card runs out of memory (say, with a game and a
+  Discord stream open), and a session stops and saves itself before your drive fills up.
+- **Sharper Discord copies.** Copies keep up to 60 fps and make the picture smaller instead,
+  use the bytes better (measured sharper at the same size), and come out at the right size on
+  the next try instead of guessing. Discord's free limit is now 20 MB, so that's an option and
+  the new default. Settings shows how big a clip comes out at your quality.
+- **Less memory.** Turning voice clipping off frees its speech model, and Automatic replay
+  storage keeps bigger buffers on disk, where Windows holds them instead of Kairo.
+- **Smaller fixes.** "Start fresh after saving" no longer splits a running session; a screen
+  capture that stops sending video starts again by itself; Recently deleted and your settings
+  can't be scrambled by two parts of Kairo writing at once; a stuck screenshot gives up; and an
+  update that can't finish puts everything back as it was.
+
 ## 0.6.1
 
 - **Import from Medal.** Coming from Medal? Press Import from Medal in Settings (an empty library
