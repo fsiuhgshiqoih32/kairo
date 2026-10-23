@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.4
+
+- **HDR screens record at the right brightness.** With Windows HDR on, clips came out much
+  brighter than the screen looked. Kairo now reads your HDR screen's SDR brightness and records
+  at it, so clips look like your screen, and bright HDR highlights fade smoothly instead of
+  clipping.
+- **Say how long.** "Clip that twenty seconds" or "clip that last two minutes" saves that much.
+  Add up to three more phrases with their own lengths ("clip the round" for two minutes), set
+  the phrase's own length, choose how sure Kairo must be before saving, and turn the "rename
+  it" and "trim it" follow-ups on or off.
+- **Settings, reorganised.** Tabs (Recording, Video, Sound, Voice, Sharing, Look, Kairo) and a
+  search box that finds any setting as you type.
+- **Make it yours.** Any accent colour (slide through every hue or type one in), a soft glow or
+  a picture of your own behind the window, bigger or smaller text, and a compact layout.
+- **Ten more save sounds**, from a coin and a level-up to a camera shutter, picked from a list
+  that plays each one.
+- **Better editing.** Zoom into the timeline with the mouse wheel (or + and -) for exact cuts,
+  step one frame at a time with the arrow keys while paused, and split, delete a part, undo and
+  redo from buttons beside the time.
+- **Fixes.** The Kairo logo in the corner of the window no longer flickers. Changing a setting
+  in the window no longer undoes one changed elsewhere (the tray's pop-ups switch, say).
+  "Trim it down to thirty seconds" heard without its first word now trims instead of renaming
+  the clip "Thirty Seconds".
+
 ## 0.6.3
 
 - **Alt-tabbing out of a game keeps your clip.** When a game changes the screen's resolution
