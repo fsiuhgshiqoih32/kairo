@@ -60,6 +60,9 @@ fn mark_button<'a>() -> Element<'a, Msg> {
 /// Seconds kept either side of a mark by "Keep 10 s around it".
 const MARK_SPAN: f64 = 5.0;
 const TIMELINE_H: f32 = 78.0;
+/// The timeline zooms in until it shows this many seconds across, or this many times closer.
+const MIN_VIEW_SECONDS: f64 = 1.5;
+const MAX_ZOOM: f64 = 64.0;
 const HANDLE_W: f32 = 12.0;
 /// Room above and below the filmstrip for the playhead.
 const EDGE: f32 = 7.0;
@@ -171,6 +174,16 @@ pub enum Msg {
     Split,
     /// Cuts out the part (between splits) under the playhead; the rest closes up.
     CutPart,
+    ZoomIn,
+    ZoomOut,
+    /// The whole clip on the timeline again.
+    ZoomFit,
+    /// Zooms by a factor, keeping the moment `t` under the pointer where it is.
+    ZoomAt(f64, f64),
+    /// Moves the zoomed timeline by a share of what it shows (negative: earlier).
+    ScrollView(f64),
+    /// One frame back (`true`) or on.
+    StepFrame(bool),
 }
 
 /// Everything an edit can change, kept whole for undo: the cut, the marks, the style, captions,
@@ -296,6 +309,9 @@ pub struct Editor {
     resume_after_grab: bool,
     last_scrub: f64,
     looping: bool,
+    /// How much closer the timeline shows the clip (1: all of it), and from where.
+    zoom: f64,
+    view_from: f64,
     job: Option<Job>,
     encoders: Arc<Mutex<Option<Vec<Encoder>>>>,
     last_export: Option<(PathBuf, bool)>,
@@ -393,6 +409,8 @@ impl Editor {
                 resume_after_grab: false,
                 last_scrub: -1.0,
                 looping: false,
+                zoom: 1.0,
+                view_from: 0.0,
                 job: None,
                 encoders,
                 last_export: None,
@@ -636,6 +654,43 @@ impl Editor {
         self.trim.0 > 0.01 || self.trim.1 < self.player.duration() - 0.01
     }
 
+    /// The stretch of the clip the timeline shows: all of it, or less when zoomed in.
+    fn view_span(&self) -> (f64, f64) {
+        let d = self.player.duration().max(0.001);
+        let w = d / self.zoom.max(1.0);
+        let from = self.view_from.clamp(0.0, (d - w).max(0.0));
+        (from, from + w)
+    }
+
+    /// Zooms to `zoom`, keeping the moment `around` where it is on the timeline.
+    fn zoom_to(&mut self, zoom: f64, around: f64) {
+        let d = self.player.duration().max(0.001);
+        let (a, b) = self.view_span();
+        let k = if b > a {
+            ((around - a) / (b - a)).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let most = (d / MIN_VIEW_SECONDS).clamp(1.0, MAX_ZOOM);
+        self.zoom = zoom.clamp(1.0, most);
+        let w = d / self.zoom;
+        self.view_from = (around - k * w).clamp(0.0, (d - w).max(0.0));
+    }
+
+    /// Keeps the playhead on the zoomed timeline as it plays or jumps.
+    fn follow_playhead(&mut self) {
+        if self.zoom <= 1.0 || self.grab.is_some() {
+            return;
+        }
+        let (a, b) = self.view_span();
+        let p = self.player.position;
+        if p < a || p > b {
+            let w = b - a;
+            let d = self.player.duration();
+            self.view_from = (p - w * 0.1).clamp(0.0, (d - w).max(0.0));
+        }
+    }
+
     fn toggle_play(&mut self) {
         let step = self.player.frame_step();
         if !self.player.is_playing()
@@ -696,8 +751,26 @@ impl Editor {
             }
             Key::Character("j") | Key::Character("J") => self.player.seek(pos - jump),
             Key::Character("l") | Key::Character("L") => self.player.seek(pos + jump),
-            Key::Named(Named::ArrowLeft) => self.player.seek(pos - jump),
-            Key::Named(Named::ArrowRight) => self.player.seek(pos + jump),
+            // Paused, the arrows step a frame (Shift: a second); playing, they jump.
+            Key::Named(Named::ArrowLeft | Named::ArrowRight) => {
+                let back = matches!(key.as_ref(), Key::Named(Named::ArrowLeft));
+                if self.player.is_playing() {
+                    self.player.seek(if back { pos - jump } else { pos + jump });
+                } else if modifiers.shift() {
+                    self.player.seek(if back { pos - 1.0 } else { pos + 1.0 });
+                } else {
+                    self.update(Msg::StepFrame(back));
+                }
+            }
+            Key::Character("=") | Key::Character("+") => {
+                self.update(Msg::ZoomIn);
+            }
+            Key::Character("-") | Key::Character("_") => {
+                self.update(Msg::ZoomOut);
+            }
+            Key::Character("0") => {
+                self.update(Msg::ZoomFit);
+            }
             Key::Named(Named::Home) => self.player.seek(self.trim.0),
             Key::Named(Named::End) => self.player.seek(self.trim.1),
             Key::Character(",") | Key::Character(".") => {
@@ -836,7 +909,14 @@ impl Editor {
     pub fn update(&mut self, msg: Msg) -> Effect {
         match msg {
             // Playback and loading change nothing undoable, and come often.
-            Msg::Frame | Msg::Strip(_) => return self.handle(msg),
+            Msg::Frame
+            | Msg::Strip(_)
+            | Msg::ZoomIn
+            | Msg::ZoomOut
+            | Msg::ZoomFit
+            | Msg::ZoomAt(..)
+            | Msg::ScrollView(_)
+            | Msg::StepFrame(_) => return self.handle(msg),
             Msg::Undo => {
                 if let Some(d) = self.undo.pop() {
                     self.redo.push(self.doc());
@@ -877,6 +957,22 @@ impl Editor {
     fn handle(&mut self, msg: Msg) -> Effect {
         match msg {
             Msg::Undo | Msg::Redo => {}
+            Msg::ZoomIn => self.zoom_to(self.zoom * 2.0, self.player.position),
+            Msg::ZoomOut => self.zoom_to(self.zoom / 2.0, self.player.position),
+            Msg::ZoomFit => self.zoom_to(1.0, self.player.position),
+            Msg::ZoomAt(k, t) => self.zoom_to(self.zoom * k, t),
+            Msg::ScrollView(share) => {
+                let (a, b) = self.view_span();
+                let d = self.player.duration();
+                self.view_from = (a + share * (b - a)).clamp(0.0, (d - (b - a)).max(0.0));
+            }
+            Msg::StepFrame(back) => {
+                self.player.pause();
+                let step = self.player.frame_step();
+                let pos = self.player.position;
+                self.player.seek(if back { pos - step } else { pos + step });
+                self.follow_playhead();
+            }
             Msg::Split => {
                 let t = self.player.position;
                 if t > self.trim.0 + 0.05 && t < self.trim.1 - 0.05 {
@@ -902,6 +998,7 @@ impl Editor {
                 }
             }
             Msg::Frame => {
+                self.follow_playhead();
                 let end = self.trim.1;
                 let was_playing = self.player.is_playing();
                 self.player.tick(end);
@@ -1576,11 +1673,13 @@ impl Editor {
                 Canvas::new(Strip {
                     strip: &self.strip,
                     aspect: self.player.info.width as f32 / self.player.info.height.max(1) as f32,
+                    duration: self.player.duration(),
+                    view: self.view_span(),
                 })
                 .width(Fill)
                 .height(TIMELINE_H),
                 Canvas::new(Timeline {
-                    duration: self.player.duration(),
+                    view: self.view_span(),
                     trim: self.trim,
                     position: self.player.position,
                     grab: self.grab,
@@ -1599,8 +1698,8 @@ impl Editor {
                 hint_key("O"),
                 text("start and end").size(12).color(theme::muted()),
                 Space::new().width(6),
-                hint_key(","),
-                hint_key("."),
+                hint_key("\u{2190}"),
+                hint_key("\u{2192}"),
                 text("one frame").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key("M"),
@@ -1608,6 +1707,13 @@ impl Editor {
                 Space::new().width(6),
                 hint_key("S"),
                 text("split").size(12).color(theme::muted()),
+                Space::new().width(6),
+                hint_key("X"),
+                text("delete part").size(12).color(theme::muted()),
+                Space::new().width(6),
+                hint_key("+"),
+                hint_key("-"),
+                text("zoom").size(12).color(theme::muted()),
                 Space::new().width(6),
                 hint_key("Ctrl+Z"),
                 text("undo").size(12).color(theme::muted()),
@@ -1675,7 +1781,94 @@ impl Editor {
         ]
         .align_y(Alignment::Center);
 
+        let tool = |i: Icon, label: &'static str, on: Option<Msg>| {
+            tip(
+                button(icon(
+                    i,
+                    16.0,
+                    if on.is_some() {
+                        theme::ink()
+                    } else {
+                        theme::muted()
+                    },
+                ))
+                .padding(8)
+                .style(theme::segment(false))
+                .on_press_maybe(on),
+                label,
+            )
+        };
+        let part_cut = self.has_cuts()
+            || kairo::cuts::part_at(self.trim, &self.splits, self.player.position) != self.trim;
+        let tools = row![
+            tip(
+                button(text("\u{2039}").size(18).font(SEMIBOLD))
+                    .padding(Padding::from([4, 11]))
+                    .style(theme::segment(false))
+                    .on_press(Msg::StepFrame(true)),
+                "One frame back (Left arrow while paused)",
+            ),
+            tip(
+                button(text("\u{203a}").size(18).font(SEMIBOLD))
+                    .padding(Padding::from([4, 11]))
+                    .style(theme::segment(false))
+                    .on_press(Msg::StepFrame(false)),
+                "One frame on (Right arrow while paused)",
+            ),
+            Space::new().width(6),
+            tool(
+                Icon::Scissors,
+                "Split here (S): cut the clip in two at the playhead",
+                Some(Msg::Split)
+            ),
+            tool(
+                Icon::Trash,
+                "Delete this part (X): split first, then delete the part under the playhead",
+                part_cut.then_some(Msg::CutPart)
+            ),
+            Space::new().width(6),
+            tool(
+                Icon::Undo,
+                "Undo (Ctrl+Z)",
+                self.can_undo().then_some(Msg::Undo)
+            ),
+            tool(
+                Icon::Redo,
+                "Redo (Ctrl+Y)",
+                self.can_redo().then_some(Msg::Redo)
+            ),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        let zoom = row![
+            tool(
+                Icon::ZoomOut,
+                "Zoom out (-)",
+                (self.zoom > 1.0).then_some(Msg::ZoomOut)
+            ),
+            tip(
+                button(
+                    text(if self.zoom <= 1.0 {
+                        "Fit".to_string()
+                    } else {
+                        format!("{:.0}x", self.zoom)
+                    })
+                    .size(12)
+                    .font(MEDIUM)
+                    .color(theme::ink_2())
+                )
+                .padding(Padding::from([7, 8]))
+                .style(theme::ghost)
+                .on_press(Msg::ZoomFit),
+                "The whole clip (0). The mouse wheel zooms at the pointer; Shift+wheel moves along.",
+            ),
+            tool(Icon::ZoomIn, "Zoom in (+)", Some(Msg::ZoomIn)),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
         let mut right = row![
+            zoom,
+            Space::new().width(10),
             tip(
                 button(icon(
                     Icon::Repeat,
@@ -1735,7 +1928,7 @@ impl Editor {
                     .menu_style(theme::menu),
             );
         }
-        row![play, time, space::horizontal(), right]
+        row![play, time, tools, space::horizontal(), right]
             .spacing(14)
             .align_y(Alignment::Center)
             .into()
@@ -3033,10 +3226,13 @@ fn track(bounds: Rectangle) -> Rectangle {
     }
 }
 
-/// The timeline's pictures: as many keyframes as fit at the video's shape.
+/// The timeline's pictures: as many keyframes as fit at the video's shape, for the stretch the
+/// timeline shows.
 struct Strip<'a> {
     strip: &'a [image::Handle],
     aspect: f32,
+    duration: f64,
+    view: (f64, f64),
 }
 
 impl canvas::Program<Msg> for Strip<'_> {
@@ -3060,8 +3256,12 @@ impl canvas::Program<Msg> for Strip<'_> {
             let tile_w = (track.height * self.aspect).max(8.0);
             let n = ((track.width / tile_w).round() as usize).max(1);
             let w = track.width / n as f32;
+            let d = self.duration.max(0.001);
             for i in 0..n {
-                let src = &self.strip[(i * self.strip.len() / n).min(self.strip.len() - 1)];
+                // The keyframe nearest the middle of this tile's stretch.
+                let t = self.view.0 + (i as f64 + 0.5) / n as f64 * (self.view.1 - self.view.0);
+                let at = ((t / d) * self.strip.len() as f64) as usize;
+                let src = &self.strip[at.min(self.strip.len() - 1)];
                 let r = Rectangle {
                     x: track.x + i as f32 * w,
                     y: track.y,
@@ -3246,7 +3446,8 @@ impl canvas::Program<Msg> for StampLayer {
 /// The timeline's marks: the trim handles, the dimmed parts that are cut, the playhead and
 /// the time under the pointer. Drag anywhere to scrub, drag a handle to trim.
 struct Timeline {
-    duration: f64,
+    /// The stretch shown, start and end (all of it unless zoomed in).
+    view: (f64, f64),
     trim: (f64, f64),
     position: f64,
     grab: Option<Grab>,
@@ -3260,12 +3461,19 @@ impl Timeline {
         track(bounds)
     }
 
+    /// Where `t` is drawn. Moments off the zoomed stretch land just past the canvas, unseen.
     fn x_at(&self, track: Rectangle, t: f64) -> f32 {
-        track.x + (t / self.duration.max(0.001)).clamp(0.0, 1.0) as f32 * track.width
+        let (a, b) = self.view;
+        let k = ((t - a) / (b - a).max(0.001)) as f32;
+        (track.x + k * track.width).clamp(
+            track.x - 2.0 * HANDLE_W,
+            track.x + track.width + 2.0 * HANDLE_W,
+        )
     }
 
     fn t_at(&self, track: Rectangle, x: f32) -> f64 {
-        ((x - track.x) / track.width).clamp(0.0, 1.0) as f64 * self.duration
+        let (a, b) = self.view;
+        a + ((x - track.x) / track.width).clamp(0.0, 1.0) as f64 * (b - a)
     }
 
     fn near(&self, track: Rectangle, x: f32) -> Option<Grab> {
@@ -3281,17 +3489,47 @@ impl Timeline {
 }
 
 impl canvas::Program<Msg> for Timeline {
-    type State = ();
+    /// The keys held, for Shift with the wheel.
+    type State = keyboard::Modifiers;
 
     fn update(
         &self,
-        _: &mut (),
+        held: &mut keyboard::Modifiers,
         event: &iced::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Msg>> {
         let track = self.track(bounds);
         match event {
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+                *held = *m;
+                None
+            }
+            // The wheel zooms in and out at the pointer; with Shift, it moves along.
+            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let p = cursor.position_in(bounds)?;
+                let y = match delta {
+                    mouse::ScrollDelta::Lines { x, y } => {
+                        if y.abs() >= x.abs() {
+                            *y
+                        } else {
+                            *x
+                        }
+                    }
+                    mouse::ScrollDelta::Pixels { x, y } => {
+                        (if y.abs() >= x.abs() { *y } else { *x }) / 40.0
+                    }
+                };
+                if y == 0.0 {
+                    return None;
+                }
+                let msg = if held.shift() {
+                    Msg::ScrollView(-(y as f64) * 0.15)
+                } else {
+                    Msg::ZoomAt(1.25f64.powf(y as f64), self.t_at(track, p.x))
+                };
+                Some(Action::publish(msg).and_capture())
+            }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
                 let grab = self.near(track, p.x).unwrap_or(Grab::Seek);
@@ -3319,7 +3557,7 @@ impl canvas::Program<Msg> for Timeline {
 
     fn draw(
         &self,
-        _: &(),
+        _: &keyboard::Modifiers,
         renderer: &Renderer,
         _: &Theme,
         bounds: Rectangle,
@@ -3475,7 +3713,7 @@ impl canvas::Program<Msg> for Timeline {
             );
         }
 
-        // The playhead.
+        // The playhead (off the canvas when the zoomed stretch doesn't hold it).
         let xp = self.x_at(track, self.position);
         f.fill_rectangle(
             Point::new(xp - 1.0, 1.0),
@@ -3488,7 +3726,7 @@ impl canvas::Program<Msg> for Timeline {
 
     fn mouse_interaction(
         &self,
-        _: &(),
+        _: &keyboard::Modifiers,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {

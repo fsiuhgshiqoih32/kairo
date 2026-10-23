@@ -658,3 +658,29 @@ fn settings_tabs() {
     shoot(app.view(), "settings-look-glow-compact", size);
     theme::apply_settings(&kairo::config::Settings::default());
 }
+
+/// The editor's tools, and its timeline zoomed in on a few cuts.
+#[test]
+#[ignore = "renders the editor to PNGs; needs KAIRO_HOME with clips, ffmpeg and KAIRO_SNAPSHOTS"]
+fn editor_zoom() {
+    use super::editor::Msg;
+    let now = SystemTime::now();
+    let (mut app, _) = App::new(kairo::config::Settings::default());
+    app.now = Some(now);
+    app.clips = sample(now);
+    app.index_clips();
+    app.loaded = true;
+    app.report = Some(report());
+    let clip = app.clips[0].path.clone();
+    let _ = app.open_editor(clip);
+    let ed = app.editor.as_mut().expect("editor opened");
+    ed.settle((1.0, 11.0), 5.0);
+    ed.show_cuts(vec![4.2, 5.6, 7.4], vec![(4.2, 5.6)]);
+    ed.show_marks(vec![3.4, 7.1]);
+    ed.update(Msg::Fade(true));
+    shoot(app.view(), "editor-tools", (1280.0, 900.0));
+    let ed = app.editor.as_mut().expect("editor");
+    ed.update(Msg::ZoomIn);
+    ed.update(Msg::ZoomIn);
+    shoot(app.view(), "editor-zoomed", (1280.0, 900.0));
+}

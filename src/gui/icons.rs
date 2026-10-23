@@ -56,6 +56,8 @@ pub enum Icon {
     Lock,
     Clock,
     Users,
+    ZoomIn,
+    ZoomOut,
 }
 
 fn source(icon: Icon) -> &'static [u8] {
@@ -116,6 +118,8 @@ fn source(icon: Icon) -> &'static [u8] {
         Icon::Lock => file!("lock"),
         Icon::Clock => file!("clock"),
         Icon::Users => file!("users"),
+        Icon::ZoomIn => file!("zoom-in"),
+        Icon::ZoomOut => file!("zoom-out"),
     }
 }
 
