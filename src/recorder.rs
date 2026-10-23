@@ -635,41 +635,6 @@ const SETTLE_LOOKS: u32 = 3;
 /// Watches the screen's size while recording. A new size counts once it has held for
 /// [`SETTLE_LOOKS`] looks in a row: a game switching modes (sometimes several times in a few
 /// seconds) restarts the capture once, after the switch, rather than tearing down the capture
-/// Notices HDR turned on or off, or the SDR brightness changed, for a capture that maps HDR to
-/// SDR: the mapping is set when the capture starts.
-#[derive(Default)]
-struct HdrWatch {
-    /// Looks in a row that disagreed with the capture.
-    off: u32,
-}
-
-impl HdrWatch {
-    /// Whether to start over; called about once a second.
-    fn look(&mut self, plan: &VideoPlan, ffmpeg: &Path) -> bool {
-        #[cfg(windows)]
-        if let Source::WindowsGraphics {
-            hmonitor,
-            sdr_white,
-        } = plan.source
-            && ffmpeg::has_sdr_white(ffmpeg)
-        {
-            let now = platform::hdr_sdr_white(hmonitor);
-            if now == sdr_white {
-                self.off = 0;
-                return false;
-            }
-            self.off += 1;
-            if self.off >= 2 {
-                info!("the screen's HDR changed ({sdr_white:?} to {now:?} nits): starting over");
-                return true;
-            }
-            return false;
-        }
-        let _ = (plan, ffmpeg);
-        false
-    }
-}
-
 /// and the encoder in the middle of it.
 struct SizeWatch {
     recording: (u32, u32),
@@ -698,6 +663,42 @@ impl SizeWatch {
             self.times += 1;
         }
         changed.filter(|_| self.times >= SETTLE_LOOKS)
+    }
+}
+
+/// Notices HDR turned on or off, or the SDR brightness changed, for a capture that maps HDR to
+/// SDR: the mapping is set when the capture starts.
+#[derive(Default)]
+struct HdrWatch {
+    /// Looks in a row that disagreed with the capture.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    off: u32,
+}
+
+impl HdrWatch {
+    /// Whether to start over; called about once a second.
+    fn look(&mut self, plan: &VideoPlan, ffmpeg: &Path) -> bool {
+        #[cfg(windows)]
+        if let Source::WindowsGraphics {
+            hmonitor,
+            sdr_white,
+        } = plan.source
+            && ffmpeg::has_sdr_white(ffmpeg)
+        {
+            let now = platform::hdr_sdr_white(hmonitor);
+            if now == sdr_white {
+                self.off = 0;
+                return false;
+            }
+            self.off += 1;
+            if self.off >= 2 {
+                info!("the screen's HDR changed ({sdr_white:?} to {now:?} nits): starting over");
+                return true;
+            }
+            return false;
+        }
+        let _ = (plan, ffmpeg);
+        false
     }
 }
 
