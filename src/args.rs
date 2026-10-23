@@ -285,6 +285,22 @@ pub struct VideoPlan {
     pub vaapi_device: Option<String>,
 }
 
+impl VideoPlan {
+    /// Whether a run of `next` can follow this one in the replay buffer: the same capture,
+    /// encoder and settings, only the screen at another size. One decoder reads both, and a
+    /// save fits the sizes together; any other change starts the buffer over.
+    pub fn follows_at_new_size(&self, next: &VideoPlan) -> bool {
+        self.source.label() == next.source.label()
+            && self.encoder == next.encoder
+            && self.codec == next.codec
+            && self.fps == next.fps
+            && self.max_height == next.max_height
+            && self.cq == next.cq
+            && self.vaapi_device == next.vaapi_device
+            && self.src_size != next.src_size
+    }
+}
+
 /// The size frames are encoded at: `src` scaled to fit `max_height` (keeping the aspect ratio),
 /// rounded down to even numbers as encoders want.
 pub fn output_size(src: (u32, u32), max_height: Option<u32>) -> (u32, u32) {
@@ -492,10 +508,19 @@ pub struct CamOverlay<'a> {
     pub width: u32,
     /// One of `config::WEBCAM_CORNERS`.
     pub corner: &'a str,
-    /// The picture is encoded again, with this.
+}
+
+/// How a save encodes the picture again rather than copying it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reencode<'a> {
     pub encoder: Encoder,
     pub bitrate: u64,
     pub fps: u32,
+    /// The webcam in a corner.
+    pub cam: Option<CamOverlay<'a>>,
+    /// Every picture fitted into this size, with black bars where it doesn't fill it: a clip
+    /// from before and after a game changed the display mode.
+    pub fit: Option<(u32, u32)>,
 }
 
 /// Where the overlay filter puts the webcam: a corner, inset by 2% of the width.
@@ -518,14 +543,14 @@ fn corner_xy(corner: &str) -> (&'static str, &'static str) {
 /// Discord play; each source follows as its own track for editing.
 /// `hevc`: the video is H.265, tagged so Apple's players and browsers open it.
 pub fn save_args(video: &Path, audio: &[(&Path, &str)], hevc: bool, out: &Path) -> Vec<String> {
-    save_with_cam_args(video, None, audio, hevc, out)
+    save_reencoded_args(video, None, audio, hevc, out)
 }
 
-/// [`save_args`], with the webcam laid over a corner when there is one (which means encoding
-/// the picture again rather than copying it).
-pub fn save_with_cam_args(
+/// [`save_args`], encoding the picture again where `re` says: to lay the webcam over a corner,
+/// or to fit pictures of different sizes into one.
+pub fn save_reencoded_args(
     video: &Path,
-    cam: Option<&CamOverlay>,
+    re: Option<&Reencode>,
     audio: &[(&Path, &str)],
     hevc: bool,
     out: &Path,
@@ -539,6 +564,8 @@ pub fn save_with_cam_args(
     ];
     // Said rather than guessed: a save sends the stream through a pipe (`pipe:0`).
     a.extend([s("-f"), s("mpegts"), s("-i"), video.display().to_string()]);
+    let cam = re.and_then(|r| r.cam.as_ref());
+    let fit = re.and_then(|r| r.fit);
     if let Some(c) = cam {
         if c.offset < 0.0 {
             a.extend([s("-ss"), format!("{:.3}", -c.offset)]);
@@ -559,10 +586,21 @@ pub fn save_with_cam_args(
         ]);
     }
     let mut graph: Vec<String> = Vec::new();
+    let base = match fit {
+        Some((w, h)) => {
+            let (w, h) = (w.max(2) & !1, h.max(2) & !1);
+            let out = if cam.is_some() { "[fit]" } else { "[v]" };
+            graph.push(format!(
+                "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1{out}"
+            ));
+            "[fit]"
+        }
+        None => "[0:v]",
+    };
     if let Some(c) = cam {
         let (x, y) = corner_xy(c.corner);
         graph.push(format!(
-            "[1:v]scale={}:-2[cam];[0:v][cam]overlay=x={x}:y={y}:eof_action=pass[v]",
+            "[1:v]scale={}:-2[cam];{base}[cam]overlay=x={x}:y={y}:eof_action=pass[v]",
             c.width.max(2) & !1
         ));
     }
@@ -579,7 +617,7 @@ pub fn save_with_cam_args(
     if !graph.is_empty() {
         a.extend([s("-filter_complex"), graph.join(";")]);
     }
-    a.extend([s("-map"), s(if cam.is_some() { "[v]" } else { "0:v:0" })]);
+    a.extend([s("-map"), s(if re.is_some() { "[v]" } else { "0:v:0" })]);
     if audio.len() > 1 {
         a.extend([s("-map"), s("[mix]")]);
         titles.push("Everything");
@@ -589,17 +627,17 @@ pub fn save_with_cam_args(
         titles.push(title);
     }
     let mut tag = hevc;
-    match cam {
-        Some(c) => {
+    match re {
+        Some(r) => {
             let hevc_name = if hevc {
-                c.encoder.ffmpeg_name_for(VideoCodec::Hevc)
+                r.encoder.ffmpeg_name_for(VideoCodec::Hevc)
             } else {
                 None
             };
             tag = hevc_name.is_some();
-            a.extend([s("-c:v"), s(hevc_name.unwrap_or(c.encoder.ffmpeg_name()))]);
+            a.extend([s("-c:v"), s(hevc_name.unwrap_or(r.encoder.ffmpeg_name()))]);
             a.extend(crate::media::export_video_opts(
-                c.encoder, c.bitrate, c.fps, false,
+                r.encoder, r.bitrate, r.fps, false,
             ));
         }
         None => a.extend([s("-c:v"), s("copy")]),
@@ -857,20 +895,23 @@ mod tests {
 
     #[test]
     fn the_webcam_goes_in_a_corner_of_the_saved_clip() {
-        let cam = CamOverlay {
-            path: Path::new("cam.ts"),
-            offset: -0.4,
-            width: 641,
-            corner: "top-left",
+        let cam = Reencode {
             encoder: Encoder::Nvenc,
             bitrate: 20_000_000,
             fps: 60,
+            cam: Some(CamOverlay {
+                path: Path::new("cam.ts"),
+                offset: -0.4,
+                width: 641,
+                corner: "top-left",
+            }),
+            fit: None,
         };
         let audio = [
             (Path::new("Game.wav"), "Game"),
             (Path::new("Microphone.wav"), "Microphone"),
         ];
-        let a = save_with_cam_args(
+        let a = save_reencoded_args(
             Path::new("video.ts"),
             Some(&cam),
             &audio,
@@ -906,13 +947,16 @@ mod tests {
                 .join(" ")
                 .contains("-map 0:v:0 -map 1:a:0 -c:v copy -tag:v hvc1")
         );
-        let late = CamOverlay {
-            offset: 0.25,
-            corner: "bottom-right",
+        let late = Reencode {
             encoder: Encoder::X264,
-            ..cam
+            cam: Some(CamOverlay {
+                offset: 0.25,
+                corner: "bottom-right",
+                ..cam.cam.clone().unwrap()
+            }),
+            ..cam.clone()
         };
-        let a = save_with_cam_args(
+        let a = save_reencoded_args(
             Path::new("v.ts"),
             Some(&late),
             &[],
@@ -946,6 +990,77 @@ mod tests {
 
     fn joined(a: &[String]) -> String {
         a.join(" ")
+    }
+
+    #[test]
+    fn only_a_new_screen_size_keeps_the_replay_going() {
+        let wgc = Source::WindowsGraphics { hmonitor: 7 };
+        let desktop = plan(wgc.clone(), Encoder::Nvenc, (2560, 1440), Some(1080));
+        // The game at 1920x1440, stretched.
+        let game = plan(wgc.clone(), Encoder::Nvenc, (1920, 1440), Some(1080));
+        assert!(desktop.follows_at_new_size(&game));
+        assert!(!desktop.follows_at_new_size(&desktop));
+        // New settings, another encoder or another capture start over.
+        let mut hevc = game.clone();
+        hevc.codec = VideoCodec::Hevc;
+        assert!(!desktop.follows_at_new_size(&hevc));
+        let mut faster = game.clone();
+        faster.fps = 120;
+        assert!(!desktop.follows_at_new_size(&faster));
+        assert!(!desktop.follows_at_new_size(&plan(wgc, Encoder::X264, (1920, 1440), Some(1080))));
+        let dda = plan(
+            Source::Ddagrab { output: 0 },
+            Encoder::Nvenc,
+            (1920, 1440),
+            Some(1080),
+        );
+        assert!(!desktop.follows_at_new_size(&dda));
+    }
+
+    #[test]
+    fn a_clip_across_sizes_is_fitted_to_one() {
+        let re = Reencode {
+            encoder: Encoder::X264,
+            bitrate: 8_000_000,
+            fps: 60,
+            cam: None,
+            fit: Some((1921, 1080)),
+        };
+        let a = joined(&save_reencoded_args(
+            Path::new("video.ts"),
+            Some(&re),
+            &[(Path::new("Game.wav"), "Game")],
+            false,
+            Path::new("out.mp4"),
+        ));
+        assert!(
+            a.contains(
+                "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v]"
+            ),
+            "{a}"
+        );
+        assert!(a.contains("-map [v] -map 1:a:0 -c:v libx264"), "{a}");
+        // With the webcam too: it goes over the fitted picture.
+        let both = Reencode {
+            cam: Some(CamOverlay {
+                path: Path::new("cam.ts"),
+                offset: 0.0,
+                width: 480,
+                corner: "top-left",
+            }),
+            ..re
+        };
+        let a = joined(&save_reencoded_args(
+            Path::new("video.ts"),
+            Some(&both),
+            &[],
+            false,
+            Path::new("out.mp4"),
+        ));
+        assert!(
+            a.contains("setsar=1[fit];[1:v]scale=480:-2[cam];[fit][cam]overlay="),
+            "{a}"
+        );
     }
 
     #[test]

@@ -20,8 +20,6 @@ use objc2_screen_capture_kit::{
     SCStreamOutputType,
 };
 
-use kairo::pcm::PcmRing;
-
 use crate::recorder::{Shared, now_us};
 
 const RATE: u32 = 48_000;
@@ -104,12 +102,9 @@ fn push(shared: &Shared, samples: &[f32], rate: u32, channels: u16) {
         .as_ref()
         .is_some_and(|r| r.rate == rate && r.channels == channels);
     if !fits {
-        // A new ring carries on a session's file from the old one.
+        // The sound held so far, and a session's file, carry on in the new format.
         let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-        shared.set_ring(
-            crate::recorder::Track::Game,
-            Some(PcmRing::new(rate, channels, keep)),
-        );
+        shared.keep_ring(crate::recorder::Track::Game, rate, channels, keep);
     }
     if let Some(r) = shared.desktop.lock().unwrap().as_mut() {
         r.push(samples, now_us());

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.3
+
+- **Alt-tabbing out of a game keeps your clip.** When a game changes the screen's resolution
+  (stretched 4:3, or alt-tabbing back to the desktop), Kairo used to start its replay over, so
+  a clip saved right after lost the play. Now it keeps recording through the change, and a clip
+  that spans it is saved at one size, with black bars on the part that doesn't fill it.
+- **Game sound no longer drops out after a sound device change.** Switching headphones, a
+  wireless headset reconnecting or an app like Voicemod changing the default could leave clips
+  without game sound for a minute or two. Kairo now opens the device itself, and it works
+  straight away.
+- **Clips keep their sound when a device reconnects.** Reopening a sound device used to throw
+  away the sound already held, so a clip saved soon after was silent for most of its length.
+  The sound stays, even if the device comes back in another format.
+- **Several voice commands at once.** "Rename it to Insane Clutch and trim it to thirty
+  seconds" now does both, in the order you said them.
+
 ## 0.6.2
 
 - **Tell Kairo what to do with a clip.** After your voice phrase saves a clip, say "rename it

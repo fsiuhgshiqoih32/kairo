@@ -161,6 +161,8 @@ pub fn run() -> Result<(), String> {
             return Err(format!("the H.265 clip isn't tagged H.265: {info}"));
         }
     }
+    // A game changing the display mode mid-clip: one size, the whole length.
+    size_change_check(&ff, encoder, &settings)?;
     // A screenshot: the newest frame of the buffer, full size.
     let shot = save::screenshot(&shared, Some("Self test"))?;
     let (w, h) = image::image_dimensions(&shot)
@@ -264,6 +266,58 @@ fn system_audio_check() {
 
 #[cfg(not(target_os = "macos"))]
 fn system_audio_check() {}
+
+/// Records 320x240 for 2 s, then 480x270 for 3 s (as when a game changes the display mode), and
+/// saves the last 5 s: the clip must have both, fitted to the size most of it has.
+fn size_change_check(
+    ff: &std::path::Path,
+    encoder: kairo::args::Encoder,
+    settings: &kairo::config::Settings,
+) -> Result<(), String> {
+    let shared = Shared::new(settings.clone());
+    let mut plan = VideoPlan {
+        source: Source::Test { w: 320, h: 240 },
+        encoder,
+        codec: kairo::config::VideoCodec::H264,
+        fps: 30,
+        src_size: (320, 240),
+        max_height: None,
+        bitrate: 600_000,
+        cq: None,
+        vaapi_device: ffmpeg::vaapi_device(),
+    };
+    shared.ring.lock().unwrap().set_size(Some((320, 240)));
+    record_for(ff, &plan, &shared, Duration::from_secs(2));
+    let before = plan.clone();
+    plan.source = Source::Test { w: 480, h: 270 };
+    plan.src_size = (480, 270);
+    if !before.follows_at_new_size(&plan) {
+        return Err("a new screen size counts as new settings".into());
+    }
+    shared.ring.lock().unwrap().new_size((480, 270));
+    record_for(ff, &plan, &shared, Duration::from_secs(3));
+    let clip = save::save(&shared, Some(5), Some("Self test sizes"))?;
+    let info = probe(ff, &clip.path)?;
+    println!("clip across a size change: {info}");
+    let seconds = info
+        .split("Duration: ")
+        .nth(1)
+        .and_then(|d| d.get(..11))
+        .and_then(|d| {
+            let p: Vec<f64> = d.split(':').filter_map(|x| x.parse().ok()).collect();
+            (p.len() == 3).then(|| p[0] * 3600.0 + p[1] * 60.0 + p[2])
+        })
+        .unwrap_or(0.0);
+    if !info.contains("480x270") || info.contains("320x240") {
+        return Err(format!("the clip isn't all 480x270: {info}"));
+    }
+    if seconds < 3.2 {
+        return Err(format!(
+            "the clip lost the part before the size change ({seconds:.1} s): {info}"
+        ));
+    }
+    Ok(())
+}
 
 /// Records `plan` into `shared` for `d`.
 fn record_for(ff: &std::path::Path, plan: &VideoPlan, shared: &Arc<Shared>, d: Duration) {
@@ -398,6 +452,25 @@ mod tests {
             "{info}"
         );
         assert!(clip.thumbnail.is_some(), "no thumbnail");
+    }
+
+    /// A clip across a change of screen size, alone (the self-test runs it too). Nothing is
+    /// captured. Needs `KAIRO_HOME` set: settings and clips go there.
+    #[test]
+    #[ignore]
+    fn a_clip_across_a_size_change_is_one_size() {
+        assert!(std::env::var_os("KAIRO_HOME").is_some(), "set KAIRO_HOME");
+        let ff = ffmpeg::path().expect("ffmpeg");
+        let mut settings = kairo::config::Settings {
+            fps: 30,
+            ..Default::default()
+        };
+        settings.save_dir = kairo::config::config_dir()
+            .join("clips")
+            .display()
+            .to_string();
+        let encoder = *ffmpeg::working_encoders(&ff).first().expect("an encoder");
+        size_change_check(&ff, encoder, &settings).unwrap();
     }
 
     /// The self-test's session, alone: with 2-second keyframes it starts at the one before its

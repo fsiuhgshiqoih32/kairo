@@ -22,6 +22,8 @@ pub struct Gop {
     pub bytes: Vec<u8>,
     /// Where the packets are in the spill file instead.
     spilled: Option<Spilled>,
+    /// The size its pictures were encoded at, where the recorder said.
+    pub size: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -176,6 +178,27 @@ impl Snapshot {
         self.header.len() + self.gops.iter().map(|g| g.len()).sum::<usize>()
     }
 
+    /// Where the video changes size along the way (a game changed the display mode), the size
+    /// most of it has, to fit the rest into. `None` while it's all one size.
+    pub fn fit_size(&self) -> Option<(u32, u32)> {
+        let mut time: Vec<((u32, u32), i64)> = Vec::new();
+        for (i, g) in self.gops.iter().enumerate() {
+            let size = g.size?;
+            let end = self.gops.get(i + 1).map_or(g.last_us, |n| n.start_us);
+            match time.iter_mut().find(|(s, _)| *s == size) {
+                Some((_, t)) => *t += end - g.start_us,
+                None => time.push((size, end - g.start_us)),
+            }
+        }
+        if time.len() < 2 {
+            return None;
+        }
+        // The most time; between equals, the bigger picture.
+        time.into_iter()
+            .max_by_key(|((w, h), t)| (*t, *w as u64 * *h as u64))
+            .map(|(s, _)| s)
+    }
+
     pub fn write_to(&self, mut w: impl Write) -> std::io::Result<()> {
         w.write_all(&self.header)?;
         let mut buf = Vec::new();
@@ -228,6 +251,8 @@ pub struct Ring {
     tape: Option<Tape>,
     /// A tape the stream ended under (new settings): it can't go on, so it waits to be taken.
     ended_tape: Option<Tape>,
+    /// The size the running encoder makes, given to each GOP.
+    size: Option<(u32, u32)>,
 }
 
 impl Ring {
@@ -249,7 +274,13 @@ impl Ring {
             spill: None,
             tape: None,
             ended_tape: None,
+            size: None,
         }
+    }
+
+    /// The size the encoder makes from now on (each run says, before its first packet).
+    pub fn set_size(&mut self, size: Option<(u32, u32)>) {
+        self.size = size;
     }
 
     /// Starts writing the stream to a .ts file at `path`, from the keyframe of the GOP being
@@ -371,6 +402,17 @@ impl Ring {
         }
     }
 
+    /// A new encoder run at another size (a game changed the display mode). What's held stays
+    /// for clips, which fit the sizes together when saving (see [`Snapshot::fit_size`]); a
+    /// session's file can't change size, so its tape ends here, as with [`Ring::clear`].
+    pub fn new_size(&mut self, size: (u32, u32)) {
+        self.new_run();
+        if let Some(t) = self.tape.take() {
+            self.ended_tape = Some(t);
+        }
+        self.size = Some(size);
+    }
+
     /// Seconds of video held, from the oldest GOP's start to the newest frame.
     pub fn seconds(&self) -> f64 {
         let first = self
@@ -461,6 +503,7 @@ impl Ring {
                     // About the last one's size: rarely regrown, little left over.
                     bytes: Vec::with_capacity(self.gop_hint + self.gop_hint / 8),
                     spilled: None,
+                    size: self.size,
                 });
             } else if let Some(g) = &mut self.current {
                 g.last_us = g.last_us.max(at);
@@ -570,6 +613,7 @@ impl Ring {
                 last_us: g.last_us,
                 bytes: g.bytes.clone(),
                 spilled: None,
+                size: g.size,
             }));
         }
         if all.is_empty() {
@@ -587,6 +631,55 @@ impl Ring {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clip_spanning_two_sizes_is_fitted_to_the_one_it_mostly_has() {
+        let gop = |start: i64, size: Option<(u32, u32)>| {
+            Arc::new(Gop {
+                start_us: start * SEC,
+                last_us: start * SEC + SEC * 19 / 10,
+                bytes: Vec::new(),
+                spilled: None,
+                size,
+            })
+        };
+        let snap = |gops: Vec<Arc<Gop>>| Snapshot {
+            header: Vec::new(),
+            gops,
+            spill: None,
+        };
+        let game = Some((1440, 1080));
+        let desktop = Some((1920, 1080));
+        // All one size: copied as it is.
+        assert_eq!(snap(vec![gop(0, game), gop(2, game)]).fit_size(), None);
+        // 4 s of the game, then 2 s of the desktop after alt-tabbing out.
+        let mixed = snap(vec![gop(0, game), gop(2, game), gop(4, desktop)]);
+        assert_eq!(mixed.fit_size(), game);
+        let mixed = snap(vec![gop(0, game), gop(2, desktop), gop(4, desktop)]);
+        assert_eq!(mixed.fit_size(), desktop);
+        // A size not known (an older run): nothing to go on, so nothing is fitted.
+        assert_eq!(snap(vec![gop(0, None), gop(2, desktop)]).fit_size(), None);
+    }
+
+    #[test]
+    fn a_new_size_keeps_the_video_but_ends_a_tape() {
+        let dir = std::env::temp_dir().join(format!("kairo-ring-size-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ring = Ring::new(60 * SEC, usize::MAX);
+        ring.set_size(Some((1440, 1080)));
+        for (data, now) in stream(30 * 3, 30, 30) {
+            ring.push(&data, now);
+        }
+        ring.start_tape(&dir.join("s.ts")).unwrap();
+        let held = ring.seconds();
+        ring.new_size((1920, 1080));
+        // Everything held stays; a session's file can't change size, so its tape ends.
+        assert_eq!(ring.seconds(), held);
+        assert!(ring.tape_ended() && ring.tape_progress().is_none());
+        let snap = ring.snapshot(BASE_US).unwrap();
+        assert!(snap.gops.iter().all(|g| g.size == Some((1440, 1080))));
+        let _ = std::fs::remove_dir_all(dir);
+    }
     use crate::ts::tests::{packet, pat, pes, pmt};
 
     const SEC: i64 = 1_000_000;

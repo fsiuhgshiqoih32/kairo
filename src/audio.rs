@@ -42,6 +42,20 @@ fn id_of(d: &cpal::Device) -> Option<String> {
     d.id().ok().map(|i| format!("{i:?}"))
 }
 
+/// The default output as the device it is now, not as "whatever is the default", as with the
+/// microphone (see `mic_choices`): after a device change, the second kind kept failing to open
+/// with "Cannot change thread mode after it is set" for a minute or two, and clips had no game
+/// sound. A change of default is followed by `defaults_changed`.
+#[cfg(windows)]
+fn default_output(host: &cpal::Host) -> Option<cpal::Device> {
+    let default = host.default_output_device()?;
+    let id = id_of(&default);
+    host.output_devices()
+        .ok()
+        .and_then(|mut it| it.find(|d| id.is_some() && id_of(d) == id))
+        .or(Some(default))
+}
+
 /// How the microphone to open was found, best first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Found {
@@ -247,10 +261,11 @@ fn open(
     let rate = config.sample_rate();
     let channels = config.channels();
     let keep = shared.settings().buffer_seconds() as i64 * 1_000_000;
-    shared.set_ring(
-        kind.track(),
-        record.then(|| PcmRing::new(rate, channels, keep)),
-    );
+    if record {
+        shared.keep_ring(kind.track(), rate, channels, keep);
+    } else {
+        shared.set_ring(kind.track(), None);
+    }
     let s2 = shared.clone();
     let f2 = failed.clone();
     let stream = device
@@ -336,10 +351,7 @@ fn open_monitor(shared: &Arc<Shared>) -> Result<std::process::Child, String> {
             .spawn()
         {
             Ok(mut child) => {
-                shared.set_ring(
-                    crate::recorder::Track::Game,
-                    Some(PcmRing::new(48_000, 2, keep)),
-                );
+                shared.keep_ring(crate::recorder::Track::Game, 48_000, 2, keep);
                 let mut out = child.stdout.take().expect("piped");
                 let s2 = shared.clone();
                 std::thread::spawn(move || {
@@ -409,8 +421,19 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     let mut mic_said = "off".to_string();
     let mut mic_note = None;
     let mut mic_error = None;
+    // Sound that's still wanted stays in its ring while the devices reopen, and stays there
+    // if one doesn't open: a clip saved meanwhile keeps what came before.
     for t in crate::recorder::Track::ALL {
-        shared.set_ring(t, None);
+        let wanted = match t {
+            crate::recorder::Track::Game => settings.desktop_audio,
+            crate::recorder::Track::Mic => settings.microphone,
+            crate::recorder::Track::Chat => {
+                cfg!(windows) && settings.desktop_audio && settings.chat_track
+            }
+        };
+        if !wanted {
+            shared.set_ring(t, None);
+        }
     }
     #[allow(unused_mut)]
     let mut split = false;
@@ -430,7 +453,7 @@ fn start(shared: &Arc<Shared>, settings: &Settings, failed: &Arc<Mutex<Option<St
     }
     if settings.desktop_audio && !split {
         #[cfg(windows)]
-        match host.default_output_device() {
+        match default_output(&host) {
             Some(d) => {
                 open_now.output_id = d.id().ok().map(|i| format!("{i:?}"));
                 match open(shared, &d, Kind::Desktop, true, failed) {
@@ -799,6 +822,10 @@ mod tests {
             let host = cpal::default_host();
             let out = host.default_output_device().expect("an output device");
             out.default_output_config().expect("output format");
+            // Desktop sound opens the default as the device it is now.
+            let now = default_output(&host).expect("the default output");
+            assert!(id_of(&now).is_some() && id_of(&now) == id_of(&out));
+            now.default_output_config().expect("its format");
             for d in host.input_devices().expect("inputs") {
                 d.default_input_config()
                     .unwrap_or_else(|e| panic!("{d}: {e}"));

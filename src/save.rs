@@ -355,13 +355,17 @@ pub fn save_inner(
             Some(c.start_us())
         });
 
+    // A game changed the display mode during the clip: its pictures are fitted to one size.
+    let fit = snap.fit_size();
+
     // The video goes straight from the replay buffer into ffmpeg: through a file first, a
     // save wrote (and the system cached) every byte twice, hundreds of MB at the moment of
-    // saving, while a game was running. Not with the webcam: that encodes again, slower than
-    // the buffer may wait before newer video takes the place of what's being read (and tries
-    // again without the webcam if it fails), so the video is copied out first, at disk speed.
+    // saving, while a game was running. Not when it's encoded again (the webcam, or sizes to
+    // fit): that's slower than the buffer may wait before newer video takes the place of what's
+    // being read (and it's tried again as a plain copy if it fails), so the video is copied out
+    // first, at disk speed.
     let video_file = work.join("video.ts");
-    let (video, feed): (&Path, Option<ffmpeg::Feed>) = if cam_start.is_some() {
+    let (video, feed): (&Path, Option<ffmpeg::Feed>) = if cam_start.is_some() || fit.is_some() {
         let f = std::fs::File::create(&video_file).map_err(|e| e.to_string())?;
         snap.write_to(BufWriter::new(f))
             .map_err(|e| format!("could not write the video: {e}"))?;
@@ -381,7 +385,7 @@ pub fn save_inner(
     let refs: Vec<(&Path, &str)> = audio.iter().map(|(p, t)| (p.as_path(), *t)).collect();
     // ffmpeg picks the format from the name; write to .part and rename, so a clip appears whole.
     let save_args = args::save_args(video, &refs, hevc, &partial);
-    let with_cam = cam_start.map(|cs| {
+    let reencoded = (cam_start.is_some() || fit.is_some()).then(|| {
         let st = shared.status.lock().unwrap().clone();
         let encoder = st
             .encoder
@@ -389,7 +393,7 @@ pub fn save_inner(
             .and_then(|l| args::Encoder::ALL.into_iter().find(|e| e.label() == l))
             .map(kairo::media::export_encoder)
             .unwrap_or(args::Encoder::X264);
-        let (w, h) = st.size.unwrap_or((1920, 1080));
+        let (w, h) = fit.or(st.size).unwrap_or((1920, 1080));
         let codec = if hevc {
             kairo::config::VideoCodec::Hevc
         } else {
@@ -397,22 +401,28 @@ pub fn save_inner(
         };
         let bitrate = settings.quality.bitrate(w as u64 * h as u64, settings.fps) as f64
             * codec.bitrate_factor();
-        let overlay = args::CamOverlay {
-            path: &cam_file,
-            offset: (cs - start) as f64 / 1e6,
-            width: w * settings.webcam_size / 100,
-            corner: &settings.webcam_corner,
+        let re = args::Reencode {
             encoder,
             bitrate: bitrate as u64,
             fps: settings.fps,
+            cam: cam_start.map(|cs| args::CamOverlay {
+                path: &cam_file,
+                offset: (cs - start) as f64 / 1e6,
+                width: w * settings.webcam_size / 100,
+                corner: &settings.webcam_corner,
+            }),
+            fit,
         };
-        args::save_with_cam_args(video, Some(&overlay), &refs, hevc, &partial)
+        args::save_reencoded_args(video, Some(&re), &refs, hevc, &partial)
     });
-    let saved = match (with_cam, feed) {
+    if let Some((w, h)) = fit {
+        info!("the screen changed size during the clip: fitting it to {w}x{h}");
+    }
+    let saved = match (reencoded, feed) {
         (_, Some(feed)) => ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed),
         // Encoding again can fail where copying can't (a busy encoder): keep the clip anyway.
         (Some(a), None) => ffmpeg::run(&ffmpeg, &a, Duration::from_secs(300)).or_else(|e| {
-            warning!("could not add the webcam: {e}");
+            warning!("could not encode the clip again (webcam or sizes): {e}");
             ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
         }),
         (None, None) => ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120)),

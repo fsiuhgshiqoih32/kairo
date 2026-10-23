@@ -759,50 +759,60 @@ struct Spoken {
 }
 
 /// Does what was said about the voice-saved clip, on its own thread (its save may still be
-/// running). One at a time, in order: "rename it", then "trim it", trims the renamed clip.
-fn do_spoken(shared: &Arc<Shared>, spoken: &Arc<Mutex<Spoken>>, said: FollowUp) {
+/// running). One at a time, in order: "rename it ... and trim it ..." trims the renamed clip.
+fn do_spoken(shared: &Arc<Shared>, spoken: &Arc<Mutex<Spoken>>, todo: Vec<FollowUp>) {
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let (shared, spoken) = (shared.clone(), spoken.clone());
     std::thread::spawn(move || {
         let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let (before, known) = {
-            let s = spoken.lock().unwrap();
-            (s.before.clone(), s.clip.clone())
-        };
-        let Some(clip) = known.or_else(|| voice_saved(&shared, before.as_deref())) else {
-            warning!("{said:?}: no clip was saved to do it to");
-            return;
-        };
-        let done = match &said {
-            FollowUp::Rename(name) => rename_spoken(&clip, name),
-            FollowUp::Trim(seconds) => trim_spoken(&clip, *seconds),
-        };
-        let settings = shared.settings();
-        match done {
-            Ok((path, seconds)) => {
-                info!("{said:?}: {} ({seconds:.1} s)", path.display());
-                {
-                    let mut s = spoken.lock().unwrap();
-                    // Unless the phrase was said again meanwhile, for a new clip.
-                    if s.before == before {
-                        s.clip = Some(path.clone());
+        let count = todo.len();
+        for (n, said) in todo.into_iter().enumerate() {
+            let (before, known) = {
+                let s = spoken.lock().unwrap();
+                (s.before.clone(), s.clip.clone())
+            };
+            let Some(clip) = known.or_else(|| voice_saved(&shared, before.as_deref())) else {
+                warning!("{said:?}: no clip was saved to do it to");
+                return;
+            };
+            let done = match &said {
+                FollowUp::Rename(name) => rename_spoken(&clip, name),
+                FollowUp::Trim(seconds) => trim_spoken(&clip, *seconds),
+            };
+            let settings = shared.settings();
+            match done {
+                Ok((path, seconds)) => {
+                    info!("{said:?}: {} ({seconds:.1} s)", path.display());
+                    {
+                        let mut s = spoken.lock().unwrap();
+                        // Unless the phrase was said again meanwhile, for a new clip.
+                        if s.before == before {
+                            s.clip = Some(path.clone());
+                        }
+                    }
+                    shared.status.lock().unwrap().last_clip = Some(path.display().to_string());
+                    // One sound and pop-up for the lot, once the last is done.
+                    if n + 1 == count {
+                        if settings.sound {
+                            platform::play_save_sound(
+                                &settings.save_sound,
+                                &settings.save_sound_file,
+                            );
+                        }
+                        tell(settings.notify, Ok((path, seconds)));
                     }
                 }
-                shared.status.lock().unwrap().last_clip = Some(path.display().to_string());
-                if settings.sound {
-                    platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
+                Err(e) => {
+                    let what = match said {
+                        FollowUp::Rename(_) => "rename",
+                        FollowUp::Trim(_) => "trim",
+                    };
+                    tell(
+                        settings.notify,
+                        Err(format!("Couldn't {what} the clip: {e}")),
+                    );
+                    return;
                 }
-                tell(settings.notify, Ok((path, seconds)));
-            }
-            Err(e) => {
-                let what = match said {
-                    FollowUp::Rename(_) => "rename",
-                    FollowUp::Trim(_) => "trim",
-                };
-                tell(
-                    settings.notify,
-                    Err(format!("Couldn't {what} the clip: {e}")),
-                );
             }
         }
     });

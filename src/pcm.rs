@@ -191,6 +191,29 @@ impl PcmRing {
         self.keep_us = keep_us;
     }
 
+    /// This ring's sound carried on at `rate` with `channels`: what's held is converted, and a
+    /// session's tape goes along (it converts by itself). For a device that reopens in another
+    /// format, so the recent sound isn't lost with the old stream.
+    pub fn reformat(mut self, rate: u32, channels: u16, keep_us: i64) -> PcmRing {
+        let mut out = PcmRing::new(rate, channels, keep_us);
+        let (from_rate, from_ch) = (self.rate, self.channels);
+        for b in self.blocks.drain(..) {
+            let f: Vec<f32> = b.samples.iter().map(|s| to_f32(*s)).collect();
+            let samples: Vec<i16> = convert(&f, from_rate, from_ch, out.rate, out.channels)
+                .into_iter()
+                .map(to_i16)
+                .collect();
+            if !samples.is_empty() {
+                out.blocks.push_back(Block {
+                    start_us: b.start_us,
+                    samples,
+                });
+            }
+        }
+        out.tape = self.tape.take();
+        out
+    }
+
     fn frames_to_us(&self, frames: usize) -> i64 {
         frames as i64 * 1_000_000 / self.rate as i64
     }
@@ -464,6 +487,22 @@ mod tests {
         r.push(&[0.5; 100], T0 + 800_000);
         assert_eq!(std::fs::read(&wav).unwrap().len(), 44 + 650 * 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sound_held_before_a_device_reopens_in_another_format_is_kept() {
+        // 1 kHz mono for 300 ms, then the device comes back as 2 kHz stereo.
+        let mut a = PcmRing::new(1000, 1, 10_000_000);
+        a.push(&[0.5; 300], T0 + 300_000);
+        let mut b = a.reformat(2000, 2, 10_000_000);
+        assert_eq!((b.rate, b.channels), (2000, 2));
+        // Nothing for 200 ms while it switched, then 100 ms from the new stream.
+        b.push(&[-0.25; 400], T0 + 600_000);
+        let out = b.extract(T0, T0 + 600_000);
+        assert_eq!(out.len(), 600 * 2 * 2);
+        assert!(out[..600 * 2].iter().all(|s| near(*s, 0.5)));
+        assert!(out[600 * 2..1000 * 2].iter().all(|s| *s == 0.0));
+        assert!(out[1000 * 2..].iter().all(|s| near(*s, -0.25)));
     }
 
     #[test]

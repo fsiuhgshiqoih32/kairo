@@ -184,6 +184,27 @@ impl Shared {
         }
     }
 
+    /// Readies `t`'s ring for sound at `rate` with `channels`. A ring already there keeps what it
+    /// holds, converted if its format differs: a device that reopens (unplugged for a moment, or
+    /// the default switched) mustn't take the last minute of sound with it.
+    pub fn keep_ring(&self, t: Track, rate: u32, channels: u16, keep_us: i64) {
+        let mut slot = self.track(t).lock().unwrap();
+        *slot = Some(match slot.take() {
+            Some(mut r) if (r.rate, r.channels) == (rate.max(1), channels.max(1)) => {
+                r.set_keep_us(keep_us);
+                r
+            }
+            Some(r) => r.reformat(rate, channels, keep_us),
+            None => {
+                let mut r = PcmRing::new(rate, channels, keep_us);
+                if let Some(tape) = self.parked_tapes.lock().unwrap()[t as usize].take() {
+                    r.adopt_tape(tape);
+                }
+                r
+            }
+        });
+    }
+
     /// Puts `ring` (or nothing) in `t`'s place. A session's file being written from the old ring
     /// carries on in the new one, or waits for the next ring, rather than being dropped with it.
     pub fn set_ring(&self, t: Track, ring: Option<PcmRing>) {
@@ -505,11 +526,16 @@ pub fn run(shared: Arc<Shared>) {
                     warning!("keeping the replay in memory: {e}");
                     true
                 });
-                if last_plan.as_ref() == Some(&plan) && !moved {
-                    ring.new_run()
-                } else {
-                    ring.clear()
+                let size = args::output_size(plan.src_size, plan.max_height);
+                match &last_plan {
+                    Some(p) if *p == plan && !moved => ring.new_run(),
+                    // A game changed the display mode (or went back to the desktop): the
+                    // minute before stays, so a clip saved just after alt-tabbing out still
+                    // has the play in it.
+                    Some(p) if p.follows_at_new_size(&plan) && !moved => ring.new_size(size),
+                    _ => ring.clear(),
                 }
+                ring.set_size(Some(size));
             }
             last_plan = Some(plan.clone());
             let quiet_after = quiet_limit(quiet_restarts);
@@ -795,6 +821,35 @@ mod tests {
         assert_eq!(quiet_limit(4), Duration::from_secs(240));
         assert_eq!(quiet_limit(5), QUIET_MAX);
         assert_eq!(quiet_limit(40), QUIET_MAX);
+    }
+
+    #[test]
+    fn sound_survives_a_device_reopening() {
+        let shared = Shared::new(Settings::default());
+        let t0 = 1_792_347_000_000_000i64;
+        // A minute of game sound at 48 kHz stereo, then the headset drops out and comes back.
+        shared.keep_ring(Track::Game, 48_000, 2, 90_000_000);
+        if let Some(r) = shared.desktop.lock().unwrap().as_mut() {
+            r.push(&vec![0.5; 48_000 * 2 * 60], t0 + 60_000_000);
+        }
+        shared.keep_ring(Track::Game, 48_000, 2, 90_000_000);
+        let held = |s: &Shared| {
+            let ring = s.desktop.lock().unwrap();
+            let r = ring.as_ref().unwrap();
+            (r.rate, r.extract(t0, t0 + 60_000_000))
+        };
+        let (rate, sound) = held(&shared);
+        assert_eq!(rate, 48_000);
+        assert!(sound.iter().all(|s| (s - 0.5).abs() < 1e-3));
+        // Back as 44.1 kHz: the minute is still there, converted.
+        shared.keep_ring(Track::Game, 44_100, 2, 90_000_000);
+        let (rate, sound) = held(&shared);
+        assert_eq!(rate, 44_100);
+        assert_eq!(sound.len(), 44_100 * 2 * 60);
+        assert!(sound.iter().all(|s| (s - 0.5).abs() < 1e-3));
+        // Turned off in the settings: gone.
+        shared.set_ring(Track::Game, None);
+        assert!(shared.desktop.lock().unwrap().is_none());
     }
 
     #[test]

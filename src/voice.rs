@@ -479,12 +479,61 @@ pub enum FollowUp {
     Trim(u32),
 }
 
-/// Reads a follow-up from a sentence as the recognizer writes it (lowercase words).
-pub fn parse_follow_up(said: &str) -> Option<FollowUp> {
+/// Words that start a rename, and a trim ("make" and "keep" only in some phrases).
+const RENAME_WORDS: [&str; 5] = ["rename", "retitle", "call", "name", "title"];
+const TRIM_WORDS: [&str; 6] = ["trim", "trimmed", "cut", "shorten", "keep", "make"];
+
+/// Whether `words` start with something to do: "trim ...", "rename ...", "re name ...".
+fn starts_command(words: &[&str]) -> bool {
+    match words {
+        ["re", "name", ..] => true,
+        [w, ..] => RENAME_WORDS.contains(w) || TRIM_WORDS.contains(w),
+        [] => false,
+    }
+}
+
+/// Reads what to do from a sentence as the recognizer writes it (lowercase words), in the order
+/// said: "rename it to insane clutch and trim it to thirty seconds" is both.
+pub fn parse_follow_ups(said: &str) -> Vec<FollowUp> {
     let words: Vec<&str> = said.split_whitespace().collect();
-    parse_trim(&words)
-        .map(FollowUp::Trim)
-        .or_else(|| parse_rename(&words).map(FollowUp::Rename))
+    // A new part starts at "and" or "then" followed by something to do; an "and" inside a name
+    // ("rename it to rock and roll") stays in it.
+    let mut parts: Vec<&[&str]> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < words.len() {
+        let joiner = matches!(words[i], "and" | "then");
+        let after = if words[i] == "and" && words.get(i + 1) == Some(&"then") {
+            i + 2
+        } else {
+            i + 1
+        };
+        if joiner && i > start && starts_command(&words[after.min(words.len())..]) {
+            parts.push(&words[start..i]);
+            start = after;
+            i = after;
+            continue;
+        }
+        i += 1;
+    }
+    parts.push(&words[start..]);
+    parts.into_iter().filter_map(parse_part).collect()
+}
+
+/// One thing to do, from the command word that comes first.
+fn parse_part(words: &[&str]) -> Option<FollowUp> {
+    let first = |list: &[&str]| words.iter().position(|w| list.contains(w));
+    let rename_first = match (first(&RENAME_WORDS).or(first(&["re"])), first(&TRIM_WORDS)) {
+        (Some(r), Some(t)) => r < t,
+        (r, _) => r.is_some(),
+    };
+    let rename = || parse_rename(words).map(FollowUp::Rename);
+    let trim = || parse_trim(words).map(FollowUp::Trim);
+    if rename_first {
+        rename().or_else(trim)
+    } else {
+        trim().or_else(rename)
+    }
 }
 
 fn parse_rename(words: &[&str]) -> Option<String> {
@@ -532,9 +581,7 @@ fn parse_rename(words: &[&str]) -> Option<String> {
 }
 
 fn parse_trim(words: &[&str]) -> Option<u32> {
-    let at = words
-        .iter()
-        .position(|w| matches!(*w, "trim" | "trimmed" | "cut" | "shorten" | "keep" | "make"))?;
+    let at = words.iter().position(|w| TRIM_WORDS.contains(w))?;
     // "make" and "keep" are everyday words: only with "it" or "the last" after them.
     let next = words.get(at + 1).copied();
     if words[at] == "make" && next != Some("it") {
@@ -717,7 +764,7 @@ impl Resampler {
 pub fn run(
     shared: Arc<Shared>,
     heard: impl Fn() + Send + 'static,
-    told: impl Fn(FollowUp) + Send + 'static,
+    told: impl Fn(Vec<FollowUp>) + Send + 'static,
 ) {
     let (tx, rx): (SyncSender<Chunk>, Receiver<Chunk>) = sync_channel(64);
     let mut engine: Option<Arc<Engine>> = None;
@@ -777,12 +824,13 @@ pub fn run(
             Ok((samples, rate, channels)) => {
                 if let Some((open, until)) = &mut follow
                     && let Some(said) = open.feed(&samples, rate, channels)
-                    && let Some(f) = parse_follow_up(&said)
+                    && let todo = parse_follow_ups(&said)
+                    && !todo.is_empty()
                 {
-                    info!("heard \"{said}\": {f:?}");
+                    info!("heard \"{said}\": {todo:?}");
                     // Room for one more: "rename it ...", then "trim it ...".
                     *until = Instant::now() + FOLLOW_UP;
-                    told(f);
+                    told(todo);
                 }
                 if let Some(l) = &mut listener
                     && l.feed(&samples, rate, channels)
@@ -935,6 +983,42 @@ const FILLER: &str = "the a an and or but so to of in on at for with by from up 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one thing `said` asks for, if any.
+    fn parse_follow_up(said: &str) -> Option<FollowUp> {
+        let mut todo = parse_follow_ups(said);
+        assert!(todo.len() <= 1, "{said}: {todo:?}");
+        todo.pop()
+    }
+
+    #[test]
+    fn several_follow_ups_in_one_go() {
+        use FollowUp::{Rename, Trim};
+        // As heard in the user's log: the rename was dropped and only the trim done.
+        assert_eq!(
+            parse_follow_ups(
+                "rename it to daddy fart nugget thirty two and trim to thirty seconds"
+            ),
+            [Rename("Daddy Fart Nugget Thirty Two".into()), Trim(30)]
+        );
+        assert_eq!(
+            parse_follow_ups("trim it to thirty seconds and then call it the ace"),
+            [Trim(30), Rename("The Ace".into())]
+        );
+        assert_eq!(
+            parse_follow_ups("keep the last minute then rename it two boss fight"),
+            [Trim(60), Rename("Boss Fight".into())]
+        );
+        // "and" inside a name, or a number in one, isn't a second command.
+        assert_eq!(
+            parse_follow_ups("rename it to rock and roll"),
+            [Rename("Rock And Roll".into())]
+        );
+        assert_eq!(
+            parse_follow_ups("call it make it rain"),
+            [Rename("Make It Rain".into())]
+        );
+    }
 
     #[test]
     fn follow_ups_as_people_say_them() {

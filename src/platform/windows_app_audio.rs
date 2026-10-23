@@ -32,8 +32,6 @@ use ::windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerfor
 use ::windows::Win32::System::Variant::VT_BLOB;
 use ::windows::core::{HRESULT, IUnknown, Interface, Ref, implement};
 
-use kairo::pcm::PcmRing;
-
 use crate::log::{info, warning};
 use crate::recorder::{Shared, now_us};
 
@@ -269,18 +267,9 @@ impl Drop for Split {
     }
 }
 
-/// Puts a ring at `track` for this capture's sound, keeping one that's already there; a new one
-/// carries on whatever a session is writing.
+/// Puts a ring at `track` for this capture's sound, keeping what one already there holds.
 fn ensure_ring(shared: &Shared, track: crate::recorder::Track, keep_us: i64) {
-    let fits = shared
-        .track(track)
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.rate == RATE && r.channels == CHANNELS);
-    if !fits {
-        shared.set_ring(track, Some(PcmRing::new(RATE, CHANNELS, keep_us)));
-    }
+    shared.keep_ring(track, RATE, CHANNELS, keep_us);
 }
 
 /// Puts this thread in COM's multithreaded apartment for the rest of its life (see `audio::run`).
