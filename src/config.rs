@@ -611,9 +611,9 @@ pub fn save(path: &Path, s: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let text = toml::to_string_pretty(s).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // The window and the background process (the tray's switches) both save: each writes its
+    // own temporary file, so neither swaps in the other's half-written one.
+    crate::library::write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {

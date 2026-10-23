@@ -348,6 +348,20 @@ impl Ring {
         self.ended_tape = ended;
     }
 
+    /// Lets go of the video held so far, as if recording started now ("fresh after save"). The
+    /// stream goes on, and so does a session's file: unlike [`Ring::clear`], this ends no tape.
+    /// Until the next keyframe, nothing new is held.
+    pub fn forget_held(&mut self) {
+        if let Some(s) = &self.spill {
+            // As in `clear`: what snapshots still hold may be overwritten from now on.
+            s.file.valid_from.store(s.next_seq, Ordering::SeqCst);
+        }
+        self.done.clear();
+        self.done_bytes = 0;
+        self.done_in_memory = 0;
+        self.current = None;
+    }
+
     /// A new encoder run with the same settings: what's held stays usable, but the old stream's
     /// unfinished packet and GOP end here.
     pub fn new_run(&mut self) {
@@ -455,9 +469,10 @@ impl Ring {
         // Packets before the first keyframe can't be decoded; drop them.
         if let Some(g) = &mut self.current {
             g.bytes.extend_from_slice(p);
-            if let Some(t) = &mut self.tape {
-                t.write(p);
-            }
+        }
+        // A tape starts at a keyframe, so everything after it belongs, held or not.
+        if let Some(t) = &mut self.tape {
+            t.write(p);
         }
     }
 
@@ -815,5 +830,33 @@ mod tests {
         assert!(ring.tape_ended() && ring.tape_progress().is_none());
         assert!(ring.take_tape().is_some() && !ring.tape_ended());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn forgetting_the_replay_keeps_the_tape_going() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.ts");
+        let mut ring = Ring::new(30 * SEC, usize::MAX);
+        let s = stream(60 * 6, 60, 60);
+        for (data, now) in &s[..60 * 2 + 20] {
+            ring.push(data, *now);
+        }
+        ring.start_tape(&path).unwrap();
+        for (data, now) in &s[60 * 2 + 20..60 * 3 + 30] {
+            ring.push(data, *now);
+        }
+        // "Fresh after save": nothing held, and nothing new until the next keyframe (4 s).
+        ring.forget_held();
+        assert_eq!(ring.bytes(), 0);
+        assert!(ring.snapshot(BASE_US).is_none());
+        for (data, now) in &s[60 * 3 + 30..] {
+            ring.push(data, *now);
+        }
+        let snap = ring.snapshot(BASE_US).unwrap();
+        assert_eq!(snap.start_us(), BASE_US + 4 * SEC);
+        // The session's file goes on without a hole: from 2 s to the end, every packet.
+        assert!(!ring.tape_ended());
+        let data = std::fs::read(ring.take_tape().unwrap().finish().unwrap()).unwrap();
+        assert_eq!(data.len(), (2 + 4 * GOP / PACKET) * PACKET);
     }
 }

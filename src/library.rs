@@ -622,6 +622,18 @@ fn read_trash_list(dir: &Path) -> BTreeMap<String, TrashEntry> {
         .unwrap_or_default()
 }
 
+/// Changes the list of what's in Recently deleted while holding its lock: the background
+/// process tidying and the window deleting at the same moment would otherwise each write back
+/// what they read, losing the other's entry (and a file without one counts as deleted when it
+/// was last changed, so an old clip would be gone for good at the next tidy).
+fn edit_trash_list(dir: &Path, f: impl FnOnce(&mut BTreeMap<String, TrashEntry>)) {
+    with_lock(&trash_dir(dir).join(TRASH_LIST), || {
+        let mut list = read_trash_list(dir);
+        f(&mut list);
+        write_trash_list(dir, &list);
+    });
+}
+
 fn write_trash_list(dir: &Path, list: &BTreeMap<String, TrashEntry>) {
     let path = trash_dir(dir).join(TRASH_LIST);
     if list.is_empty() {
@@ -736,18 +748,18 @@ pub fn trash(dir: &Path, file: &Path, now: u64) -> std::io::Result<PathBuf> {
     if srt.exists() {
         let _ = move_file(&srt, &to.with_extension("srt"));
     }
-    let mut list = read_trash_list(dir);
-    list.insert(
-        to.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string(),
-        TrashEntry {
-            from: file.to_path_buf(),
-            deleted: now,
-        },
-    );
-    write_trash_list(dir, &list);
+    edit_trash_list(dir, |list| {
+        list.insert(
+            to.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            TrashEntry {
+                from: file.to_path_buf(),
+                deleted: now,
+            },
+        );
+    });
     Ok(to)
 }
 
@@ -787,8 +799,7 @@ pub fn restore(dir: &Path, trashed: &Path) -> std::io::Result<PathBuf> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let mut list = read_trash_list(dir);
-    let from = list
+    let from = read_trash_list(dir)
         .get(&name)
         .map_or_else(|| dir.join(&name), |t| t.from.clone());
     if let Some(parent) = from.parent() {
@@ -800,8 +811,9 @@ pub fn restore(dir: &Path, trashed: &Path) -> std::io::Result<PathBuf> {
     if srt.exists() {
         let _ = move_file(&srt, &to.with_extension("srt"));
     }
-    list.remove(&name);
-    write_trash_list(dir, &list);
+    edit_trash_list(dir, |list| {
+        list.remove(&name);
+    });
     Ok(to)
 }
 
@@ -809,11 +821,11 @@ pub fn restore(dir: &Path, trashed: &Path) -> std::io::Result<PathBuf> {
 pub fn purge(dir: &Path, trashed: &Path) -> std::io::Result<()> {
     patiently(|| std::fs::remove_file(trashed))?;
     let _ = std::fs::remove_file(trashed.with_extension("srt"));
-    let mut list = read_trash_list(dir);
     if let Some(n) = trashed.file_name() {
-        list.remove(&*n.to_string_lossy());
+        edit_trash_list(dir, |list| {
+            list.remove(&*n.to_string_lossy());
+        });
     }
-    write_trash_list(dir, &list);
     Ok(())
 }
 
@@ -1187,6 +1199,42 @@ mod tests {
         assert_eq!(purge_expired(d, 5_000 + TRASH_SECONDS).len(), 1);
         assert!(!t3.exists());
         assert!(!trash_dir(d).join(TRASH_LIST).exists());
+    }
+
+    #[test]
+    fn deletes_at_the_same_moment_all_stay_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_path_buf();
+        // Old clips: one that lost its entry would count as deleted long ago.
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let clips: Vec<PathBuf> = (0..12)
+            .map(|i| {
+                let p = d.join(format!("Game {i}.mp4"));
+                std::fs::write(&p, b"clip").unwrap();
+                std::fs::File::options()
+                    .write(true)
+                    .open(&p)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+                p
+            })
+            .collect();
+        let now = 10_000_000;
+        let threads: Vec<_> = clips
+            .into_iter()
+            .map(|p| {
+                let d = d.clone();
+                std::thread::spawn(move || trash(&d, &p, now).unwrap())
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let list = trashed(&d);
+        assert_eq!(list.len(), 12);
+        assert!(list.iter().all(|t| t.deleted == now), "no entry was lost");
+        assert!(purge_expired(&d, now + 1).is_empty());
     }
 
     #[test]

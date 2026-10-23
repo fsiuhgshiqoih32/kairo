@@ -273,7 +273,7 @@ fn record_for(ff: &std::path::Path, plan: &VideoPlan, shared: &Arc<Shared>, d: D
         std::thread::sleep(d);
         s.video_generation.fetch_add(1, Ordering::SeqCst);
     });
-    let _ = recorder::run_plan(ff, plan, shared, generation);
+    let _ = recorder::run_plan(ff, plan, shared, generation, recorder::QUIET_FIRST);
     let _ = stopper.join();
 }
 

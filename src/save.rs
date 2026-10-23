@@ -3,7 +3,6 @@
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -204,16 +203,22 @@ pub fn screenshot(shared: &Shared, title: Option<&str>) -> Result<PathBuf, Strin
     snap.write_to(BufWriter::new(f))
         .map_err(|e| format!("could not write the video: {e}"))?;
     drop(snap);
-    // Count the frames without decoding, then decode only up to the last one.
-    let out = ffmpeg::command(&ffmpeg)
-        .args(["-hide_banner", "-nostdin", "-i"])
-        .arg(&video)
-        .args(["-map", "0:v:0", "-c", "copy", "-f", "null", "-"])
-        .output()
-        .map_err(|e| format!("could not start ffmpeg: {e}"))?;
-    let frames = frame_count(&String::from_utf8_lossy(&out.stderr))
-        .unwrap_or(1)
-        .max(1);
+    // Count the frames without decoding, then decode only up to the last one. With a time
+    // limit like every other run: a stuck ffmpeg would hold this thread and its folder for good.
+    let count_args: Vec<String> = ["-hide_banner", "-nostdin", "-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain([video.display().to_string()])
+        .chain(["-map", "0:v:0", "-c", "copy", "-f", "null", "-"].map(String::from))
+        .collect();
+    let frames = match ffmpeg::run_logged(&ffmpeg, &count_args, Duration::from_secs(20)) {
+        Ok(log) => frame_count(&log).unwrap_or(1).max(1),
+        Err(e) if e == ffmpeg::TOO_LONG => {
+            return Err(format!("could not save the screenshot: {e}"));
+        }
+        // Counting can complain where decoding the keyframe still works.
+        Err(_) => 1,
+    };
     let dir = settings.screenshot_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -317,16 +322,6 @@ pub fn save_inner(
         .map_err(|e| format!("could not create {}: {e}", work.display()))?;
     let cleanup = Cleanup(work.clone());
 
-    // The video goes straight from the replay buffer into ffmpeg: through a file first, a
-    // save wrote (and the system cached) every byte twice, hundreds of MB at the moment of
-    // saving, while a game was running.
-    let video = Path::new("pipe:0");
-    let snap = Arc::new(snap);
-    let feed = || -> ffmpeg::Feed {
-        let snap = snap.clone();
-        Box::new(move |w| snap.write_to(BufWriter::with_capacity(1 << 20, w)))
-    };
-
     let mut audio: Vec<(PathBuf, &str)> = Vec::new();
     for (name, ring) in [
         ("Game", &shared.desktop),
@@ -359,6 +354,24 @@ pub fn save_inner(
             c.write_to(BufWriter::new(f)).ok()?;
             Some(c.start_us())
         });
+
+    // The video goes straight from the replay buffer into ffmpeg: through a file first, a
+    // save wrote (and the system cached) every byte twice, hundreds of MB at the moment of
+    // saving, while a game was running. Not with the webcam: that encodes again, slower than
+    // the buffer may wait before newer video takes the place of what's being read (and tries
+    // again without the webcam if it fails), so the video is copied out first, at disk speed.
+    let video_file = work.join("video.ts");
+    let (video, feed): (&Path, Option<ffmpeg::Feed>) = if cam_start.is_some() {
+        let f = std::fs::File::create(&video_file).map_err(|e| e.to_string())?;
+        snap.write_to(BufWriter::new(f))
+            .map_err(|e| format!("could not write the video: {e}"))?;
+        drop(snap);
+        (&video_file, None)
+    } else {
+        let feed: ffmpeg::Feed =
+            Box::new(move |w| snap.write_to(BufWriter::with_capacity(1 << 20, w)));
+        (Path::new("pipe:0"), Some(feed))
+    };
 
     let dir = settings.save_dir();
     std::fs::create_dir_all(&dir)
@@ -395,15 +408,15 @@ pub fn save_inner(
         };
         args::save_with_cam_args(video, Some(&overlay), &refs, hevc, &partial)
     });
-    let saved = match with_cam {
+    let saved = match (with_cam, feed) {
+        (_, Some(feed)) => ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed),
         // Encoding again can fail where copying can't (a busy encoder): keep the clip anyway.
-        Some(a) => ffmpeg::run_fed(&ffmpeg, &a, Duration::from_secs(300), feed()).or_else(|e| {
+        (Some(a), None) => ffmpeg::run(&ffmpeg, &a, Duration::from_secs(300)).or_else(|e| {
             warning!("could not add the webcam: {e}");
-            ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed())
+            ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
         }),
-        None => ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed()),
+        (None, None) => ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120)),
     };
-    drop(snap);
     saved.map_err(|e| format!("could not save the clip: {e}"))?;
     std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;
 

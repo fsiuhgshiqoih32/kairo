@@ -188,10 +188,18 @@ impl Drop for Hold {
     }
 }
 
+/// What [`run`] says when ffmpeg ran past its time limit (and was stopped).
+pub const TOO_LONG: &str = "ffmpeg took too long";
+
 /// Runs ffmpeg to completion, giving up after `timeout`. `Err` carries its error output.
 /// Below normal priority: these are saves, exports and pictures, made while a game may be
 /// running.
 pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
+    run_on(ffmpeg, args, timeout, None, None).map(drop)
+}
+
+/// Like [`run`], giving back what ffmpeg printed (its log and progress lines) when it succeeds.
+pub fn run_logged(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<String, String> {
     run_on(ffmpeg, args, timeout, None, None)
 }
 
@@ -202,7 +210,7 @@ pub fn run_reading(
     timeout: Duration,
     clip: &Path,
 ) -> Result<(), String> {
-    run_on(ffmpeg, args, timeout, Some(clip), None)
+    run_on(ffmpeg, args, timeout, Some(clip), None).map(drop)
 }
 
 /// What an ffmpeg reading `pipe:0` gets, written on its own thread.
@@ -216,7 +224,7 @@ pub fn run_fed(
     timeout: Duration,
     feed: Feed,
 ) -> Result<(), String> {
-    run_on(ffmpeg, args, timeout, None, Some(feed))
+    run_on(ffmpeg, args, timeout, None, Some(feed)).map(drop)
 }
 
 fn run_on(
@@ -225,7 +233,7 @@ fn run_on(
     timeout: Duration,
     reads: Option<&Path>,
     feed: Option<Feed>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut cmd = command(ffmpeg);
     platform::hide_console_low_priority(&mut cmd);
     if feed.is_some() {
@@ -257,7 +265,7 @@ fn run_on(
         }
         if start.elapsed() > timeout {
             child.kill();
-            return Err("ffmpeg took too long".into());
+            return Err(TOO_LONG.into());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -269,7 +277,7 @@ fn run_on(
     match writer.map(|w| w.join()) {
         Some(Ok(Err(e))) => Err(e.to_string()),
         Some(Err(_)) => Err("the input stopped part way".into()),
-        _ => Ok(()),
+        _ => Ok(err),
     }
 }
 

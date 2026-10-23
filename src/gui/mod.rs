@@ -1726,6 +1726,21 @@ impl App {
         Task::none()
     }
 
+    /// Takes the pop-ups switch from the settings file when the tray menu changed it and this
+    /// window didn't: saving the window's settings would otherwise undo it.
+    fn adopt_popups_from_disk(&mut self) {
+        // Switched here since the last save: that's the newer choice.
+        if self.settings.notify != self.saved.notify {
+            return;
+        }
+        if let Ok(s) = config::load(&config::default_path())
+            && s.notify != self.saved.notify
+        {
+            self.settings.notify = s.notify;
+            self.saved.notify = s.notify;
+        }
+    }
+
     /// Twice a second: the recorder's state, settings to save, requests from other processes.
     fn tick(&mut self) -> Task<Message> {
         if self.test.is_some() {
@@ -1742,20 +1757,15 @@ impl App {
         )];
         if self.ticks.is_multiple_of(3) {
             tasks.push(self.refresh());
-            // Pop-ups turned on or off from the tray: take that, or saving here would undo it.
-            if self.changed_at.is_none()
-                && let Ok(s) = config::load(&config::default_path())
-                && s.notify != self.saved.notify
-            {
-                self.settings.notify = s.notify;
-                self.saved.notify = s.notify;
-            }
+            self.adopt_popups_from_disk();
         }
         if let Some(t) = self.changed_at
             && t.elapsed() > Duration::from_millis(600)
         {
             self.changed_at = None;
             self.settings.sanitize();
+            // The tray may have switched pop-ups since the last look.
+            self.adopt_popups_from_disk();
             if self.settings != self.saved {
                 let folder_changed = self.settings.save_dir() != self.saved.save_dir();
                 match config::save(&config::default_path(), &self.settings) {

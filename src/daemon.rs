@@ -762,8 +762,12 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
         let secs = seconds.unwrap_or(settings.clip_seconds) + post;
         let result = save::save_inner(&shared, Some(secs), title.as_deref());
         if result.is_ok() && settings.fresh_after_save {
-            shared.ring.lock().unwrap().clear();
-            shared.marks.lock().unwrap().clear();
+            // Not `clear`: that ends the stream's tape, cutting a running session in two.
+            shared.ring.lock().unwrap().forget_held();
+            // A session's bookmarks stay; the next clip starts after this one anyway.
+            if shared.session.lock().unwrap().is_none() {
+                shared.marks.lock().unwrap().clear();
+            }
         }
         drop(done);
         if !settings.notify && !(share && result.is_ok()) {

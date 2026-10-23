@@ -3,7 +3,7 @@
 //! program (and the ffmpeg beside it) in place. The caller restarts Kairo afterwards.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -253,36 +253,87 @@ pub fn install(update: &Update) -> Result<(), String> {
     let ffmpeg = take(FFMPEG)?;
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    if let (Some(new), Some(dir)) = (ffmpeg, exe.parent()) {
-        replace_beside(&dir.join(FFMPEG), &new)?;
+    // The old ffmpeg is kept until the program is replaced too: a program and an ffmpeg from
+    // different versions may not work together, so neither is swapped alone.
+    let swapped = match (ffmpeg, exe.parent()) {
+        (Some(new), Some(dir)) => swap_beside(&dir.join(FFMPEG), &new)?,
+        _ => None,
+    };
+    let result = (|| {
+        let staged = std::env::temp_dir().join(format!("kairo-update-{}", std::process::id()));
+        std::fs::write(&staged, &program)
+            .map_err(|e| format!("could not stage the update: {e}"))?;
+        make_executable(&staged);
+        let replaced = self_replace::self_replace(&staged)
+            .map_err(|e| format!("could not replace the program file: {e}"));
+        let _ = std::fs::remove_file(&staged);
+        replaced
+    })();
+    if let Some(s) = swapped {
+        match &result {
+            Ok(()) => s.keep(),
+            Err(e) => {
+                if let Err(undo) = s.undo() {
+                    return Err(format!("{e}; {undo}"));
+                }
+            }
+        }
     }
-    let staged = std::env::temp_dir().join(format!("kairo-update-{}", std::process::id()));
-    std::fs::write(&staged, &program).map_err(|e| format!("could not stage the update: {e}"))?;
-    make_executable(&staged);
-    let result = self_replace::self_replace(&staged)
-        .map_err(|e| format!("could not replace the program file: {e}"));
-    let _ = std::fs::remove_file(&staged);
     result
 }
 
-/// Replaces `path` with `bytes`, even while the old file is running (Windows lets a running
-/// program be renamed, not overwritten).
-fn replace_beside(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// A file [`swap_beside`] replaced, with its old copy kept until [`Swapped::keep`] or
+/// [`Swapped::undo`].
+struct Swapped {
+    path: PathBuf,
+    /// The old file, moved aside (`None`: there wasn't one).
+    old: Option<PathBuf>,
+}
+
+impl Swapped {
+    /// The new file stays; the old copy goes (if it's still running, the next update clears it).
+    fn keep(self) {
+        if let Some(old) = self.old {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+
+    /// Puts the old file back in place of the new one.
+    fn undo(self) -> Result<(), String> {
+        match self.old {
+            Some(old) => std::fs::rename(&old, &self.path),
+            None => std::fs::remove_file(&self.path),
+        }
+        .map_err(|e| format!("could not put back {}: {e}", self.path.display()))
+    }
+}
+
+/// Puts `bytes` in place of `path`, even while the old file is running (Windows lets a running
+/// program be renamed, not overwritten), keeping the old one aside. `None` if it was the same.
+fn swap_beside(path: &Path, bytes: &[u8]) -> Result<Option<Swapped>, String> {
     if std::fs::read(path).is_ok_and(|old| old == bytes) {
-        return Ok(());
+        return Ok(None);
     }
     let new = path.with_extension("new");
     std::fs::write(&new, bytes).map_err(|e| format!("could not write {}: {e}", new.display()))?;
     make_executable(&new);
     let old = path.with_extension("old");
     let _ = std::fs::remove_file(&old);
-    if path.exists() {
+    let had_one = path.exists();
+    if had_one {
         std::fs::rename(path, &old)
             .map_err(|e| format!("could not move {}: {e}", path.display()))?;
     }
-    std::fs::rename(&new, path).map_err(|e| format!("could not place {}: {e}", path.display()))?;
-    let _ = std::fs::remove_file(&old);
-    Ok(())
+    if let Err(e) = std::fs::rename(&new, path) {
+        if had_one {
+            let _ = std::fs::rename(&old, path);
+        }
+        return Err(format!("could not place {}: {e}", path.display()));
+    }
+    Ok(Some(Swapped {
+        path: path.to_path_buf(),
+        old: had_one.then_some(old),
+    }))
 }
 
 fn make_executable(_path: &Path) {
@@ -491,9 +542,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join(FFMPEG);
         std::fs::write(&p, b"old").unwrap();
-        replace_beside(&p, b"new").unwrap();
+        swap_beside(&p, b"new").unwrap().unwrap().keep();
         assert_eq!(std::fs::read(&p).unwrap(), b"new");
         assert!(!p.with_extension("old").exists());
-        replace_beside(&dir.path().join("fresh"), b"x").unwrap();
+        // The same file again: nothing to do.
+        assert!(swap_beside(&p, b"new").unwrap().is_none());
+        let fresh = dir.path().join("fresh");
+        swap_beside(&fresh, b"x").unwrap().unwrap().keep();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"x");
+    }
+
+    #[test]
+    fn a_failed_update_puts_the_old_ffmpeg_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(FFMPEG);
+        std::fs::write(&p, b"old").unwrap();
+        let s = swap_beside(&p, b"new").unwrap().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"new");
+        s.undo().unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"old");
+        assert!(!p.with_extension("old").exists());
+        // None there before: undoing leaves none.
+        let fresh = dir.path().join("fresh");
+        swap_beside(&fresh, b"x").unwrap().unwrap().undo().unwrap();
+        assert!(!fresh.exists());
     }
 }

@@ -8,7 +8,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -34,10 +34,34 @@ const MAX_SESSION_US: i64 = 5 * 3600 * 1_000_000;
 /// Kept free on the drive sessions grow on: a full system drive stalls Windows itself.
 const KEEP_FREE: u64 = 10_000_000_000;
 
-/// Whether a session of `bytes` so far should end while joining it (a copy of as much) still
-/// leaves [`KEEP_FREE`]. Unknown free space is no reason to stop.
+/// Whether writing `bytes` more would leave less than [`KEEP_FREE`]. Unknown free space is no
+/// reason to stop.
 fn out_of_room(bytes: u64, free: Option<u64>) -> bool {
     free.is_some_and(|f| f < bytes.saturating_add(KEEP_FREE))
+}
+
+/// Whether a session of `bytes` so far should end while joining it (a copy of as much) still
+/// fits, next to the joins still running (`joining` bytes yet to be copied).
+fn should_end(bytes: u64, joining: u64, free: Option<u64>) -> bool {
+    out_of_room(bytes.saturating_add(joining), free)
+}
+
+/// Whether a new session may start: with room to grow ([`KEEP_FREE`] more) once the joins
+/// still running have copied their `joining` bytes. A session stopped for space would
+/// otherwise start again straight away, while its own join fills the drive.
+fn may_start(joining: u64, free: Option<u64>) -> bool {
+    !out_of_room(KEEP_FREE.saturating_add(joining), free)
+}
+
+/// Free space for sessions: the smaller of the drive their files grow on and the one they're
+/// joined onto (usually the same drive).
+fn free_for_sessions(settings: &Settings) -> Option<u64> {
+    let work = crate::platform::free_space_for(&work_root());
+    let out = crate::platform::free_space_for(&dir(settings));
+    match (work, out) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// What a session folder needs to be joined by a later Kairo.
@@ -65,18 +89,23 @@ fn work_root() -> PathBuf {
 
 /// Sessions being joined. Quitting waits for them, or their files would wait for the next start.
 static JOINING: AtomicUsize = AtomicUsize::new(0);
+/// The video those joins are copying, in bytes: room they're about to take.
+static JOINING_BYTES: AtomicU64 = AtomicU64::new(0);
 
-struct Joining;
+struct Joining(u64);
 
 impl Joining {
-    fn new() -> Joining {
+    /// A join of a session with `bytes` of video.
+    fn new(bytes: u64) -> Joining {
         JOINING.fetch_add(1, Ordering::SeqCst);
-        Joining
+        JOINING_BYTES.fetch_add(bytes, Ordering::SeqCst);
+        Joining(bytes)
     }
 }
 
 impl Drop for Joining {
     fn drop(&mut self) {
+        JOINING_BYTES.fetch_sub(self.0, Ordering::SeqCst);
         JOINING.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -155,7 +184,7 @@ pub fn stop(
     let marks: Vec<i64> = shared.marks.lock().unwrap().iter().copied().collect();
     let inputs = shared.inputs_within(s.start_us, end_us);
     let settings = shared.settings();
-    let joining = Joining::new();
+    let joining = Joining::new(video.as_ref().map_or(0, |t| t.bytes));
     std::thread::spawn(move || {
         let _joining = joining;
         let result = (|| {
@@ -259,7 +288,6 @@ pub fn leftovers() -> Vec<PathBuf> {
 /// `Ok(None)` if it held nothing worth keeping (it's removed). Its marks and keys are lost:
 /// they lived in the stopped process.
 pub fn recover(work: &Path, settings: &Settings) -> Result<Option<(PathBuf, f64)>, String> {
-    let _joining = Joining::new();
     let video = work.join(VIDEO);
     let Some(meta) = std::fs::metadata(&video)
         .ok()
@@ -268,6 +296,7 @@ pub fn recover(work: &Path, settings: &Settings) -> Result<Option<(PathBuf, f64)
         let _ = std::fs::remove_dir_all(work);
         return Ok(None);
     };
+    let _joining = Joining::new(meta.len());
     let note: Option<Note> = std::fs::read(work.join(NOTE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -358,19 +387,20 @@ pub fn tend(shared: &Arc<Shared>, title: impl Fn() -> Option<String>) -> bool {
     };
     let too_long = tape.is_some_and(|(s, _)| now_us() - s > MAX_SESSION_US);
     let free = (wanted || tape.is_some())
-        .then(|| crate::platform::free_space_for(&work_root()))
+        .then(|| free_for_sessions(&shared.settings()))
         .flatten();
-    let full = tape.is_some_and(|(_, bytes)| out_of_room(bytes, free));
+    let joining = JOINING_BYTES.load(Ordering::SeqCst);
+    let full = tape.is_some_and(|(_, bytes)| should_end(bytes, joining, free));
     let active = shared.session.lock().unwrap().is_some();
     if active && (ended || too_long || !wanted || full) {
         if full {
-            warning!("the drive is nearly full: saving the session and starting no more for now");
+            warning!(
+                "the drive is nearly full: saving the session; the next starts once there's room"
+            );
         }
         return true;
     }
-    // A new one only with room to grow: a session stopped for space would start straight away.
-    if wanted && !active && !out_of_room(KEEP_FREE, free) && shared.status.lock().unwrap().recording
-    {
+    if wanted && !active && may_start(joining, free) && shared.status.lock().unwrap().recording {
         let _ = start(shared, title());
     }
     false
@@ -402,12 +432,23 @@ mod tests {
     fn a_session_stops_while_joining_it_still_fits() {
         const GB: u64 = 1_000_000_000;
         // 30 GB recorded: joining copies it, and 10 GB must stay free.
-        assert!(!out_of_room(30 * GB, Some(41 * GB)));
-        assert!(out_of_room(30 * GB, Some(39 * GB)));
-        assert!(!out_of_room(30 * GB, None));
+        assert!(!should_end(30 * GB, 0, Some(41 * GB)));
+        assert!(should_end(30 * GB, 0, Some(39 * GB)));
+        assert!(!should_end(30 * GB, 0, None));
         // A new session needs 20 GB free to start.
-        assert!(out_of_room(KEEP_FREE, Some(19 * GB)));
-        assert!(!out_of_room(KEEP_FREE, Some(21 * GB)));
+        assert!(!may_start(0, Some(19 * GB)));
+        assert!(may_start(0, Some(21 * GB)));
+    }
+
+    #[test]
+    fn joins_still_running_count_against_the_room() {
+        const GB: u64 = 1_000_000_000;
+        // 55 GB free, a 45 GB session still being copied: no new session, though 55 > 20.
+        assert!(!may_start(45 * GB, Some(55 * GB)));
+        assert!(may_start(45 * GB, Some(66 * GB)));
+        // And one already running ends sooner.
+        assert!(should_end(5 * GB, 45 * GB, Some(59 * GB)));
+        assert!(!should_end(5 * GB, 45 * GB, Some(61 * GB)));
     }
 
     #[test]

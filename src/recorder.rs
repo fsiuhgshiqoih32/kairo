@@ -376,6 +376,24 @@ pub enum Outcome {
     FailedToStart(String),
     /// Recorded for a while, then stopped (the screen changed, a driver hiccup).
     Ended(String),
+    /// ffmpeg kept running but no video came for a while. `live` if video had kept coming
+    /// before that, beyond the capture's first frames.
+    Quiet { live: bool },
+}
+
+/// With no video for this long after it started, a capture counts as stuck and starts again:
+/// a driver reset or a graphics card out of memory can leave ffmpeg running with nothing
+/// coming out, and saves would hold the old video. A screen where nothing changes can send
+/// nothing too, so each restart that brings no video back waits twice as long, up to
+/// [`QUIET_MAX`].
+pub const QUIET_FIRST: Duration = Duration::from_secs(15);
+const QUIET_MAX: Duration = Duration::from_secs(8 * 60);
+
+/// How long a run may go without video after `restarts` quiet restarts in a row.
+fn quiet_limit(restarts: u32) -> Duration {
+    QUIET_FIRST
+        .saturating_mul(1 << restarts.min(5))
+        .min(QUIET_MAX)
 }
 
 /// Runs until `shared.stop` is set. Call on its own thread.
@@ -400,6 +418,8 @@ pub fn run(shared: Arc<Shared>) {
     let mut good: Option<(Source, Encoder, VideoCodec)> = None;
     let mut encoders: Option<Vec<Encoder>> = None;
     let mut last_plan: Option<VideoPlan> = None;
+    // Quiet restarts in a row that brought no video back (see `QUIET_FIRST`).
+    let mut quiet_restarts = 0;
     while !shared.stop.load(Ordering::Relaxed) {
         if shared.paused.load(Ordering::Relaxed) {
             // Nothing from before the pause may end up in a clip saved after it.
@@ -492,8 +512,25 @@ pub fn run(shared: Arc<Shared>) {
                 }
             }
             last_plan = Some(plan.clone());
-            match run_plan(&ffmpeg, &plan, &shared, generation) {
+            let quiet_after = quiet_limit(quiet_restarts);
+            match run_plan(&ffmpeg, &plan, &shared, generation, quiet_after) {
                 Outcome::Interrupted => {
+                    quiet_restarts = 0;
+                    restart_now = true;
+                    break;
+                }
+                Outcome::Quiet { live } => {
+                    if live {
+                        warning!(
+                            "no video for {} s while recording: starting the capture again",
+                            quiet_after.as_secs()
+                        );
+                        quiet_restarts = 0;
+                    } else {
+                        // Most likely a screen where nothing changes: try again later each time.
+                        quiet_restarts += 1;
+                    }
+                    good = Some((source, encoder, codec));
                     restart_now = true;
                     break;
                 }
@@ -511,6 +548,7 @@ pub fn run(shared: Arc<Shared>) {
                 }
                 Outcome::Ended(e) => {
                     warning!("recording stopped: {e}");
+                    quiet_restarts = 0;
                     good = Some((source, encoder, codec));
                     // Pick everything again: the screen may have changed. Capture usually ends
                     // because a game is switching display modes; let the switch finish first.
@@ -596,8 +634,14 @@ impl SizeWatch {
 }
 
 /// Records `plan` until it ends or is interrupted (stop, pause, or `video_generation` moving on
-/// from `generation`).
-pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generation: u64) -> Outcome {
+/// from `generation`), or no video comes for `quiet_after`.
+pub fn run_plan(
+    ffmpeg: &Path,
+    plan: &VideoPlan,
+    shared: &Arc<Shared>,
+    generation: u64,
+    quiet_after: Duration,
+) -> Outcome {
     let args = args::record_args(plan);
     let mut child: Child = match ffmpeg::spawn(
         ffmpeg::command(ffmpeg)
@@ -608,11 +652,15 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
         Ok(c) => c,
         Err(e) => return Outcome::FailedToStart(format!("could not start ffmpeg: {e}")),
     };
+    let started = Instant::now();
     let got_data = Arc::new(AtomicBool::new(false));
+    // When video last came, in milliseconds from `started`.
+    let last_data_ms = Arc::new(AtomicU64::new(0));
     let reader = {
         let mut out = child.stdout.take().expect("piped stdout");
         let shared = shared.clone();
         let got = got_data.clone();
+        let last = last_data_ms.clone();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 256 * 1024];
             loop {
@@ -621,6 +669,7 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
                     Ok(n) => {
                         shared.ring.lock().unwrap().push(&buf[..n], now_us());
                         got.store(true, Ordering::Relaxed);
+                        last.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                     }
                 }
             }
@@ -648,7 +697,6 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
             }
         })
     };
-    let started = Instant::now();
     let mut announced = false;
     let mut last_look = Instant::now();
     let mut screen = SizeWatch::new(plan.src_size);
@@ -687,13 +735,24 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
             || resized;
         let stalled =
             !got_data.load(Ordering::Relaxed) && started.elapsed() > Duration::from_secs(8);
-        if interrupted || stalled {
+        let last_ms = last_data_ms.load(Ordering::Relaxed);
+        let quiet = got_data.load(Ordering::Relaxed)
+            && started
+                .elapsed()
+                .saturating_sub(Duration::from_millis(last_ms))
+                > quiet_after;
+        if interrupted || stalled || quiet {
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
             let _ = err_reader.join();
             break if interrupted {
                 Outcome::Interrupted
+            } else if quiet {
+                // Video that went on past the capture's first moments: it was really recording.
+                Outcome::Quiet {
+                    live: last_ms > 3000,
+                }
             } else {
                 Outcome::FailedToStart("no video arrived".into())
             };
@@ -728,6 +787,15 @@ pub fn run_plan(ffmpeg: &Path, plan: &VideoPlan, shared: &Arc<Shared>, generatio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quiet_capture_waits_longer_each_time_it_stays_quiet() {
+        assert_eq!(quiet_limit(0), Duration::from_secs(15));
+        assert_eq!(quiet_limit(1), Duration::from_secs(30));
+        assert_eq!(quiet_limit(4), Duration::from_secs(240));
+        assert_eq!(quiet_limit(5), QUIET_MAX);
+        assert_eq!(quiet_limit(40), QUIET_MAX);
+    }
 
     #[test]
     fn a_new_screen_size_counts_once_it_settles() {
