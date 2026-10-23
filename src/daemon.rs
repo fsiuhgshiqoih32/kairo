@@ -332,6 +332,18 @@ pub fn run(wait: bool) -> Result<(), String> {
                             warning!("{e}");
                         }
                     }
+                    Some(MenuAction::TogglePopups) => {
+                        // Through the settings file, which the window and the loop below follow.
+                        match config::load(&path) {
+                            Ok(mut s) => {
+                                s.notify = !s.notify;
+                                if let Err(e) = config::save(&path, &s) {
+                                    warning!("{e}");
+                                }
+                            }
+                            Err(e) => warning!("{e}"),
+                        }
+                    }
                     Some(MenuAction::ToggleAutostart) => {
                         if let Some(l) = &launcher {
                             autostart::set_enabled(l, !autostart::is_enabled(l));
@@ -455,7 +467,7 @@ pub fn run(wait: bool) -> Result<(), String> {
                 let s = shared.settings();
                 if s.check_updates && std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_none() {
                     let found = update_found.clone();
-                    std::thread::spawn(move || look_for_update(&found));
+                    std::thread::spawn(move || look_for_update(&found, s.notify));
                 }
             }
             if take_request(Request::Screenshot) {
@@ -525,6 +537,7 @@ pub fn run(wait: bool) -> Result<(), String> {
                     s.clip_seconds,
                     hotkey.label(),
                     launcher.as_ref().map(autostart::is_enabled),
+                    s.notify,
                     update.as_deref(),
                 );
             }
@@ -582,7 +595,7 @@ fn announced_path() -> PathBuf {
 }
 
 /// Asks GitHub for a newer version; the first time one turns up, shows a notice about it.
-fn look_for_update(found: &Mutex<Option<String>>) {
+fn look_for_update(found: &Mutex<Option<String>>, popup: bool) {
     match crate::updater::check() {
         Ok(Some(u)) => {
             *found.lock().unwrap() = Some(u.version.clone());
@@ -592,6 +605,10 @@ fn look_for_update(found: &Mutex<Option<String>>) {
             }
             let _ = std::fs::write(announced_path(), &u.version);
             info!("Kairo {} is available", u.version);
+            // With pop-ups off, the tray menu and the window still offer it.
+            if !popup {
+                return;
+            }
             let mut args = vec!["notify".to_string(), "--update".into(), u.version.clone()];
             if let Some(point) = crate::updater::highlights(&u.notes, 1).into_iter().next() {
                 args.push("--about".into());
@@ -684,6 +701,9 @@ fn tell(notify: bool, r: Result<(PathBuf, f64), String>) {
         Ok(_) => return,
         Err(e) => {
             warning!("{e}");
+            if !notify {
+                return;
+            }
             vec!["notify".into(), "--error".into(), e]
         }
     };

@@ -3,6 +3,7 @@
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -316,11 +317,15 @@ pub fn save_inner(
         .map_err(|e| format!("could not create {}: {e}", work.display()))?;
     let cleanup = Cleanup(work.clone());
 
-    let video = work.join("video.ts");
-    let f = std::fs::File::create(&video).map_err(|e| e.to_string())?;
-    snap.write_to(BufWriter::new(f))
-        .map_err(|e| format!("could not write the video: {e}"))?;
-    drop(snap);
+    // The video goes straight from the replay buffer into ffmpeg: through a file first, a
+    // save wrote (and the system cached) every byte twice, hundreds of MB at the moment of
+    // saving, while a game was running.
+    let video = Path::new("pipe:0");
+    let snap = Arc::new(snap);
+    let feed = || -> ffmpeg::Feed {
+        let snap = snap.clone();
+        Box::new(move |w| snap.write_to(BufWriter::with_capacity(1 << 20, w)))
+    };
 
     let mut audio: Vec<(PathBuf, &str)> = Vec::new();
     for (name, ring) in [
@@ -362,7 +367,7 @@ pub fn save_inner(
     let partial = out.with_extension("mp4.part");
     let refs: Vec<(&Path, &str)> = audio.iter().map(|(p, t)| (p.as_path(), *t)).collect();
     // ffmpeg picks the format from the name; write to .part and rename, so a clip appears whole.
-    let save_args = args::save_args(&video, &refs, hevc, &partial);
+    let save_args = args::save_args(video, &refs, hevc, &partial);
     let with_cam = cam_start.map(|cs| {
         let st = shared.status.lock().unwrap().clone();
         let encoder = st
@@ -388,16 +393,17 @@ pub fn save_inner(
             bitrate: bitrate as u64,
             fps: settings.fps,
         };
-        args::save_with_cam_args(&video, Some(&overlay), &refs, hevc, &partial)
+        args::save_with_cam_args(video, Some(&overlay), &refs, hevc, &partial)
     });
     let saved = match with_cam {
         // Encoding again can fail where copying can't (a busy encoder): keep the clip anyway.
-        Some(a) => ffmpeg::run(&ffmpeg, &a, Duration::from_secs(300)).or_else(|e| {
+        Some(a) => ffmpeg::run_fed(&ffmpeg, &a, Duration::from_secs(300), feed()).or_else(|e| {
             warning!("could not add the webcam: {e}");
-            ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120))
+            ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed())
         }),
-        None => ffmpeg::run(&ffmpeg, &save_args, Duration::from_secs(120)),
+        None => ffmpeg::run_fed(&ffmpeg, &save_args, Duration::from_secs(120), feed()),
     };
+    drop(snap);
     saved.map_err(|e| format!("could not save the clip: {e}"))?;
     std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;
 

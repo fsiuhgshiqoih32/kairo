@@ -7,6 +7,9 @@ use std::process::{Command, Stdio};
 /// graphics card.
 pub const POPUP_BACKEND: &str = "tiny-skia,wgpu";
 
+/// The renderer of a window opened again after the graphics card ran out of memory for it.
+const CPU_BACKEND: &str = "tiny-skia";
+
 /// Starts another copy of this program, detached, e.g. `kairo notify <clip>`.
 pub fn spawn_self(args: &[&str]) -> Result<std::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -15,13 +18,41 @@ pub fn spawn_self(args: &[&str]) -> Result<std::process::Child, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // A pop-up's renderer isn't for the windows it opens: the editor plays video on the card.
-    if std::env::var_os("ICED_BACKEND").is_some_and(|b| b == POPUP_BACKEND) {
+    // A pop-up's (or a fallen-back window's) renderer isn't for the windows and the background
+    // process it starts: the editor plays video on the card.
+    if std::env::var_os("ICED_BACKEND").is_some_and(|b| b == POPUP_BACKEND || b == CPU_BACKEND) {
         cmd.env_remove("ICED_BACKEND");
     }
     detach(&mut cmd);
     cmd.spawn()
         .map_err(|e| format!("could not start kairo {}: {e}", args.join(" ")))
+}
+
+/// Whether this process is the window, drawn on the graphics card, and `panic` is the card
+/// failing it (out of memory while a game holds it all, or the device lost in a driver reset).
+pub fn window_lost_gpu(panic: &str) -> bool {
+    let window = matches!(
+        std::env::args().nth(1).as_deref(),
+        None | Some("window") | Some("edit")
+    );
+    let on_gpu = std::env::var_os("ICED_BACKEND").is_none_or(|b| b != CPU_BACKEND);
+    window && on_gpu && panic.contains("wgpu error")
+}
+
+/// Opens the window again, drawn on the CPU: it needs no graphics memory. It waits for this
+/// process's window lock, so this process exits next.
+pub fn reopen_window_on_cpu() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(exe);
+    cmd.args(["window", "--wait"])
+        .env("ICED_BACKEND", CPU_BACKEND)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    detach(&mut cmd);
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the window again: {e}"))
 }
 
 /// Keeps a child alive when the terminal that started us closes.

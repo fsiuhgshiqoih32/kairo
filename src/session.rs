@@ -31,6 +31,15 @@ pub struct Session {
 /// Sessions are split at this length (a 16-bit WAV can't hold much more of stereo sound).
 const MAX_SESSION_US: i64 = 5 * 3600 * 1_000_000;
 
+/// Kept free on the drive sessions grow on: a full system drive stalls Windows itself.
+const KEEP_FREE: u64 = 10_000_000_000;
+
+/// Whether a session of `bytes` so far should end while joining it (a copy of as much) still
+/// leaves [`KEEP_FREE`]. Unknown free space is no reason to stop.
+fn out_of_room(bytes: u64, free: Option<u64>) -> bool {
+    free.is_some_and(|f| f < bytes.saturating_add(KEEP_FREE))
+}
+
 /// What a session folder needs to be joined by a later Kairo.
 #[derive(Serialize, Deserialize)]
 struct Note {
@@ -343,16 +352,25 @@ pub fn sweep_parts(settings: &Settings) {
 /// from the background process's tick.
 pub fn tend(shared: &Arc<Shared>, title: impl Fn() -> Option<String>) -> bool {
     let wanted = shared.session_wanted.load(Ordering::SeqCst);
-    let (ended, running_since) = {
+    let (ended, tape) = {
         let ring = shared.ring.lock().unwrap();
-        (ring.tape_ended(), ring.tape_progress().map(|(s, _)| s))
+        (ring.tape_ended(), ring.tape_progress())
     };
-    let too_long = running_since.is_some_and(|s| now_us() - s > MAX_SESSION_US);
+    let too_long = tape.is_some_and(|(s, _)| now_us() - s > MAX_SESSION_US);
+    let free = (wanted || tape.is_some())
+        .then(|| crate::platform::free_space_for(&work_root()))
+        .flatten();
+    let full = tape.is_some_and(|(_, bytes)| out_of_room(bytes, free));
     let active = shared.session.lock().unwrap().is_some();
-    if active && (ended || too_long || !wanted) {
+    if active && (ended || too_long || !wanted || full) {
+        if full {
+            warning!("the drive is nearly full: saving the session and starting no more for now");
+        }
         return true;
     }
-    if wanted && !active && shared.status.lock().unwrap().recording {
+    // A new one only with room to grow: a session stopped for space would start straight away.
+    if wanted && !active && !out_of_room(KEEP_FREE, free) && shared.status.lock().unwrap().recording
+    {
         let _ = start(shared, title());
     }
     false
@@ -378,6 +396,18 @@ mod tests {
         let s = settings_in(tmp.path());
         assert_eq!(recover(&work, &s), Ok(None));
         assert!(!work.exists());
+    }
+
+    #[test]
+    fn a_session_stops_while_joining_it_still_fits() {
+        const GB: u64 = 1_000_000_000;
+        // 30 GB recorded: joining copies it, and 10 GB must stay free.
+        assert!(!out_of_room(30 * GB, Some(41 * GB)));
+        assert!(out_of_room(30 * GB, Some(39 * GB)));
+        assert!(!out_of_room(30 * GB, None));
+        // A new session needs 20 GB free to start.
+        assert!(out_of_room(KEEP_FREE, Some(19 * GB)));
+        assert!(!out_of_room(KEEP_FREE, Some(21 * GB)));
     }
 
     #[test]

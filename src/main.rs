@@ -177,6 +177,15 @@ fn main() {
             thread.name().unwrap_or("unnamed")
         );
         report(info);
+        // The graphics card ran out of memory for the window (a game and a stream holding it
+        // all): open it again drawn on the CPU instead of leaving it dead.
+        if app::window_lost_gpu(&info.to_string()) {
+            match app::reopen_window_on_cpu() {
+                Ok(()) => log::warning!("the window lost the graphics card; opening it again"),
+                Err(e) => log::error!("{e}"),
+            }
+            std::process::exit(1);
+        }
     }));
     platform::init_process();
     let cli = Cli::parse();

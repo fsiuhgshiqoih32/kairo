@@ -192,7 +192,7 @@ impl Drop for Hold {
 /// Below normal priority: these are saves, exports and pictures, made while a game may be
 /// running.
 pub fn run(ffmpeg: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
-    run_on(ffmpeg, args, timeout, None)
+    run_on(ffmpeg, args, timeout, None, None)
 }
 
 /// Like [`run`], for an ffmpeg that only reads `clip`: deleting the clip stops it.
@@ -202,7 +202,21 @@ pub fn run_reading(
     timeout: Duration,
     clip: &Path,
 ) -> Result<(), String> {
-    run_on(ffmpeg, args, timeout, Some(clip))
+    run_on(ffmpeg, args, timeout, Some(clip), None)
+}
+
+/// What an ffmpeg reading `pipe:0` gets, written on its own thread.
+pub type Feed = Box<dyn FnOnce(&mut dyn std::io::Write) -> std::io::Result<()> + Send>;
+
+/// Like [`run`], with `feed` writing ffmpeg's input (`pipe:0`), so it needn't go through a file
+/// first. Fails if `feed` does, even though ffmpeg made a file of what it got.
+pub fn run_fed(
+    ffmpeg: &Path,
+    args: &[String],
+    timeout: Duration,
+    feed: Feed,
+) -> Result<(), String> {
+    run_on(ffmpeg, args, timeout, None, Some(feed))
 }
 
 fn run_on(
@@ -210,11 +224,19 @@ fn run_on(
     args: &[String],
     timeout: Duration,
     reads: Option<&Path>,
+    feed: Option<Feed>,
 ) -> Result<(), String> {
     let mut cmd = command(ffmpeg);
     platform::hide_console_low_priority(&mut cmd);
+    if feed.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = spawn(cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped()))
         .map_err(|e| format!("could not start ffmpeg: {e}"))?;
+    // Dropping the pipe when done is ffmpeg's end of input.
+    let writer = feed
+        .zip(child.stdin.take())
+        .map(|(feed, mut stdin)| std::thread::spawn(move || feed(&mut stdin)));
     let mut stderr = child.stderr.take();
     let child = match reads {
         Some(clip) => Reading::new(clip, child),
@@ -240,10 +262,14 @@ fn run_on(
         std::thread::sleep(Duration::from_millis(20));
     };
     let err = reader.join().unwrap_or_default();
-    if status.success() {
-        Ok(())
-    } else {
-        Err(last_lines(&err, 4).unwrap_or_else(|| format!("ffmpeg failed ({status})")))
+    if !status.success() {
+        return Err(last_lines(&err, 4).unwrap_or_else(|| format!("ffmpeg failed ({status})")));
+    }
+    // ffmpeg ended well, so it read all it was given; a feed that failed gave it too little.
+    match writer.map(|w| w.join()) {
+        Some(Ok(Err(e))) => Err(e.to_string()),
+        Some(Err(_)) => Err("the input stopped part way".into()),
+        _ => Ok(()),
     }
 }
 

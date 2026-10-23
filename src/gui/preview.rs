@@ -401,6 +401,8 @@ fn preview() {
     app.settings.microphone_device = "Microphone (Shure MV7+)".into();
     shoot(app.view(), "iced-settings-mic", (1280.0, 3400.0));
     app.settings.microphone = false;
+    // Further down, to Notifications (drawn at twice the size, and 8192 pixels is the most).
+    shoot(app.view(), "iced-allsettings", (1280.0, 4000.0));
 
     // The editor, on the first real clip, with a trim.
     let clip = app.clips[0].path.clone();

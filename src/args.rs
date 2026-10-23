@@ -537,7 +537,8 @@ pub fn save_with_cam_args(
         s("-loglevel"),
         s("error"),
     ];
-    a.extend([s("-i"), video.display().to_string()]);
+    // Said rather than guessed: a save sends the stream through a pipe (`pipe:0`).
+    a.extend([s("-f"), s("mpegts"), s("-i"), video.display().to_string()]);
     if let Some(c) = cam {
         if c.offset < 0.0 {
             a.extend([s("-ss"), format!("{:.3}", -c.offset)]);
@@ -1093,7 +1094,7 @@ mod tests {
         let a = joined(&save_args(v, &[(d, "Game"), (m, "Microphone")], false, o));
         assert!(
             a.contains(
-                "-i v.ts -ignore_length 1 -i desktop.wav -ignore_length 1 -i mic.wav -filter_complex [1:a][2:a]amix=inputs=2"
+                "-f mpegts -i v.ts -ignore_length 1 -i desktop.wav -ignore_length 1 -i mic.wav -filter_complex [1:a][2:a]amix=inputs=2"
             ),
             "{a}"
         );

@@ -13,6 +13,7 @@ pub enum MenuAction {
     ToggleSession,
     OpenFolder,
     Settings,
+    TogglePopups,
     ToggleAutostart,
     /// Open the window and install a newer version.
     Update,
@@ -26,6 +27,7 @@ pub struct Tray {
     session: MenuItem,
     folder: MenuItem,
     settings: MenuItem,
+    popups: CheckMenuItem,
     autostart: CheckMenuItem,
     quit: MenuItem,
     /// "Update to Kairo 0.3.0…", at the top of the menu while a newer version is out.
@@ -59,6 +61,7 @@ impl Tray {
         let session = MenuItem::new("Record a session", true, None);
         let folder = MenuItem::new("Open clips folder", true, None);
         let settings = MenuItem::new("Clips and settings...", true, None);
+        let popups = CheckMenuItem::new("Show pop-ups", true, true, None);
         let autostart_item = CheckMenuItem::new(
             "Start with computer",
             autostart.is_some(),
@@ -75,6 +78,7 @@ impl Tray {
             &folder,
             &settings,
             &PredefinedMenuItem::separator(),
+            &popups,
             &autostart_item,
             &quit,
         ])
@@ -94,6 +98,7 @@ impl Tray {
             session,
             folder,
             settings,
+            popups,
             autostart: autostart_item,
             quit,
             update: MenuItem::new("Update Kairo...", true, None),
@@ -111,6 +116,7 @@ impl Tray {
             (self.session.id(), MenuAction::ToggleSession),
             (self.folder.id(), MenuAction::OpenFolder),
             (self.settings.id(), MenuAction::Settings),
+            (self.popups.id(), MenuAction::TogglePopups),
             (self.autostart.id(), MenuAction::ToggleAutostart),
             (self.quit.id(), MenuAction::Quit),
             (self.update.id(), MenuAction::Update),
@@ -126,6 +132,7 @@ impl Tray {
         seconds: u32,
         hotkey: Option<&str>,
         autostart: Option<bool>,
+        popups: bool,
         update: Option<&str>,
     ) {
         match update {
@@ -152,6 +159,7 @@ impl Tray {
             "Pause recording"
         });
         self.autostart.set_checked(autostart.unwrap_or(false));
+        self.popups.set_checked(popups);
         self.session.set_text(match &status.session {
             Some(s) => format!("Stop the session ({})", clock(s.seconds)),
             None => "Record a session".to_string(),

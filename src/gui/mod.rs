@@ -1742,6 +1742,14 @@ impl App {
         )];
         if self.ticks.is_multiple_of(3) {
             tasks.push(self.refresh());
+            // Pop-ups turned on or off from the tray: take that, or saving here would undo it.
+            if self.changed_at.is_none()
+                && let Ok(s) = config::load(&config::default_path())
+                && s.notify != self.saved.notify
+            {
+                self.settings.notify = s.notify;
+                self.saved.notify = s.notify;
+            }
         }
         if let Some(t) = self.changed_at
             && t.elapsed() > Duration::from_millis(600)

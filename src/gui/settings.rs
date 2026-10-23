@@ -2153,8 +2153,24 @@ impl State {
                     ),
                 ),
                 self.channel_row(s),
-                setting("Notification", Some("A small card in the corner when a clip is saved.".into()), switch(s.notify, Msg::Notify)),
-                setting("Sound", Some("A short tone when a clip is saved.".into()), switch(s.sound, Msg::Sound)),
+            ],
+        ));
+        sections = sections.push(section(
+            "Notifications",
+            vec![
+                setting(
+                    "Pop-ups",
+                    Some(
+                        "Cards in the corner for saved clips, screenshots, sessions, friends' messages and new versions. Off, nothing pops up while you play; it's all still here. The tray menu can turn them off too."
+                            .into(),
+                    ),
+                    switch(s.notify, Msg::Notify),
+                ),
+                setting(
+                    "Sound on save",
+                    Some("A short tone when a clip or screenshot is saved.".into()),
+                    switch(s.sound, Msg::Sound),
+                ),
                 self.sound_row(s),
             ],
         ));
