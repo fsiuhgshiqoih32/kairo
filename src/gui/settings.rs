@@ -1667,8 +1667,10 @@ impl State {
         let mut voice_rows = vec![setting(
             "Voice clipping",
             Some(
-                "Say a phrase and Kairo saves a clip, hands-free. The speech is recognised on this computer: \
-                 nothing is sent anywhere. The first time, it downloads the speech files (about 55 MB)."
+                "Say a phrase and Kairo saves a clip, hands-free. Then say \"rename it to ...\" or \
+                 \"trim it to thirty seconds\" to change that clip. The speech is recognised on this \
+                 computer: nothing is sent anywhere. The first time, it downloads the speech files \
+                 (about 55 MB)."
                     .into(),
             ),
             voice_control,

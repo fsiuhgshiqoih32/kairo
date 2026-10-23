@@ -2,10 +2,10 @@
 //! and saves clips. The settings window and `kairo save` talk to it through small files in the
 //! config folder.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use global_hotkey::GlobalHotKeyEvent;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ use crate::hotkey::Hotkey;
 use crate::log::{error, info, warning};
 use crate::recorder::{self, Shared, Status};
 use crate::tray::{MenuAction, Tray};
+use crate::voice::FollowUp;
 use crate::{audio, autostart, platform, save, single_instance};
 
 /// Requests other processes leave for the background process.
@@ -212,10 +213,22 @@ pub fn run(wait: bool) -> Result<(), String> {
                 .map_err(|e| e.to_string())?
         },
         {
-            let (s, s2) = (shared.clone(), shared.clone());
+            let (s, s2, s3) = (shared.clone(), shared.clone(), shared.clone());
+            let spoken = Arc::new(Mutex::new(Spoken::default()));
+            let spoken2 = spoken.clone();
             std::thread::Builder::new()
                 .name("voice".into())
-                .spawn(move || crate::voice::run(s, move || start_save(&s2, None, false)))
+                .spawn(move || {
+                    crate::voice::run(
+                        s,
+                        move || {
+                            let before = s2.status.lock().unwrap().last_clip.clone();
+                            *spoken.lock().unwrap() = Spoken { before, clip: None };
+                            start_save(&s2, None, false)
+                        },
+                        move |f| do_spoken(&s3, &spoken2, f),
+                    )
+                })
                 .map_err(|e| e.to_string())?
         },
     ];
@@ -736,6 +749,157 @@ fn mark(shared: &Shared) {
 /// plays the sound and shows the notification.
 /// Saves the last `seconds` (the usual length when `None`). With `share`, the notice that
 /// follows uploads the clip and copies its link.
+/// The clip that what's said after the voice phrase ("rename it to ...", "trim it to ...") is
+/// about: the one the phrase saved, under its latest name.
+#[derive(Default)]
+struct Spoken {
+    /// The newest clip before the phrase was heard, to tell the new one from it.
+    before: Option<String>,
+    clip: Option<PathBuf>,
+}
+
+/// Does what was said about the voice-saved clip, on its own thread (its save may still be
+/// running). One at a time, in order: "rename it", then "trim it", trims the renamed clip.
+fn do_spoken(shared: &Arc<Shared>, spoken: &Arc<Mutex<Spoken>>, said: FollowUp) {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let (shared, spoken) = (shared.clone(), spoken.clone());
+    std::thread::spawn(move || {
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let (before, known) = {
+            let s = spoken.lock().unwrap();
+            (s.before.clone(), s.clip.clone())
+        };
+        let Some(clip) = known.or_else(|| voice_saved(&shared, before.as_deref())) else {
+            warning!("{said:?}: no clip was saved to do it to");
+            return;
+        };
+        let done = match &said {
+            FollowUp::Rename(name) => rename_spoken(&clip, name),
+            FollowUp::Trim(seconds) => trim_spoken(&clip, *seconds),
+        };
+        let settings = shared.settings();
+        match done {
+            Ok((path, seconds)) => {
+                info!("{said:?}: {} ({seconds:.1} s)", path.display());
+                {
+                    let mut s = spoken.lock().unwrap();
+                    // Unless the phrase was said again meanwhile, for a new clip.
+                    if s.before == before {
+                        s.clip = Some(path.clone());
+                    }
+                }
+                shared.status.lock().unwrap().last_clip = Some(path.display().to_string());
+                if settings.sound {
+                    platform::play_save_sound(&settings.save_sound, &settings.save_sound_file);
+                }
+                tell(settings.notify, Ok((path, seconds)));
+            }
+            Err(e) => {
+                let what = match said {
+                    FollowUp::Rename(_) => "rename",
+                    FollowUp::Trim(_) => "trim",
+                };
+                tell(
+                    settings.notify,
+                    Err(format!("Couldn't {what} the clip: {e}")),
+                );
+            }
+        }
+    });
+}
+
+/// The clip the voice phrase saved, once saved (the save records a moment past the phrase
+/// first). `None` if saving failed or took over a minute.
+fn voice_saved(shared: &Shared, before: Option<&str>) -> Option<PathBuf> {
+    let start = Instant::now();
+    while shared.saving.load(Ordering::SeqCst) {
+        if start.elapsed() > Duration::from_secs(60) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let last = shared.status.lock().unwrap().last_clip.clone()?;
+    (Some(last.as_str()) != before).then(|| PathBuf::from(last))
+}
+
+/// `f` again for a few seconds while it fails: the window's preview may have the file open.
+fn retry<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut tries = 0;
+    loop {
+        match f() {
+            Err(_) if tries < 15 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            done => return done,
+        }
+    }
+}
+
+/// A clip's length in seconds (0 if ffmpeg can't tell).
+fn length(clip: &Path) -> f64 {
+    crate::ffmpeg::path()
+        .and_then(|ff| crate::ffmpeg::probe_clip(&ff, clip))
+        .map_or(0.0, |i| i.duration)
+}
+
+/// Renames a clip as said, with a number added if that name is taken. Returns the new path and
+/// the clip's length.
+fn rename_spoken(clip: &Path, name: &str) -> Result<(PathBuf, f64), String> {
+    let to = (1..10)
+        .map(|n| match n {
+            1 => name.to_string(),
+            n => format!("{name} {n}"),
+        })
+        .find_map(|n| kairo::library::rename_target(clip, &n).ok())
+        .ok_or("that name is taken")?;
+    if to != clip {
+        retry(|| std::fs::rename(clip, &to)).map_err(|e| kairo::library::why(&e))?;
+        save::move_sidecars(clip, &to);
+        kairo::library::Library::edit(|l| l.renamed(clip, &to))?;
+    }
+    Ok((to.clone(), length(&to)))
+}
+
+/// Keeps the last `seconds` of a clip, copied rather than encoded again (so from the keyframe
+/// at or before). The whole clip waits in Recently deleted, so the trim can be undone.
+fn trim_spoken(clip: &Path, seconds: u32) -> Result<(PathBuf, f64), String> {
+    let ff = crate::ffmpeg::path()?;
+    let info = crate::ffmpeg::probe_clip(&ff, clip)?;
+    if info.duration <= seconds as f64 + 0.5 {
+        return Ok((clip.to_path_buf(), info.duration));
+    }
+    let start = info.duration - seconds as f64;
+    let part = clip.with_extension("mp4.part");
+    let args = kairo::media::copy_args(clip, start, info.duration, &part);
+    if let Err(e) = crate::ffmpeg::run(&ff, &args, Duration::from_secs(120)) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    let dir = clip.parent().unwrap_or(Path::new("."));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Err(e) = retry(|| kairo::library::trash(dir, clip, now)) {
+        let _ = std::fs::remove_file(&part);
+        return Err(kairo::library::why(&e));
+    }
+    std::fs::rename(&part, clip).map_err(|e| e.to_string())?;
+    // Marks move with the picture.
+    let left = length(clip);
+    let cut = info.duration - left;
+    let _ = kairo::library::Library::edit(|l| {
+        let marks = l
+            .markers(clip)
+            .iter()
+            .map(|m| m - cut)
+            .filter(|m| *m >= 0.0)
+            .collect();
+        l.set_markers(clip, marks);
+    });
+    Ok((clip.to_path_buf(), left))
+}
+
 fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
     // During a session, a save is a bookmark too.
     if shared.session.lock().unwrap().is_some() {
@@ -800,4 +964,64 @@ fn start_save(shared: &Arc<Shared>, seconds: Option<u32>, share: bool) {
             warning!("{e}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// "rename it to ..." then "trim it to ...", on a real clip: the name, the length, the
+    /// marks moving with the picture and the whole clip kept in Recently deleted. Needs ffmpeg
+    /// with libx264 and `KAIRO_HOME` set to a scratch folder (clips.json goes there).
+    #[test]
+    #[ignore]
+    fn spoken_rename_then_trim() {
+        assert!(std::env::var_os("KAIRO_HOME").is_some(), "set KAIRO_HOME");
+        let tmp = tempfile::tempdir().unwrap();
+        let clip = tmp.path().join("Minecraft 2026-10-22 23-00-00.mp4");
+        let ff = crate::ffmpeg::path().unwrap();
+        let made = crate::ffmpeg::command(&ff)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30",
+            ])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440", "-t", "35"])
+            .args(["-c:v", "libx264", "-g", "60", "-c:a", "aac"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        kairo::library::Library::edit(|l| l.set_markers(&clip, vec![5.0, 30.0])).unwrap();
+
+        let (named, secs) = rename_spoken(&clip, "Insane Clutch").unwrap();
+        assert_eq!(named, tmp.path().join("Insane Clutch.mp4"));
+        assert!(!clip.exists() && named.exists());
+        assert!((secs - 35.0).abs() < 0.5, "{secs}");
+        // Taken: the next one gets a number.
+        std::fs::copy(&named, &clip).unwrap();
+        let (second, _) = rename_spoken(&clip, "Insane Clutch").unwrap();
+        assert_eq!(second, tmp.path().join("Insane Clutch 2.mp4"));
+
+        let (trimmed, left) = trim_spoken(&named, 10).unwrap();
+        assert_eq!(trimmed, named);
+        // From the keyframe at or before 25 s: up to the 2 s keyframe interval more.
+        assert!((10.0..=12.5).contains(&left), "{left}");
+        let lib = kairo::library::Library::load();
+        let marks = lib.markers(&named);
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert!((marks[0] - (30.0 - (35.0 - left))).abs() < 0.2, "{marks:?}");
+        let bin = kairo::library::trashed(tmp.path());
+        assert!(
+            bin.iter().any(|t| t.path.file_name() == named.file_name()),
+            "the whole clip is in Recently deleted"
+        );
+        // Already short enough: nothing to do.
+        let (same, again) = trim_spoken(&named, 30).unwrap();
+        assert_eq!(same, named);
+        assert!((again - left).abs() < 0.1);
+    }
 }

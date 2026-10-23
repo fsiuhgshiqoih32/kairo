@@ -417,6 +417,223 @@ impl Drop for Listener {
     }
 }
 
+/// Listens to anything said, for a short while after the phrase: what to do with the clip.
+struct Open {
+    engine: Arc<Engine>,
+    recognizer: *mut c_void,
+    resampler: Resampler,
+    buf: Vec<i16>,
+}
+
+// SAFETY: as for Listener.
+unsafe impl Send for Open {}
+
+impl Open {
+    fn new(engine: Arc<Engine>) -> Option<Open> {
+        // SAFETY: the model is alive (held by `engine`).
+        let recognizer = unsafe { (engine.recognizer_new_open)(engine.model, RATE as c_float) };
+        (!recognizer.is_null()).then(|| Open {
+            engine,
+            recognizer,
+            resampler: Resampler::default(),
+            buf: Vec::new(),
+        })
+    }
+
+    /// Feeds sound; the words of a sentence when one just ended.
+    fn feed(&mut self, samples: &[f32], rate: u32, channels: u16) -> Option<String> {
+        self.buf.clear();
+        self.resampler.push(samples, rate, channels, &mut self.buf);
+        if self.buf.is_empty() {
+            return None;
+        }
+        let e = &self.engine;
+        // SAFETY: the recognizer is valid until drop; the buffer outlives the call.
+        let ended =
+            unsafe { (e.accept)(self.recognizer, self.buf.as_ptr(), self.buf.len() as c_int) } == 1;
+        if !ended {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr((e.result)(self.recognizer)) }.to_string_lossy();
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        Some(v.get("text")?.as_str()?.to_string()).filter(|t| !t.is_empty())
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        // SAFETY: created by vosk_recognizer_new.
+        unsafe { (self.engine.recognizer_free)(self.recognizer) }
+    }
+}
+
+/// How long Kairo listens for what to do with a clip after the phrase, and after each of these.
+const FOLLOW_UP: Duration = Duration::from_secs(15);
+
+/// What can be said about the clip the phrase just saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FollowUp {
+    /// "rename it to <name>", "call it <name>".
+    Rename(String),
+    /// "trim it down to about thirty seconds", "keep the last minute": seconds to keep.
+    Trim(u32),
+}
+
+/// Reads a follow-up from a sentence as the recognizer writes it (lowercase words).
+pub fn parse_follow_up(said: &str) -> Option<FollowUp> {
+    let words: Vec<&str> = said.split_whitespace().collect();
+    parse_trim(&words)
+        .map(FollowUp::Trim)
+        .or_else(|| parse_rename(&words).map(FollowUp::Rename))
+}
+
+fn parse_rename(words: &[&str]) -> Option<String> {
+    const OBJECT: [&str; 3] = ["it", "that", "this"];
+    // "rename" alone, or "call", "name" and "title" with "it": "we should call him" isn't one.
+    let (at, needs_object) = words.iter().enumerate().find_map(|(i, w)| match *w {
+        "rename" | "retitle" => Some((i + 1, false)),
+        "re" if words.get(i + 1) == Some(&"name") => Some((i + 2, false)),
+        "call" | "name" | "title" => Some((i + 1, true)),
+        _ => None,
+    })?;
+    let mut rest = &words[at..];
+    match rest.first() {
+        Some(w) if OBJECT.contains(w) => rest = &rest[1..],
+        _ if needs_object => return None,
+        _ => {}
+    }
+    if rest.first().is_some_and(|w| ["clip", "video"].contains(w)) {
+        rest = &rest[1..];
+    }
+    // "to" often comes out as "two" or "too".
+    if rest
+        .first()
+        .is_some_and(|w| ["to", "two", "too", "as"].contains(w))
+    {
+        rest = &rest[1..];
+    }
+    let mut name: Vec<&str> = rest.iter().copied().take(8).collect();
+    while name
+        .last()
+        .is_some_and(|w| ["please", "thanks", "now"].contains(w))
+    {
+        name.pop();
+    }
+    let title: Vec<String> = name
+        .iter()
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default()
+        })
+        .collect();
+    Some(title.join(" ")).filter(|t| !t.is_empty())
+}
+
+fn parse_trim(words: &[&str]) -> Option<u32> {
+    let at = words
+        .iter()
+        .position(|w| matches!(*w, "trim" | "trimmed" | "cut" | "shorten" | "keep" | "make"))?;
+    // "make" and "keep" are everyday words: only with "it" or "the last" after them.
+    let next = words.get(at + 1).copied();
+    if words[at] == "make" && next != Some("it") {
+        return None;
+    }
+    if words[at] == "keep" && !(next == Some("the") && words.get(at + 2) == Some(&"last")) {
+        return None;
+    }
+    duration(&words[at + 1..]).filter(|s| *s >= 2)
+}
+
+/// Seconds in words like "about thirty seconds", "twenty five", "a minute and a half", "the
+/// last minute", "90".
+fn duration(words: &[&str]) -> Option<u32> {
+    const HALF: [&str; 3] = ["and", "a", "half"];
+    let minutes = |w: &str| w.starts_with("minute") || w == "min" || w == "mins";
+    let seconds = |w: &str| w.starts_with("second") || w == "sec" || w == "secs";
+    let mut amount: Option<f64> = None;
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        if let Some(n) = number(w) {
+            // "twenty five": the tens and the ones together.
+            let ones = words
+                .get(i + 1)
+                .and_then(|o| number(o))
+                .filter(|o| *o < 10.0);
+            amount = match ones {
+                Some(o) if n >= 20.0 && n % 10.0 == 0.0 => {
+                    i += 1;
+                    Some(n + o)
+                }
+                _ => Some(n),
+            };
+        } else if amount.is_some() && words[i..].starts_with(&HALF) {
+            // "one and a half minutes".
+            amount = amount.map(|n| n + 0.5);
+            i += HALF.len();
+            continue;
+        } else if w == "half" && words.get(i + 1) == Some(&"a") {
+            // "half a minute".
+            amount = Some(0.5);
+            i += 2;
+            continue;
+        } else if minutes(w) || seconds(w) {
+            let unit = if minutes(w) { 60.0 } else { 1.0 };
+            // "a minute", "the last minute": one of them.
+            let n = amount.unwrap_or(1.0);
+            // "a minute and a half".
+            let half = if words[i + 1..].starts_with(&HALF) {
+                0.5
+            } else {
+                0.0
+            };
+            return Some(((n + half) * unit).round() as u32);
+        }
+        i += 1;
+    }
+    // A number with no unit is seconds.
+    amount.map(|n| n.round() as u32)
+}
+
+fn number(w: &str) -> Option<f64> {
+    if let Ok(n) = w.parse::<f64>() {
+        return Some(n);
+    }
+    const SMALL: [&str; 20] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ];
+    const TENS: [&str; 8] = [
+        "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    ];
+    if let Some(n) = SMALL.iter().position(|s| *s == w) {
+        return Some(n as f64);
+    }
+    TENS.iter()
+        .position(|s| *s == w)
+        .map(|n| (n as f64 + 2.0) * 10.0)
+}
+
 /// Below this, the recognizer is guessing (tested: real phrases score 0.76 to 1.0).
 const MIN_CONFIDENCE: f64 = 0.7;
 
@@ -494,12 +711,19 @@ impl Resampler {
 
 // --- In the background process -------------------------------------------------------------
 
-/// Listens while voice clipping is on and calls `heard` when the phrase is said. Runs until
-/// `shared.stop`; the microphone stream sends its sound through `shared.voice_tap`.
-pub fn run(shared: Arc<Shared>, heard: impl Fn() + Send + 'static) {
+/// Listens while voice clipping is on and calls `heard` when the phrase is said, then for a
+/// little while `told` with what's said about that clip ("rename it to ...", "trim it to ...").
+/// Runs until `shared.stop`; the microphone stream sends its sound through `shared.voice_tap`.
+pub fn run(
+    shared: Arc<Shared>,
+    heard: impl Fn() + Send + 'static,
+    told: impl Fn(FollowUp) + Send + 'static,
+) {
     let (tx, rx): (SyncSender<Chunk>, Receiver<Chunk>) = sync_channel(64);
     let mut engine: Option<Arc<Engine>> = None;
     let mut listener: Option<Listener> = None;
+    // Listening for what to do with the clip, until then.
+    let mut follow: Option<(Open, Instant)> = None;
     let mut failed_for: Option<String> = None;
     let mut last = Instant::now() - COOLDOWN;
     let set_status = |voice: Option<String>, error: Option<String>| {
@@ -512,6 +736,7 @@ pub fn run(shared: Arc<Shared>, heard: impl Fn() + Send + 'static) {
         let want = s.voice_clip && !shared.paused.load(Ordering::Relaxed);
         let phrase = normalize_phrase(&s.voice_phrase);
         if !want {
+            follow = None;
             if listener.take().is_some() {
                 *shared.voice_tap.lock().unwrap() = None;
                 info!("voice clipping off");
@@ -550,6 +775,15 @@ pub fn run(shared: Arc<Shared>, heard: impl Fn() + Send + 'static) {
         }
         match rx.recv_timeout(Duration::from_millis(300)) {
             Ok((samples, rate, channels)) => {
+                if let Some((open, until)) = &mut follow
+                    && let Some(said) = open.feed(&samples, rate, channels)
+                    && let Some(f) = parse_follow_up(&said)
+                {
+                    info!("heard \"{said}\": {f:?}");
+                    // Room for one more: "rename it ...", then "trim it ...".
+                    *until = Instant::now() + FOLLOW_UP;
+                    told(f);
+                }
                 if let Some(l) = &mut listener
                     && l.feed(&samples, rate, channels)
                     && last.elapsed() >= COOLDOWN
@@ -557,10 +791,22 @@ pub fn run(shared: Arc<Shared>, heard: impl Fn() + Send + 'static) {
                     last = Instant::now();
                     info!("heard \"{}\": saving a clip", l.phrase);
                     heard();
+                    // Anything said from now on, for a while, may be about this clip. Only now:
+                    // listening to everything all the time would cost far more.
+                    follow = engine
+                        .clone()
+                        .and_then(Open::new)
+                        .map(|o| (o, Instant::now() + FOLLOW_UP));
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if follow
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            follow = None;
         }
     }
     *shared.voice_tap.lock().unwrap() = None;
@@ -689,6 +935,87 @@ const FILLER: &str = "the a an and or but so to of in on at for with by from up 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_ups_as_people_say_them() {
+        let rename = |s: &str| Some(FollowUp::Rename(s.to_string()));
+        let trim = |n: u32| Some(FollowUp::Trim(n));
+        // As Vosk writes them: lowercase words, numbers spelled out, "to" sometimes "two".
+        assert_eq!(parse_follow_up("rename it to example"), rename("Example"));
+        assert_eq!(
+            parse_follow_up("rename it two insane clutch"),
+            rename("Insane Clutch")
+        );
+        assert_eq!(parse_follow_up("call it the ace please"), rename("The Ace"));
+        assert_eq!(
+            parse_follow_up("re name that to boss fight"),
+            rename("Boss Fight")
+        );
+        assert_eq!(
+            parse_follow_up("name this clip as first win"),
+            rename("First Win")
+        );
+        assert_eq!(
+            parse_follow_up("trim it down to about thirty seconds"),
+            trim(30)
+        );
+        assert_eq!(
+            parse_follow_up("trim it to like twenty five seconds"),
+            trim(25)
+        );
+        assert_eq!(parse_follow_up("cut it to forty five"), trim(45));
+        assert_eq!(parse_follow_up("trim it to 30 seconds"), trim(30));
+        assert_eq!(parse_follow_up("keep the last minute"), trim(60));
+        assert_eq!(parse_follow_up("make it a minute and a half"), trim(90));
+        assert_eq!(
+            parse_follow_up("trim it to one and a half minutes"),
+            trim(90)
+        );
+        assert_eq!(parse_follow_up("trim it to half a minute"), trim(30));
+        assert_eq!(parse_follow_up("shorten it to two minutes"), trim(120));
+        // Everyday talk isn't a command.
+        for said in [
+            "we should call him",
+            "what's his name",
+            "keep going",
+            "make a left",
+            "wait a second",
+            "nice shot",
+            "rename",
+            "trim it",
+        ] {
+            assert_eq!(parse_follow_up(said), None, "{said}");
+        }
+    }
+
+    /// Follow-ups heard in recordings, through the real recognizer: `KAIRO_FOLLOW_UP_WAVS` lists
+    /// `what it should do=file.wav` entries separated by `;`, e.g. `Rename("Example")=a.wav`.
+    /// Needs the speech files (voice clipping turned on once).
+    #[test]
+    #[ignore]
+    fn follow_ups_from_recordings() {
+        let list = std::env::var("KAIRO_FOLLOW_UP_WAVS").expect("set KAIRO_FOLLOW_UP_WAVS");
+        let engine = Arc::new(Engine::load(&dir()).expect("speech files"));
+        let mut wrong = Vec::new();
+        for entry in list.split(';').filter(|e| !e.is_empty()) {
+            let (want, file) = entry.split_once('=').expect("want=file");
+            let (samples, rate, channels) = read_wav(Path::new(file)).unwrap();
+            let mut open = Open::new(engine.clone()).unwrap();
+            let mut said = Vec::new();
+            // As the microphone sends it: a tenth of a second at a time, then silence.
+            let step = (rate as usize / 10) * channels as usize;
+            let quiet = vec![0.0; rate as usize * channels as usize * 2];
+            for chunk in samples.chunks(step).chain(quiet.chunks(step)) {
+                said.extend(open.feed(chunk, rate, channels));
+            }
+            let got = said.iter().find_map(|s| parse_follow_up(s));
+            println!("{file}: heard {said:?}, {got:?}");
+            if format!("{got:?}") != format!("Some({want})") {
+                wrong.push(format!("{file}: wanted {want}, heard {said:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
 
     #[test]
     fn phrase_matching_needs_the_words_in_a_row() {
