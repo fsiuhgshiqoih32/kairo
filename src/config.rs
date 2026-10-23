@@ -196,8 +196,9 @@ impl Storage {
     }
 }
 
-/// On Automatic, a buffer that could grow past this lives on disk.
-pub const AUTO_DISK_BYTES: u64 = 1 << 30;
+/// On Automatic, a buffer that could grow past this lives on disk, where the system's file cache
+/// holds it instead of Kairo: a 30 s 1080p60 buffer stays in memory, a minute or 1440p doesn't.
+pub const AUTO_DISK_BYTES: u64 = 128 << 20;
 
 /// The window's accent colours, by name.
 pub const ACCENTS: [&str; 8] = [
@@ -320,7 +321,8 @@ impl Default for Settings {
             notify: true,
             check_updates: true,
             max_storage_gb: 0,
-            discord_mb: 10,
+            // Discord's free upload limit since August 2026.
+            discord_mb: 20,
             discord_channel: String::new(),
             keep_days: 0,
             screenshot_hotkey: "F9".into(),

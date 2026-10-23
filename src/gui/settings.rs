@@ -1231,8 +1231,11 @@ impl State {
         let bps = (s.quality.bitrate(ow as u64 * oh as u64, s.fps) as f64
             * s.codec.bitrate_factor()) as u64;
         let quality = format!(
-            "{ow} x {oh} at about {:.0} Mbit/s (less in calm scenes).",
-            bps as f64 / 1e6
+            "{ow} x {oh} at about {:.0} Mbit/s (less in calm scenes): a {} clip is {} at most. \
+             Lower quality, resolution or frame rate for smaller clips.",
+            bps as f64 / 1e6,
+            seconds_label(s.clip_seconds),
+            human_size(bps / 8 * s.clip_seconds as u64)
         );
         let worst = human_size(s.buffer_worst_bytes(bps));
         let mut storage = if s.buffer_on_disk(bps) {
@@ -1248,7 +1251,10 @@ impl State {
             )
         };
         if s.replay_storage == Storage::Auto {
-            storage.push_str(" Automatic puts anything over 1 GB on disk.");
+            storage.push_str(&format!(
+                " Automatic puts anything over {} on disk.",
+                human_size(kairo::config::AUTO_DISK_BYTES)
+            ));
         }
         (quality, storage)
     }
@@ -2145,9 +2151,14 @@ impl State {
                 ),
                 setting(
                     "Discord size",
-                    Some("The limit for Share to Discord and Send to Discord channel.".into()),
+                    Some("The limit for Share to Discord and Send to Discord channel: 20 MB is free, 50 MB with Nitro Basic, 500 MB with Nitro.".into()),
                     segmented(
-                        vec![(10u32, "10 MB".into()), (50, "50 MB".into()), (500, "500 MB".into())],
+                        vec![
+                            (10u32, "10 MB".into()),
+                            (20, "20 MB".into()),
+                            (50, "50 MB".into()),
+                            (500, "500 MB".into()),
+                        ],
                         s.discord_mb,
                         Msg::Discord,
                     ),

@@ -228,8 +228,11 @@ fn run(
         Kind::Share(limit) => {
             let out = library::sibling(job.named, "Discord");
             let part = out.with_extension("mp4.part");
-            // Encoders overshoot now and then: if the copy comes out too big, go again smaller.
-            for (attempt, scale) in [1.0, 0.85, 0.7].into_iter().enumerate() {
+            let mut encoder = encoder;
+            let mut scale = 1.0;
+            // Encoders overshoot now and then: if the copy comes out too big, go again, smaller
+            // by as much as it was over (and a little more).
+            for attempt in 0..3 {
                 let plan = media::share_plan(limit, length, info, scale)?;
                 if attempt > 0 {
                     status.lock().unwrap().stage = "Too big, trying smaller".into();
@@ -243,7 +246,17 @@ fn run(
                 };
                 let eff = job.with_captions(eff, shown)?;
                 let a = media::share_args(clip, start, end, info, &eff, &plan, encoder, &part);
-                encode(ff, &a, length, &part, status, cancel, job.progress)?;
+                if let Err(e) = encode(ff, &a, length, &part, status, cancel, job.progress) {
+                    // A graphics card without the careful settings (an older one), or one busy
+                    // with a game: make the copy on the CPU instead.
+                    if encoder == Encoder::X264 || cancel.load(Ordering::SeqCst) {
+                        return Err(e);
+                    }
+                    warning!("Discord copy on {encoder:?} failed ({e}); making it on the CPU");
+                    encoder = Encoder::X264;
+                    let a = media::share_args(clip, start, end, info, &eff, &plan, encoder, &part);
+                    encode(ff, &a, length, &part, status, cancel, job.progress)?;
+                }
                 let size = std::fs::metadata(&part)
                     .map(|m| m.len())
                     .unwrap_or(u64::MAX);
@@ -251,6 +264,7 @@ fn run(
                 if size <= limit {
                     return finish(ff, &part, &out);
                 }
+                scale *= limit as f64 / size.max(1) as f64 * 0.97;
             }
             let _ = std::fs::remove_file(&part);
             Err(format!(

@@ -516,6 +516,8 @@ pub fn run(shared: Arc<Shared>, heard: impl Fn() + Send + 'static) {
                 *shared.voice_tap.lock().unwrap() = None;
                 info!("voice clipping off");
             }
+            // The speech model is most of Kairo's memory: off means unloaded, not kept for later.
+            engine = None;
             set_status(None, None);
             failed_for = None;
         } else if listener.as_ref().is_none_or(|l| l.phrase != phrase)
