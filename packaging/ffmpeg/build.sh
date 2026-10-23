@@ -19,6 +19,7 @@ X264_REF=stable
 # NVENC API 12.1 works with NVIDIA drivers from 531 on; newer headers would need newer drivers.
 NV_HEADERS_REF=n12.1.14.0
 
+here=$(cd "$(dirname "$0")" && pwd)
 out=$(mkdir -p "$1" && cd "$1" && pwd)
 work=${WORK:-$PWD/ffbuild}
 prefix=$work/prefix
@@ -74,6 +75,11 @@ src=$work/ffmpeg-$FFMPEG_VERSION
 if [ ! -d "$src" ]; then
   curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" -o "$work/ffmpeg.tar.xz"
   tar -xf "$work/ffmpeg.tar.xz" -C "$work"
+fi
+# Kairo's one change to ffmpeg: gfxcapture's sdr_white, so a screen in Windows HDR mode is
+# recorded at the brightness it shows (see the script).
+if [ "$os" = windows ]; then
+  perl "$here/gfxcapture-sdr-white.pl" "$src"
 fi
 
 # Component names are configure's, which differ from some run-time names: dump_extradata is
@@ -147,7 +153,9 @@ and licensed under the GNU GPL version 2 or later (see FFMPEG-LICENSE.txt).
 
 Source code: https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz
 x264 source: https://code.videolan.org/videolan/x264/-/tree/$X264_REF
-Build recipe: packaging/ffmpeg/build.sh in https://github.com/fsiuhgshiqoih32/rewindr
+Build recipe: packaging/ffmpeg/build.sh in https://github.com/fsiuhgshiqoih32/kairo
+Changes to FFmpeg (Windows): packaging/ffmpeg/gfxcapture-sdr-white.pl in the same repository
+adds the gfxcapture filter's sdr_white option.
 EOF
 "$out/$exe" -hide_banner -version | head -n 1 || true
 ls -la "$out"

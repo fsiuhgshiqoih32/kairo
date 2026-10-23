@@ -33,7 +33,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            git make nasm diffutils zip
+            git make nasm diffutils zip perl
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-amf-headers
@@ -44,6 +44,7 @@ jobs:
           set -e
           bash packaging/ffmpeg/check.sh out/ffmpeg.exe
           out/ffmpeg.exe -hide_banner -filters | grep -E "gfxcapture|ddagrab"
+          out/ffmpeg.exe -hide_banner -h filter=gfxcapture | grep sdr_white
           out/ffmpeg.exe -hide_banner -encoders | grep -E "h264_nvenc|h264_amf|h264_mf"
           out/ffmpeg.exe -hide_banner -devices | grep gdigrab
           echo "DLLs it needs:"; ldd out/ffmpeg.exe
