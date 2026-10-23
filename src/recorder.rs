@@ -481,7 +481,14 @@ pub fn run(shared: Arc<Shared>) {
         // H.265 first where it's asked for and the encoder has it; H.264 if that won't start.
         let mut combos: Vec<(Source, Encoder, VideoCodec)> = Vec::new();
         for e in &encoder_list {
-            for s in platform::capture_sources(&monitor) {
+            for mut s in platform::capture_sources(&monitor) {
+                // An ffmpeg without Kairo's sdr_white (one of the user's own, say) records an HDR
+                // screen as Windows converts it.
+                if let Source::WindowsGraphics { sdr_white, .. } = &mut s
+                    && !ffmpeg::has_sdr_white(&ffmpeg)
+                {
+                    *sdr_white = None;
+                }
                 if settings.codec == VideoCodec::Hevc
                     && e.ffmpeg_name_for(VideoCodec::Hevc).is_some()
                 {
@@ -628,6 +635,41 @@ const SETTLE_LOOKS: u32 = 3;
 /// Watches the screen's size while recording. A new size counts once it has held for
 /// [`SETTLE_LOOKS`] looks in a row: a game switching modes (sometimes several times in a few
 /// seconds) restarts the capture once, after the switch, rather than tearing down the capture
+/// Notices HDR turned on or off, or the SDR brightness changed, for a capture that maps HDR to
+/// SDR: the mapping is set when the capture starts.
+#[derive(Default)]
+struct HdrWatch {
+    /// Looks in a row that disagreed with the capture.
+    off: u32,
+}
+
+impl HdrWatch {
+    /// Whether to start over; called about once a second.
+    fn look(&mut self, plan: &VideoPlan, ffmpeg: &Path) -> bool {
+        #[cfg(windows)]
+        if let Source::WindowsGraphics {
+            hmonitor,
+            sdr_white,
+        } = plan.source
+            && ffmpeg::has_sdr_white(ffmpeg)
+        {
+            let now = platform::hdr_sdr_white(hmonitor);
+            if now == sdr_white {
+                self.off = 0;
+                return false;
+            }
+            self.off += 1;
+            if self.off >= 2 {
+                info!("the screen's HDR changed ({sdr_white:?} to {now:?} nits): starting over");
+                return true;
+            }
+            return false;
+        }
+        let _ = (plan, ffmpeg);
+        false
+    }
+}
+
 /// and the encoder in the middle of it.
 struct SizeWatch {
     recording: (u32, u32),
@@ -726,6 +768,7 @@ pub fn run_plan(
     let mut announced = false;
     let mut last_look = Instant::now();
     let mut screen = SizeWatch::new(plan.src_size);
+    let mut hdr = HdrWatch::default();
     let outcome = loop {
         if let Ok(Some(status)) = child.try_wait() {
             let _ = reader.join();
@@ -753,7 +796,7 @@ pub fn run_plan(
                         plan.src_size.0, plan.src_size.1
                     );
                 }
-                settled.is_some()
+                settled.is_some() || hdr.look(plan, ffmpeg)
             };
         let interrupted = shared.stop.load(Ordering::Relaxed)
             || shared.paused.load(Ordering::Relaxed)
@@ -786,8 +829,14 @@ pub fn run_plan(
         if !announced && shared.ring.lock().unwrap().seconds() > 0.0 {
             announced = true;
             let size = args::output_size(plan.src_size, plan.max_height);
+            let hdr = match plan.source {
+                Source::WindowsGraphics {
+                    sdr_white: Some(n), ..
+                } => format!(", the HDR screen's SDR white ({n} nits) as white"),
+                _ => String::new(),
+            };
             info!(
-                "recording {} {} via {} at {}x{} {} fps",
+                "recording {} {} via {} at {}x{} {} fps{hdr}",
                 plan.encoder.label(),
                 plan.codec.label(),
                 plan.source.label(),

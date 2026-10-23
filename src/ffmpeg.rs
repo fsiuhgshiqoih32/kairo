@@ -291,6 +291,25 @@ pub fn last_lines(text: &str, n: usize) -> Option<String> {
     (!lines.is_empty()).then(|| lines[lines.len().saturating_sub(n)..].join(" / "))
 }
 
+/// Whether this ffmpeg's gfxcapture has `sdr_white` (Kairo's own build, from bundle r7), so a
+/// screen in HDR mode can be recorded at the right brightness. Asked once per program file.
+pub fn has_sdr_white(ffmpeg: &Path) -> bool {
+    use std::collections::HashMap;
+    static KNOWN: std::sync::Mutex<Option<HashMap<PathBuf, bool>>> = std::sync::Mutex::new(None);
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = known.get_or_insert_with(HashMap::new).get(ffmpeg) {
+        return *v;
+    }
+    let has = command(ffmpeg)
+        .args(["-hide_banner", "-h", "filter=gfxcapture"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("sdr_white"));
+    known
+        .get_or_insert_with(HashMap::new)
+        .insert(ffmpeg.to_path_buf(), has);
+    has
+}
+
 pub fn version(ffmpeg: &Path) -> Option<String> {
     let out = command(ffmpeg)
         .arg("-version")

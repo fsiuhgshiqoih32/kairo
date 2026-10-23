@@ -12,7 +12,13 @@ use std::path::Path;
 pub enum Source {
     /// Windows Graphics Capture of a monitor (HMONITOR). Frames stay on the GPU, which also
     /// scales them.
-    WindowsGraphics { hmonitor: u64 },
+    WindowsGraphics {
+        hmonitor: u64,
+        /// While the screen shows HDR, its SDR white level in nits: frames are captured in float
+        /// and mapped to SDR with it (`sdr_white`, a Kairo addition to ffmpeg). Without it,
+        /// Windows converts them and they come out far too bright.
+        sdr_white: Option<u32>,
+    },
     /// Windows Desktop Duplication: output `index` of the default GPU. Frames stay on the GPU.
     Ddagrab { output: u32 },
     /// Windows GDI capture of a desktop rectangle. Slow; for machines where the others fail.
@@ -346,12 +352,18 @@ pub fn record_args(plan: &VideoPlan) -> Vec<String> {
     // Filters applied after capture.
     let mut filters: Vec<String> = Vec::new();
     match &plan.source {
-        Source::WindowsGraphics { hmonitor } => {
+        Source::WindowsGraphics {
+            hmonitor,
+            sdr_white,
+        } => {
             // The size is always given: without it, a game changing the display mode makes the
             // capture crop (or pad) to the old size instead of scaling.
-            let g = format!(
+            let mut g = format!(
                 "gfxcapture=hmonitor={hmonitor}:max_framerate={fps}:capture_cursor=1:width={ow}:height={oh}:resize_mode=scale_aspect"
             );
+            if let Some(nits) = sdr_white {
+                g.push_str(&format!(":sdr_white={nits}"));
+            }
             a.extend([s("-f"), s("lavfi"), s("-i"), g]);
         }
         Source::Ddagrab { output } => {
@@ -993,8 +1005,37 @@ mod tests {
     }
 
     #[test]
+    fn an_hdr_screen_is_captured_with_its_sdr_white() {
+        let hdr = Source::WindowsGraphics {
+            hmonitor: 65537,
+            sdr_white: Some(240),
+        };
+        let a = joined(&record_args(&plan(
+            hdr,
+            Encoder::Nvenc,
+            (2560, 1440),
+            Some(1080),
+        )));
+        assert!(a.contains("resize_mode=scale_aspect:sdr_white=240"), "{a}");
+        let sdr = Source::WindowsGraphics {
+            hmonitor: 65537,
+            sdr_white: None,
+        };
+        let a = joined(&record_args(&plan(
+            sdr,
+            Encoder::Nvenc,
+            (2560, 1440),
+            Some(1080),
+        )));
+        assert!(!a.contains("sdr_white"), "{a}");
+    }
+
+    #[test]
     fn only_a_new_screen_size_keeps_the_replay_going() {
-        let wgc = Source::WindowsGraphics { hmonitor: 7 };
+        let wgc = Source::WindowsGraphics {
+            hmonitor: 7,
+            sdr_white: None,
+        };
         let desktop = plan(wgc.clone(), Encoder::Nvenc, (2560, 1440), Some(1080));
         // The game at 1920x1440, stretched.
         let game = plan(wgc.clone(), Encoder::Nvenc, (1920, 1440), Some(1080));
@@ -1075,7 +1116,10 @@ mod tests {
     #[test]
     fn gpu_capture_straight_into_nvenc() {
         let a = joined(&record_args(&plan(
-            Source::WindowsGraphics { hmonitor: 65537 },
+            Source::WindowsGraphics {
+                hmonitor: 65537,
+                sdr_white: None,
+            },
             Encoder::Nvenc,
             (2560, 1440),
             None,
@@ -1083,7 +1127,10 @@ mod tests {
         assert!(a.contains("-use_wallclock_as_timestamps 1 -f lavfi -i gfxcapture=hmonitor=65537:max_framerate=60"), "{a}");
         // One argument with no spaces in it (a stray run of them once got in).
         let filter = record_args(&plan(
-            Source::WindowsGraphics { hmonitor: 65537 },
+            Source::WindowsGraphics {
+                hmonitor: 65537,
+                sdr_white: None,
+            },
             Encoder::Nvenc,
             (2560, 1440),
             None,
@@ -1108,7 +1155,10 @@ mod tests {
         );
         // With a quality level: constant quality under the same ceiling.
         let mut p = plan(
-            Source::WindowsGraphics { hmonitor: 65537 },
+            Source::WindowsGraphics {
+                hmonitor: 65537,
+                sdr_white: None,
+            },
             Encoder::Nvenc,
             (2560, 1440),
             None,
@@ -1134,7 +1184,10 @@ mod tests {
     #[test]
     fn graphics_capture_scales_on_the_gpu() {
         let a = joined(&record_args(&plan(
-            Source::WindowsGraphics { hmonitor: 1 },
+            Source::WindowsGraphics {
+                hmonitor: 1,
+                sdr_white: None,
+            },
             Encoder::Nvenc,
             (2560, 1440),
             Some(1080),

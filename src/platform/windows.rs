@@ -162,7 +162,10 @@ fn dxgi_outputs() -> Vec<String> {
 /// Ways to capture `m`, best first: Windows Graphics Capture (GPU, scales on the GPU), Desktop
 /// Duplication (GPU), GDI (CPU, works almost anywhere).
 pub fn capture_sources(m: &Monitor) -> Vec<Source> {
-    let mut v = vec![Source::WindowsGraphics { hmonitor: m.handle }];
+    let mut v = vec![Source::WindowsGraphics {
+        hmonitor: m.handle,
+        sdr_white: hdr_sdr_white(m.handle),
+    }];
     if let Some(i) = m.system_index {
         v.push(Source::Ddagrab { output: i });
     }
@@ -173,6 +176,114 @@ pub fn capture_sources(m: &Monitor) -> Vec<Source> {
         h: m.h,
     });
     v
+}
+
+/// The SDR white level in nits ("SDR content brightness") of the screen `hmonitor` while it's in
+/// HDR mode; `None` in SDR, or when Windows won't say.
+pub fn hdr_sdr_white(hmonitor: u64) -> Option<u32> {
+    use windows_sys::Win32::Devices::Display::{
+        DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+        DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO,
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
+        QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+    };
+    // The screen's GDI name ("\\.\DISPLAY1"), which the display paths are found by.
+    let mut info: MONITORINFOEXW = unsafe { std::mem::zeroed() };
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    // SAFETY: `info` is a MONITORINFOEXW with its size set.
+    if unsafe {
+        GetMonitorInfoW(
+            hmonitor as HMONITOR,
+            &mut info as *mut _ as *mut MONITORINFO,
+        )
+    } == 0
+    {
+        return None;
+    }
+    let wide_str = |w: &[u16]| {
+        let n = w.iter().position(|c| *c == 0).unwrap_or(w.len());
+        String::from_utf16_lossy(&w[..n])
+    };
+    let name = wide_str(&info.szDevice);
+    let (mut np, mut nm) = (0u32, 0u32);
+    // SAFETY: two counts out.
+    if unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm) } != 0 {
+        return None;
+    }
+    let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> = vec![unsafe { std::mem::zeroed() }; np as usize];
+    let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> = vec![unsafe { std::mem::zeroed() }; nm as usize];
+    // SAFETY: the arrays hold the counts given.
+    let r = unsafe {
+        QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut np,
+            paths.as_mut_ptr(),
+            &mut nm,
+            modes.as_mut_ptr(),
+            null_mut(),
+        )
+    };
+    if r != 0 {
+        return None;
+    }
+    let header = |kind, size: usize, adapter, id| DISPLAYCONFIG_DEVICE_INFO_HEADER {
+        r#type: kind,
+        size: size as u32,
+        adapterId: adapter,
+        id,
+    };
+    for p in &paths[..np as usize] {
+        let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: header(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(),
+                p.sourceInfo.adapterId,
+                p.sourceInfo.id,
+            ),
+            viewGdiDeviceName: [0; 32],
+        };
+        // SAFETY: the header gives the struct's kind and size.
+        if unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } != 0
+            || wide_str(&source.viewGdiDeviceName) != name
+        {
+            continue;
+        }
+        let mut color: DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO = unsafe { std::mem::zeroed() };
+        color.header = header(
+            DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+            size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>(),
+            p.targetInfo.adapterId,
+            p.targetInfo.id,
+        );
+        // SAFETY: as above.
+        if unsafe { DisplayConfigGetDeviceInfo(&mut color.header) } != 0 {
+            return None;
+        }
+        // Bit 1: advanced colour (HDR) is on.
+        // SAFETY: a plain u32 view of the flags.
+        if unsafe { color.Anonymous.value } & 0x2 == 0 {
+            return None;
+        }
+        let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+            header: header(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(),
+                p.targetInfo.adapterId,
+                p.targetInfo.id,
+            ),
+            SDRWhiteLevel: 0,
+        };
+        // SAFETY: as above.
+        if unsafe { DisplayConfigGetDeviceInfo(&mut white.header) } != 0 {
+            return None;
+        }
+        // In thousandths of 80 nits.
+        let nits = white.SDRWhiteLevel as u64 * 80 / 1000;
+        return Some(nits.clamp(80, 2000) as u32);
+    }
+    None
 }
 
 pub fn foreground_title() -> Option<String> {
@@ -466,4 +577,22 @@ pub fn free_space(dir: &std::path::Path) -> Option<u64> {
     // SAFETY: a NUL-terminated path, and a u64 to write to; the totals aren't asked for.
     let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, null_mut(), null_mut()) };
     (ok != 0).then_some(free)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Each screen and, in HDR mode, its SDR white level. Reads the display settings only.
+    #[test]
+    #[ignore]
+    fn screens_say_whether_they_show_hdr() {
+        for m in super::monitors() {
+            println!(
+                "{} {}x{}: SDR white {:?}",
+                m.name,
+                m.w,
+                m.h,
+                super::hdr_sdr_white(m.handle)
+            );
+        }
+    }
 }
