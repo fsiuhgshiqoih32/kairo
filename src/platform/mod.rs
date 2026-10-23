@@ -85,20 +85,158 @@ pub fn saved_sound_wav() -> Vec<u8> {
     chime(&[(880.0, 0.07), (1318.5, 0.11)])
 }
 
-/// One of the built-in save sounds (`kairo::config::SAVE_SOUNDS`) as a WAV.
 /// The system asks apps for less motion: checked once, when first needed.
 pub fn reduce_motion() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OFF.get_or_init(animations_off)
 }
 
+/// One of the built-in save sounds (`kairo::config::SAVE_SOUNDS`) as a WAV.
 pub fn save_sound_wav(kind: &str) -> Vec<u8> {
+    use Wave::*;
+    let n = |wave, from, to, secs, vol| Tone {
+        wave,
+        from,
+        to,
+        secs,
+        vol,
+    };
     match kind {
         "click" => chime(&[(2093.0, 0.012), (1568.0, 0.02)]),
         "pop" => chime(&[(784.0, 0.04), (523.25, 0.06)]),
         "bell" => chime(&[(1046.5, 0.07), (1318.5, 0.07), (1568.0, 0.14)]),
+        // Two quick square notes, B5 then E6, the second held.
+        "coin" => synth(&[
+            n(Square, 987.8, 987.8, 0.07, 0.16),
+            n(Square, 1318.5, 1318.5, 0.26, 0.16),
+        ]),
+        // C, E, G and the octave, rising.
+        "level" => synth(&[
+            n(Triangle, 523.25, 523.25, 0.07, 0.4),
+            n(Triangle, 659.25, 659.25, 0.07, 0.4),
+            n(Triangle, 783.99, 783.99, 0.07, 0.4),
+            n(Triangle, 1046.5, 1046.5, 0.22, 0.4),
+        ]),
+        // Two short bursts of noise, like a shutter opening and closing.
+        "shutter" => synth(&[
+            n(Noise, 0.0, 0.0, 0.035, 0.3),
+            n(Silence, 0.0, 0.0, 0.04, 0.0),
+            n(Noise, 0.0, 0.0, 0.05, 0.22),
+        ]),
+        "whoosh" => synth(&[n(Swish, 0.0, 0.0, 0.28, 0.32)]),
+        "laser" => synth(&[n(Square, 1800.0, 220.0, 0.18, 0.13)]),
+        "bubble" => synth(&[n(Sine, 300.0, 1200.0, 0.12, 0.4)]),
+        "retro" => synth(&[
+            n(Square, 1046.5, 1046.5, 0.05, 0.13),
+            n(Silence, 0.0, 0.0, 0.025, 0.0),
+            n(Square, 1046.5, 1046.5, 0.05, 0.13),
+            n(Silence, 0.0, 0.0, 0.025, 0.0),
+            n(Square, 1568.0, 1568.0, 0.12, 0.13),
+        ]),
+        // A major third, soft.
+        "success" => synth(&[
+            n(Sine, 659.25, 659.25, 0.1, 0.35),
+            n(Sine, 830.6, 830.6, 0.24, 0.35),
+        ]),
+        "drop" => synth(&[n(Sine, 1400.0, 380.0, 0.16, 0.38)]),
+        "tick" => synth(&[n(Sine, 1760.0, 1760.0, 0.025, 0.25)]),
         _ => saved_sound_wav(),
     }
+}
+
+/// The kinds of tone `synth` makes.
+#[derive(Clone, Copy, PartialEq)]
+enum Wave {
+    Sine,
+    Square,
+    Triangle,
+    /// White noise.
+    Noise,
+    /// Noise swelling and fading, brighter in the middle: air moving past.
+    Swish,
+    /// Nothing, for a pause between tones.
+    Silence,
+}
+
+/// One tone: its pitch slides from `from` to `to` Hz over `secs`; `vol` is 0 to 1.
+struct Tone {
+    wave: Wave,
+    from: f32,
+    to: f32,
+    secs: f32,
+    vol: f32,
+}
+
+/// Tones one after another as a mono 16-bit WAV, each with a quick attack and a smooth decay.
+fn synth(tones: &[Tone]) -> Vec<u8> {
+    let rate = 44_100.0f32;
+    let mut samples: Vec<i16> = Vec::new();
+    // A fixed seed: the same sound every time.
+    let mut seed = 0x2545_f491u32;
+    let mut noise = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32 * 2.0 - 1.0
+    };
+    let mut low = 0.0f32;
+    for t in tones {
+        let n = (rate * t.secs) as usize;
+        let mut phase = 0.0f32;
+        for i in 0..n {
+            let k = i as f32 / n.max(1) as f32;
+            let hz = t.from + (t.to - t.from) * k;
+            phase = (phase + hz / rate).fract();
+            let raw = match t.wave {
+                Wave::Sine => (phase * std::f32::consts::TAU).sin(),
+                Wave::Square => {
+                    if phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                Wave::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
+                Wave::Noise => noise(),
+                Wave::Swish => {
+                    // Low-passed noise whose cut-off rises then falls.
+                    let a = 0.05 + 0.5 * (k * std::f32::consts::PI).sin();
+                    low += (noise() - low) * a;
+                    low * 2.0
+                }
+                Wave::Silence => 0.0,
+            };
+            let env = match t.wave {
+                Wave::Swish => (k * std::f32::consts::PI).sin().powf(1.5),
+                _ => (i as f32 / 200.0).min(1.0) * (1.0 - k).powf(1.6),
+            };
+            let v = (raw * env * t.vol).clamp(-1.0, 1.0);
+            samples.push((v * i16::MAX as f32) as i16);
+        }
+    }
+    wav16(44_100, &samples)
+}
+
+/// A mono 16-bit WAV file.
+fn wav16(rate: u32, samples: &[i16]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut w = Vec::with_capacity(44 + data_len as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        w.extend_from_slice(&s.to_le_bytes());
+    }
+    w
 }
 
 /// A WAV file of the user's for the save sound, if it looks like one (and isn't huge).
@@ -152,24 +290,7 @@ fn chime(notes: &[(f32, f32)]) -> Vec<u8> {
             samples.push((v * i16::MAX as f32) as i16);
         }
     }
-    let data_len = (samples.len() * 2) as u32;
-    let mut w = Vec::with_capacity(44 + data_len as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data_len).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 2).to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data_len.to_le_bytes());
-    for s in samples {
-        w.extend_from_slice(&s.to_le_bytes());
-    }
-    w
+    wav16(rate, &samples)
 }
 
 /// Turns a window title into something usable in a file name.

@@ -141,6 +141,21 @@ pub struct QuickSave {
 /// At most this many quick saves.
 pub const MAX_QUICK_SAVES: usize = 3;
 
+/// Another phrase for voice clipping, with its own length ("clip the round" saves 2 minutes).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoicePhrase {
+    pub phrase: String,
+    pub seconds: u32,
+}
+
+/// At most this many extra voice phrases.
+pub const MAX_VOICE_PHRASES: usize = 3;
+
+/// How sure the recognizer must be of each word of a phrase, by `Settings::voice_sensitivity`.
+pub const VOICE_SENSITIVITIES: [(&str, f64); 3] =
+    [("strict", 0.85), ("normal", 0.7), ("relaxed", 0.55)];
+
 /// Settings for one game, found by the start of its window title: "Minecraft" also matches
 /// "Minecraft 26.3". Empty or zero fields keep the main settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,11 +181,21 @@ impl GameRule {
 }
 
 /// The save sounds Kairo has built in, with their names; "custom" plays a file instead.
-pub const SAVE_SOUNDS: [(&str, &str); 4] = [
+pub const SAVE_SOUNDS: [(&str, &str); 14] = [
     ("chime", "Chime"),
     ("click", "Click"),
     ("pop", "Pop"),
     ("bell", "Bell"),
+    ("coin", "Coin"),
+    ("level", "Level up"),
+    ("shutter", "Camera"),
+    ("whoosh", "Whoosh"),
+    ("laser", "Laser"),
+    ("bubble", "Bubble"),
+    ("retro", "Retro"),
+    ("success", "Success"),
+    ("drop", "Drop"),
+    ("tick", "Soft tick"),
 ];
 
 /// Where the replay buffer keeps finished video.
@@ -199,6 +224,21 @@ impl Storage {
 /// On Automatic, a buffer that could grow past this lives on disk, where the system's file cache
 /// holds it instead of Kairo: a 30 s 1080p60 buffer stays in memory, a minute or 1440p doesn't.
 pub const AUTO_DISK_BYTES: u64 = 128 << 20;
+
+/// Sizes the window can draw at, in percent.
+pub const UI_SCALES: [u32; 4] = [90, 100, 110, 125];
+
+/// What can be behind the window's pages.
+pub const BACKGROUNDS: [&str; 3] = ["plain", "glow", "picture"];
+
+/// A colour written as "#rrggbb" (an accent of your own), as 0xRRGGBB.
+pub fn hex_colour(s: &str) -> Option<u32> {
+    let h = s.trim().strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(h, 16).ok()
+}
 
 /// The window's accent colours, by name.
 pub const ACCENTS: [&str; 8] = [
@@ -301,6 +341,25 @@ pub struct Settings {
     pub motion: String,
     /// The microphone's volume in clips, in percent (100 is as it comes in).
     pub mic_volume: u32,
+    /// How long a clip `voice_phrase` saves; 0 saves `clip_seconds`. A length said after the
+    /// phrase ("clip that twenty seconds") goes before either.
+    pub voice_seconds: u32,
+    /// More phrases, each with its own length.
+    pub voice_phrases: Vec<VoicePhrase>,
+    /// After a voice clip, listen a while for "rename it ..." and "trim it ...".
+    pub voice_follow_ups: bool,
+    /// One of `VOICE_SENSITIVITIES`: how sure Kairo must be that it heard the phrase.
+    pub voice_sensitivity: String,
+    /// How big the window draws everything, in percent: one of `UI_SCALES`.
+    pub ui_scale: u32,
+    /// Tighter spacing, so more fits in the window.
+    pub compact: bool,
+    /// Behind the window's pages: one of `BACKGROUNDS`.
+    pub background: String,
+    /// The picture for the "picture" background.
+    pub background_file: String,
+    /// How much the picture is toned down behind the pages, in percent (0 to 90).
+    pub background_dim: u32,
 }
 
 impl Default for Settings {
@@ -355,6 +414,15 @@ impl Default for Settings {
             webcam_size: 25,
             motion: "system".into(),
             mic_volume: 100,
+            voice_seconds: 0,
+            voice_phrases: Vec::new(),
+            voice_follow_ups: true,
+            voice_sensitivity: "normal".into(),
+            ui_scale: 100,
+            compact: false,
+            background: "plain".into(),
+            background_file: String::new(),
+            background_dim: 60,
         }
     }
 }
@@ -394,6 +462,20 @@ impl Settings {
         if self.voice_phrase.is_empty() {
             self.voice_phrase = DEFAULT_VOICE_PHRASE.into();
         }
+        if self.voice_seconds != 0 {
+            self.voice_seconds = self.voice_seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
+        }
+        self.voice_phrases.truncate(MAX_VOICE_PHRASES);
+        for v in &mut self.voice_phrases {
+            v.phrase = normalize_phrase(&v.phrase);
+            v.seconds = v.seconds.clamp(MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
+        }
+        if !VOICE_SENSITIVITIES
+            .iter()
+            .any(|(k, _)| *k == self.voice_sensitivity)
+        {
+            self.voice_sensitivity = "normal".into();
+        }
         self.screenshot_hotkey = self.screenshot_hotkey.trim().to_string();
         self.marker_hotkey = self.marker_hotkey.trim().to_string();
         self.quick_saves.truncate(MAX_QUICK_SAVES);
@@ -407,9 +489,16 @@ impl Settings {
         if self.chat_app.is_empty() {
             self.chat_app = "Discord".into();
         }
-        if !ACCENTS.contains(&self.accent.as_str()) {
+        if !ACCENTS.contains(&self.accent.as_str()) && hex_colour(&self.accent).is_none() {
             self.accent = "orange".into();
         }
+        if !UI_SCALES.contains(&self.ui_scale) {
+            self.ui_scale = 100;
+        }
+        if !BACKGROUNDS.contains(&self.background.as_str()) {
+            self.background = "plain".into();
+        }
+        self.background_dim = self.background_dim.min(90);
         if !["always", "games"].contains(&self.record_when.as_str()) {
             self.record_when = "always".into();
         }
@@ -489,11 +578,29 @@ impl Settings {
 
     /// Seconds of video and sound to keep: the longest clip any shortcut saves, plus a little
     /// for the GOP a clip starts inside.
+    /// How sure the recognizer must be of each word of a voice phrase (0 to 1).
+    pub fn voice_confidence(&self) -> f64 {
+        VOICE_SENSITIVITIES
+            .iter()
+            .find(|(k, _)| *k == self.voice_sensitivity)
+            .map_or(0.7, |(_, c)| *c)
+    }
+
     pub fn buffer_seconds(&self) -> u32 {
+        let voice: Vec<u32> = if self.voice_clip {
+            self.voice_phrases
+                .iter()
+                .map(|v| v.seconds)
+                .chain([self.voice_seconds])
+                .collect()
+        } else {
+            Vec::new()
+        };
         let longest = self
             .quick_saves
             .iter()
             .map(|q| q.seconds)
+            .chain(voice)
             .chain([self.clip_seconds])
             .max()
             .unwrap_or(self.clip_seconds);
@@ -616,6 +723,29 @@ pub fn save(path: &Path, s: &Settings) -> Result<(), String> {
     crate::library::write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// `ours` (one part of Kairo's settings, changed from `base`, what it last saved) laid over
+/// `theirs` (the file now): each setting it changed comes from it, every other from the file.
+/// The window and the tray each save the whole file, and neither may undo the other's change.
+pub fn merge_changes(base: &Settings, ours: &Settings, theirs: &Settings) -> Settings {
+    let table = |s: &Settings| match toml::Value::try_from(s) {
+        Ok(toml::Value::Table(t)) => Some(t),
+        _ => None,
+    };
+    let (Some(was), Some(now), Some(mut out)) = (table(base), table(ours), table(theirs)) else {
+        return ours.clone();
+    };
+    for (key, value) in now {
+        if was.get(&key) != Some(&value) {
+            out.insert(key, value);
+        }
+    }
+    let mut s = toml::Value::Table(out)
+        .try_into::<Settings>()
+        .unwrap_or_else(|_| ours.clone());
+    s.sanitize();
+    s
+}
+
 pub fn mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -639,6 +769,36 @@ pub fn normalize_phrase(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_keeps_what_something_else_changed() {
+        let base = Settings::default();
+        // The window changes the clip length...
+        let ours = Settings {
+            clip_seconds: 60,
+            ..base.clone()
+        };
+        // ...while the tray turned pop-ups off and sessions on.
+        let theirs = Settings {
+            notify: false,
+            session_auto: true,
+            ..base.clone()
+        };
+        let merged = merge_changes(&base, &ours, &theirs);
+        assert_eq!(merged.clip_seconds, 60);
+        assert!(!merged.notify);
+        assert!(merged.session_auto);
+        // Both changed the same setting: the one saving now wins.
+        let ours = Settings {
+            notify: true,
+            ..base.clone()
+        };
+        let base_off = Settings {
+            notify: false,
+            ..base.clone()
+        };
+        assert!(merge_changes(&base_off, &ours, &theirs).notify);
+    }
 
     #[test]
     fn games_get_their_own_settings() {

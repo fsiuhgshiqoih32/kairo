@@ -332,8 +332,7 @@ fn background<T: Send + 'static>(
 
 impl App {
     pub fn new(settings: Settings) -> (Self, Task<Message>) {
-        theme::set_accent(&settings.accent);
-        theme::apply_look(&settings.look);
+        theme::apply_settings(&settings);
         let (setup, tasks) = settings::State::new(&settings);
         (
             App {
@@ -1726,18 +1725,18 @@ impl App {
         Task::none()
     }
 
-    /// Takes the pop-ups switch from the settings file when the tray menu changed it and this
-    /// window didn't: saving the window's settings would otherwise undo it.
-    fn adopt_popups_from_disk(&mut self) {
-        // Switched here since the last save: that's the newer choice.
-        if self.settings.notify != self.saved.notify {
+    /// Takes what another part of Kairo changed in the settings file (the tray's pop-ups
+    /// switch, say) while this window has nothing of its own waiting to be saved.
+    fn adopt_settings_from_disk(&mut self) {
+        if self.settings != self.saved {
             return;
         }
         if let Ok(s) = config::load(&config::default_path())
-            && s.notify != self.saved.notify
+            && s != self.saved
         {
-            self.settings.notify = s.notify;
-            self.saved.notify = s.notify;
+            theme::apply_settings(&s);
+            self.settings = s.clone();
+            self.saved = s;
         }
     }
 
@@ -1757,16 +1756,19 @@ impl App {
         )];
         if self.ticks.is_multiple_of(3) {
             tasks.push(self.refresh());
-            self.adopt_popups_from_disk();
+            self.adopt_settings_from_disk();
         }
         if let Some(t) = self.changed_at
             && t.elapsed() > Duration::from_millis(600)
         {
             self.changed_at = None;
             self.settings.sanitize();
-            // The tray may have switched pop-ups since the last look.
-            self.adopt_popups_from_disk();
             if self.settings != self.saved {
+                // Only what changed here: something else may have changed the file since the
+                // last look (the tray's pop-ups switch), and saving mustn't undo it.
+                if let Ok(disk) = config::load(&config::default_path()) {
+                    self.settings = config::merge_changes(&self.saved, &self.settings, &disk);
+                }
                 let folder_changed = self.settings.save_dir() != self.saved.save_dir();
                 match config::save(&config::default_path(), &self.settings) {
                     Ok(()) => self.saved = self.settings.clone(),
@@ -1991,8 +1993,35 @@ impl App {
             _ => column![self.top_bar(), self.library_view()].into(),
         };
         let page = self.entering(page, self.entrance(self.page_in, PAGE_IN_MS), false);
-        let mut layers =
-            stack![row![self.sidebar(), container(page).width(Fill).height(Fill)].height(Fill)];
+        let mut layers = stack![];
+        // Behind everything: the accent's glow, or a picture under a veil.
+        match self.settings.background.as_str() {
+            "glow" => {
+                layers = layers.push(
+                    container(Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(theme::glow_backdrop),
+                );
+            }
+            "picture" if !self.settings.background_file.is_empty() => {
+                layers = layers.push(
+                    image(image::Handle::from_path(&self.settings.background_file))
+                        .content_fit(iced::ContentFit::Cover)
+                        .width(Fill)
+                        .height(Fill),
+                );
+                layers = layers.push(
+                    container(Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(theme::veil(self.settings.background_dim as f32 / 100.0)),
+                );
+            }
+            _ => {}
+        }
+        layers = layers
+            .push(row![self.sidebar(), container(page).width(Fill).height(Fill)].height(Fill));
         if let Some(n) = &self.notice {
             layers = layers.push(
                 container(
@@ -2554,11 +2583,7 @@ impl App {
 
     fn sidebar(&self) -> Element<'_, Message> {
         let logo = row![
-            image(image::Handle::from_bytes(
-                include_bytes!("../../assets/icon.png").as_slice()
-            ))
-            .width(28)
-            .height(28),
+            image(widgets::sidebar_logo()).width(28).height(28),
             text("Kairo").font(BOLD).size(19),
         ]
         .spacing(10)
@@ -3411,6 +3436,7 @@ pub fn run(clip: Option<PathBuf>, wait: bool, update: bool, friends: bool) -> Re
     )
     .title(App::title)
     .theme(App::theme)
+    .scale_factor(|app: &App| app.settings.ui_scale as f32 / 100.0)
     .subscription(App::subscription)
     .default_font(theme::FONT)
     .window(window::Settings {

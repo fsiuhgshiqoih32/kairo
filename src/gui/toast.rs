@@ -86,8 +86,7 @@ pub fn run(msg: Message) -> Result<(), String> {
         return system_notification(&msg);
     }
     if let Ok(s) = kairo::config::load(&kairo::config::default_path()) {
-        theme::set_accent(&s.accent);
-        theme::apply_look(&s.look);
+        theme::apply_settings(&s);
     }
     let mut settings = window::Settings {
         size: Size::new(W, H),
@@ -360,9 +359,7 @@ impl Toast {
                         })
                         .on_press(m)
                 };
-                let logo = image(image::Handle::from_rgba(96, 96, kairo::art::app_icon(96)))
-                    .width(48)
-                    .height(48);
+                let logo = image(super::widgets::app_logo(96)).width(48).height(48);
                 row![
                     container(logo).center_y(Fill),
                     column![

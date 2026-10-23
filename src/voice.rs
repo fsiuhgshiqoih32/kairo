@@ -345,29 +345,111 @@ fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
 pub struct Listener {
     engine: Arc<Engine>,
     recognizer: *mut c_void,
-    pub phrase: String,
-    words: Vec<String>,
+    /// What it listens for: the phrases and how sure it must be.
+    pub wanted: Wanted,
+    /// Each phrase's words.
+    words: Vec<Vec<String>>,
     resampler: Resampler,
     buf: Vec<i16>,
+}
+
+/// The phrases to listen for, each with the clip length it saves (`None`: the usual), and how
+/// sure each word must be.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wanted {
+    pub phrases: Vec<(String, Option<u32>)>,
+    pub confidence: f64,
+}
+
+impl Wanted {
+    pub fn from_settings(s: &kairo::config::Settings) -> Wanted {
+        let mut phrases = vec![(
+            normalize_phrase(&s.voice_phrase),
+            (s.voice_seconds > 0).then_some(s.voice_seconds),
+        )];
+        for v in &s.voice_phrases {
+            let p = normalize_phrase(&v.phrase);
+            if !p.is_empty() && !phrases.iter().any(|(q, _)| *q == p) {
+                phrases.push((p, Some(v.seconds)));
+            }
+        }
+        phrases.retain(|(p, _)| !p.is_empty());
+        Wanted {
+            phrases,
+            confidence: s.voice_confidence(),
+        }
+    }
+
+    /// For the log and the status: "clip that", or "clip that" and 2 more.
+    pub fn describe(&self) -> String {
+        match self.phrases.as_slice() {
+            [] => String::new(),
+            [(p, _)] => format!("\"{p}\""),
+            [(p, _), rest @ ..] => format!("\"{p}\" and {} more", rest.len()),
+        }
+    }
+}
+
+/// A phrase was heard: save a clip this long (`None`: the usual length).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heard {
+    pub phrase: usize,
+    pub seconds: Option<u32>,
+}
+
+/// Words a length is said with after the phrase ("clip that last two minutes"), so the
+/// recognizer, which only knows the phrase and a few common words, can hear them.
+const LENGTH_WORDS: &str = "zero one two three four five six seven eight nine ten eleven \
+    twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty \
+    fifty sixty seventy eighty ninety second seconds minute minutes half and a the last for";
+
+/// Shorter than this, a number after the phrase isn't a length: "clip that one".
+const MIN_SPOKEN_SECONDS: u32 = 5;
+
+/// The length said right after a phrase, if any: "twenty seconds", "the last minute",
+/// "thirty", "a minute and a half".
+fn spoken_length(after: &[&str]) -> Option<u32> {
+    let mut rest = after;
+    while let [w, tail @ ..] = rest
+        && ["the", "last", "for", "like", "about"].contains(w)
+    {
+        rest = tail;
+    }
+    let first = *rest.first()?;
+    let starts_length = number(first).is_some()
+        || ["a", "half"].contains(&first)
+        || first.starts_with("minute")
+        || first.starts_with("second");
+    if !starts_length {
+        return None;
+    }
+    duration(&rest[..rest.len().min(6)]).filter(|s| *s >= MIN_SPOKEN_SECONDS)
 }
 
 // SAFETY: a recognizer is only used from the thread that owns the Listener.
 unsafe impl Send for Listener {}
 
 impl Listener {
-    pub fn new(engine: Arc<Engine>, phrase: &str) -> Result<Listener, String> {
-        let phrase = normalize_phrase(phrase);
-        if phrase.is_empty() {
+    pub fn new(engine: Arc<Engine>, wanted: Wanted) -> Result<Listener, String> {
+        if wanted.phrases.is_empty() {
             return Err("The voice phrase is empty.".into());
         }
-        // The phrase, common words that sound alike, or anything else as "[unk]".
-        let mut list: Vec<String> = vec![phrase.clone(), "[unk]".into()];
-        list.extend(
-            FILLER
-                .split_whitespace()
-                .filter(|w| !phrase.split(' ').any(|p| p == *w))
-                .map(String::from),
-        );
+        // The phrases, words a length is said with, common words that sound alike, or anything
+        // else as "[unk]".
+        let mut list: Vec<String> = wanted.phrases.iter().map(|(p, _)| p.clone()).collect();
+        list.push("[unk]".into());
+        for w in LENGTH_WORDS
+            .split_whitespace()
+            .chain(FILLER.split_whitespace())
+        {
+            let in_phrase = wanted
+                .phrases
+                .iter()
+                .any(|(p, _)| p.split(' ').any(|x| x == w));
+            if !in_phrase && !list.iter().any(|x| x == w) {
+                list.push(w.to_string());
+            }
+        }
         let grammar = serde_json::to_string(&list).map_err(|e| e.to_string())?;
         let grammar = CString::new(grammar).map_err(|e| e.to_string())?;
         // SAFETY: the model is alive (held by `engine`); the grammar is a valid C string.
@@ -379,8 +461,12 @@ impl Listener {
         // Word confidences in final results.
         unsafe { (engine.set_words)(recognizer, 1) };
         Ok(Listener {
-            words: phrase.split(' ').map(String::from).collect(),
-            phrase,
+            words: wanted
+                .phrases
+                .iter()
+                .map(|(p, _)| p.split(' ').map(String::from).collect())
+                .collect(),
+            wanted,
             engine,
             recognizer,
             resampler: Resampler::default(),
@@ -388,12 +474,12 @@ impl Listener {
         })
     }
 
-    /// Feeds sound; true when the phrase was just heard.
-    pub fn feed(&mut self, samples: &[f32], rate: u32, channels: u16) -> bool {
+    /// Feeds sound; what was heard when a phrase just was.
+    pub fn feed(&mut self, samples: &[f32], rate: u32, channels: u16) -> Option<Heard> {
         self.buf.clear();
         self.resampler.push(samples, rate, channels, &mut self.buf);
         if self.buf.is_empty() {
-            return false;
+            return None;
         }
         let e = &self.engine;
         // SAFETY: the recognizer is valid until drop; the buffer outlives the call.
@@ -401,12 +487,13 @@ impl Listener {
             unsafe { (e.accept)(self.recognizer, self.buf.as_ptr(), self.buf.len() as c_int) } == 1;
         // Only finished utterances count: guesses mid-sentence give more false alarms.
         if !ended {
-            return false;
+            return None;
         }
         let text = unsafe { CStr::from_ptr((e.result)(self.recognizer)) }
             .to_string_lossy()
             .to_string();
-        serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| heard_in(&v, &self.words))
+        let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+        heard_in(&v, &self.words, &self.wanted)
     }
 }
 
@@ -577,11 +664,30 @@ fn parse_rename(words: &[&str]) -> Option<String> {
                 .unwrap_or_default()
         })
         .collect();
+    // A name that's only a length ("thirty seconds") is a trim heard wrong.
+    let only_length = name.iter().all(|w| {
+        number(w).is_some()
+            || ["a", "and", "half"].contains(w)
+            || w.starts_with("second")
+            || w.starts_with("minute")
+    });
+    if only_length {
+        return None;
+    }
     Some(title.join(" ")).filter(|t| !t.is_empty())
 }
 
 fn parse_trim(words: &[&str]) -> Option<u32> {
-    let at = words.iter().position(|w| TRIM_WORDS.contains(w))?;
+    let Some(at) = words.iter().position(|w| TRIM_WORDS.contains(w)) else {
+        // "trim" lost at the start of the sentence ("... it down to thirty seconds"): "down to"
+        // and a length with its unit still mean a trim.
+        let at = words.windows(2).position(|w| w == ["down", "to"])?;
+        let rest = &words[at + 2..];
+        let unit = rest
+            .iter()
+            .any(|w| w.starts_with("second") || w.starts_with("minute"));
+        return unit.then(|| duration(rest)).flatten().filter(|s| *s >= 2);
+    };
     // "make" and "keep" are everyday words: only with "it" or "the last" after them.
     let next = words.get(at + 1).copied();
     if words[at] == "make" && next != Some("it") {
@@ -681,37 +787,48 @@ fn number(w: &str) -> Option<f64> {
         .map(|n| (n as f64 + 2.0) * 10.0)
 }
 
-/// Below this, the recognizer is guessing (tested: real phrases score 0.76 to 1.0).
-const MIN_CONFIDENCE: f64 = 0.7;
-
-/// Whether a final result (`{"result": [{"word", "conf"}...], "text"}`) has the phrase's words
-/// in a row, each confidently.
-fn heard_in(result: &serde_json::Value, words: &[String]) -> bool {
-    let Some(list) = result.get("result").and_then(|r| r.as_array()) else {
-        return contains_phrase(
-            result.get("text").and_then(|t| t.as_str()).unwrap_or(""),
-            words,
-        );
+/// Which phrase a final result (`{"result": [{"word", "conf"}...], "text"}`) has, its words in
+/// a row and each confident enough, and the length said right after it. Tested: real phrases
+/// score 0.76 to 1.0, so "normal" asks for 0.7.
+fn heard_in(result: &serde_json::Value, phrases: &[Vec<String>], wanted: &Wanted) -> Option<Heard> {
+    let heard: Vec<(&str, f64)> = match result.get("result").and_then(|r| r.as_array()) {
+        Some(list) => list
+            .iter()
+            .filter_map(|w| Some((w.get("word")?.as_str()?, w.get("conf")?.as_f64()?)))
+            .collect(),
+        // No word confidences: the text alone.
+        None => result
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .split_whitespace()
+            .map(|w| (w, 1.0))
+            .collect(),
     };
-    let heard: Vec<(&str, f64)> = list
-        .iter()
-        .filter_map(|w| Some((w.get("word")?.as_str()?, w.get("conf")?.as_f64()?)))
-        .collect();
-    !words.is_empty()
-        && heard.windows(words.len()).any(|win| {
-            win.iter()
+    for (i, words) in phrases.iter().enumerate() {
+        if words.is_empty() || heard.len() < words.len() {
+            continue;
+        }
+        let at = (0..=heard.len() - words.len()).find(|&at| {
+            heard[at..at + words.len()]
+                .iter()
                 .zip(words)
-                .all(|((said, conf), want)| said == want && *conf >= MIN_CONFIDENCE)
-        })
-}
-
-/// Whether the recognized words include the phrase's words in a row.
-fn contains_phrase(said: &str, words: &[String]) -> bool {
-    let heard: Vec<&str> = said.split_whitespace().collect();
-    !words.is_empty()
-        && heard
-            .windows(words.len())
-            .any(|w| w.iter().zip(words).all(|(a, b)| *a == b))
+                .all(|((said, conf), want)| said == want && *conf >= wanted.confidence)
+        });
+        if let Some(at) = at {
+            let after: Vec<&str> = heard[at + words.len()..]
+                .iter()
+                .take_while(|(_, conf)| *conf >= wanted.confidence)
+                .map(|(w, _)| *w)
+                .collect();
+            let own = wanted.phrases.get(i).and_then(|(_, s)| *s);
+            return Some(Heard {
+                phrase: i,
+                seconds: spoken_length(&after).or(own),
+            });
+        }
+    }
+    None
 }
 
 /// Mono 16 kHz 16-bit from any rate and channel count, across chunks (linear interpolation).
@@ -763,7 +880,7 @@ impl Resampler {
 /// Runs until `shared.stop`; the microphone stream sends its sound through `shared.voice_tap`.
 pub fn run(
     shared: Arc<Shared>,
-    heard: impl Fn() + Send + 'static,
+    heard: impl Fn(Option<u32>) + Send + 'static,
     told: impl Fn(Vec<FollowUp>) + Send + 'static,
 ) {
     let (tx, rx): (SyncSender<Chunk>, Receiver<Chunk>) = sync_channel(64);
@@ -771,7 +888,7 @@ pub fn run(
     let mut listener: Option<Listener> = None;
     // Listening for what to do with the clip, until then.
     let mut follow: Option<(Open, Instant)> = None;
-    let mut failed_for: Option<String> = None;
+    let mut failed_for: Option<Wanted> = None;
     let mut last = Instant::now() - COOLDOWN;
     let set_status = |voice: Option<String>, error: Option<String>| {
         let mut st = shared.status.lock().unwrap();
@@ -781,7 +898,7 @@ pub fn run(
     while !shared.stop.load(Ordering::Relaxed) {
         let s = shared.settings();
         let want = s.voice_clip && !shared.paused.load(Ordering::Relaxed);
-        let phrase = normalize_phrase(&s.voice_phrase);
+        let wanted = Wanted::from_settings(&s);
         if !want {
             follow = None;
             if listener.take().is_some() {
@@ -792,8 +909,8 @@ pub fn run(
             engine = None;
             set_status(None, None);
             failed_for = None;
-        } else if listener.as_ref().is_none_or(|l| l.phrase != phrase)
-            && failed_for.as_deref() != Some(&phrase)
+        } else if listener.as_ref().is_none_or(|l| l.wanted != wanted)
+            && failed_for.as_ref() != Some(&wanted)
         {
             listener = None;
             let made = (|| {
@@ -803,20 +920,20 @@ pub fn run(
                 if engine.is_none() {
                     engine = Some(Arc::new(Engine::load(&dir())?));
                 }
-                Listener::new(engine.clone().expect("loaded"), &phrase)
+                Listener::new(engine.clone().expect("loaded"), wanted.clone())
             })();
             match made {
                 Ok(l) => {
-                    info!("voice clipping on: listening for \"{phrase}\"");
+                    info!("voice clipping on: listening for {}", wanted.describe());
                     *shared.voice_tap.lock().unwrap() = Some(tx.clone());
-                    set_status(Some(phrase.clone()), None);
+                    set_status(Some(wanted.describe()), None);
                     listener = Some(l);
                     failed_for = None;
                 }
                 Err(e) => {
                     warning!("voice clipping: {e}");
                     set_status(None, Some(e));
-                    failed_for = Some(phrase.clone());
+                    failed_for = Some(wanted.clone());
                 }
             }
         }
@@ -833,17 +950,22 @@ pub fn run(
                     told(todo);
                 }
                 if let Some(l) = &mut listener
-                    && l.feed(&samples, rate, channels)
+                    && let Some(h) = l.feed(&samples, rate, channels)
                     && last.elapsed() >= COOLDOWN
                 {
                     last = Instant::now();
-                    info!("heard \"{}\": saving a clip", l.phrase);
-                    heard();
+                    let phrase = &l.wanted.phrases[h.phrase].0;
+                    match h.seconds {
+                        Some(n) => info!("heard \"{phrase}\": saving the last {n} s"),
+                        None => info!("heard \"{phrase}\": saving a clip"),
+                    }
+                    heard(h.seconds);
                     // Anything said from now on, for a while, may be about this clip. Only now:
                     // listening to everything all the time would cost far more.
-                    follow = engine
-                        .clone()
-                        .and_then(Open::new)
+                    follow = s
+                        .voice_follow_ups
+                        .then(|| engine.clone().and_then(Open::new))
+                        .flatten()
                         .map(|o| (o, Instant::now() + FOLLOW_UP));
                 }
             }
@@ -885,7 +1007,11 @@ pub fn test_files(phrase: &str, files: &[String]) -> Result<(), String> {
             }
         };
         let (samples, rate, channels) = read_wav(Path::new(path))?;
-        let mut l = Listener::new(engine.clone(), phrase)?;
+        let wanted = Wanted {
+            phrases: vec![(normalize_phrase(phrase), None)],
+            confidence: 0.7,
+        };
+        let mut l = Listener::new(engine.clone(), wanted)?;
         let mut heard = 0;
         // Feed it in 20 ms pieces, like the microphone does, between stretches of silence (a
         // microphone hears quiet before and after someone speaks).
@@ -896,11 +1022,11 @@ pub fn test_files(phrase: &str, files: &[String]) -> Result<(), String> {
             .chain(samples.chunks(piece.max(1)))
             .chain(silence.chunks(piece.max(1)))
         {
-            if l.feed(c, rate, channels) {
+            if l.feed(c, rate, channels).is_some() {
                 heard += 1;
             }
         }
-        println!("{path}: heard \"{}\" {heard} time(s)", l.phrase);
+        println!("{path}: heard {} {heard} time(s)", l.wanted.describe());
         if (heard > 0) != expect {
             wrong.push(path.to_string());
         }
@@ -989,6 +1115,20 @@ mod tests {
         let mut todo = parse_follow_ups(said);
         assert!(todo.len() <= 1, "{said}: {todo:?}");
         todo.pop()
+    }
+
+    #[test]
+    fn a_trim_heard_without_its_first_word() {
+        use FollowUp::Trim;
+        // From the user's log: "trim it down to thirty seconds and rename it ..." came out
+        // like this, and the clip was renamed "Thirty Seconds" instead of trimmed.
+        assert_eq!(
+            parse_follow_ups("and it down to thirty seconds and rename it thirty seconds"),
+            [Trim(30)]
+        );
+        assert_eq!(parse_follow_up("it down to a minute"), Some(Trim(60)));
+        // "down to" without a unit is just talk.
+        assert_eq!(parse_follow_up("we're down to two players"), None);
     }
 
     #[test]
@@ -1101,20 +1241,44 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
+    /// A listener's view of `phrases` at "normal", without the recognizer.
+    fn hear(phrases: &[(&str, Option<u32>)], json: &str) -> Option<Heard> {
+        let wanted = Wanted {
+            phrases: phrases.iter().map(|(p, s)| (p.to_string(), *s)).collect(),
+            confidence: 0.7,
+        };
+        let words: Vec<Vec<String>> = wanted
+            .phrases
+            .iter()
+            .map(|(p, _)| p.split(' ').map(String::from).collect())
+            .collect();
+        heard_in(&serde_json::from_str(json).unwrap(), &words, &wanted)
+    }
+
+    /// A result with every word confident.
+    fn said(text: &str) -> String {
+        let words: Vec<String> = text
+            .split_whitespace()
+            .map(|w| format!(r#"{{"word":"{w}","conf":1.0}}"#))
+            .collect();
+        format!(r#"{{"result":[{}],"text":"{text}"}}"#, words.join(","))
+    }
+
     #[test]
     fn phrase_matching_needs_the_words_in_a_row() {
-        let words: Vec<String> = ["clip", "that"].iter().map(|s| s.to_string()).collect();
-        assert!(contains_phrase("clip that", &words));
-        assert!(contains_phrase("[unk] clip that [unk]", &words));
-        assert!(!contains_phrase("clip [unk] that", &words));
-        assert!(!contains_phrase("that clip", &words));
-        assert!(!contains_phrase("", &words));
+        let clip = [("clip that", None)];
+        let text = |t: &str| hear(&clip, &format!(r#"{{"text":"{t}"}}"#)).is_some();
+        assert!(text("clip that"));
+        assert!(text("[unk] clip that [unk]"));
+        assert!(!text("clip [unk] that"));
+        assert!(!text("that clip"));
+        assert!(!text(""));
     }
 
     #[test]
     fn a_result_counts_only_with_confident_words() {
-        let words: Vec<String> = ["clip", "that"].iter().map(|s| s.to_string()).collect();
-        let r = |json: &str| heard_in(&serde_json::from_str(json).unwrap(), &words);
+        let clip = [("clip that", None)];
+        let r = |json: &str| hear(&clip, json).is_some();
         assert!(r(
             r#"{"result":[{"word":"wow","conf":1.0},{"word":"clip","conf":0.9},{"word":"that","conf":1.0}],"text":"wow clip that"}"#
         ));
@@ -1129,6 +1293,77 @@ mod tests {
             "without word details, the text decides"
         );
         assert!(!r(r#"{"text":""}"#));
+    }
+
+    #[test]
+    fn a_length_said_after_the_phrase_is_the_clip_length() {
+        let clip = [("clip that", None)];
+        let secs = |t: &str| hear(&clip, &said(t)).map(|h| h.seconds);
+        assert_eq!(secs("clip that twenty seconds"), Some(Some(20)));
+        assert_eq!(secs("clip that thirty"), Some(Some(30)));
+        assert_eq!(secs("clip that the last minute"), Some(Some(60)));
+        assert_eq!(secs("clip that last two minutes"), Some(Some(120)));
+        assert_eq!(secs("clip that a minute and a half"), Some(Some(90)));
+        assert_eq!(secs("clip that forty five seconds"), Some(Some(45)));
+        // No length, or a word that isn't one: the usual length.
+        assert_eq!(secs("clip that"), Some(None));
+        assert_eq!(secs("clip that one"), Some(None));
+        assert_eq!(secs("clip that nice shot"), Some(None));
+        assert_eq!(secs("wow clip that"), Some(None));
+        // A length the recognizer wasn't sure of doesn't count.
+        let unsure = r#"{"result":[{"word":"clip","conf":1.0},{"word":"that","conf":1.0},{"word":"twenty","conf":0.4},{"word":"seconds","conf":1.0}],"text":"clip that twenty seconds"}"#;
+        assert_eq!(hear(&clip, unsure).map(|h| h.seconds), Some(None));
+    }
+
+    #[test]
+    fn each_phrase_saves_its_own_length() {
+        let phrases = [
+            ("clip that", None),
+            ("clip the round", Some(120)),
+            ("save that", Some(15)),
+        ];
+        let got = |t: &str| hear(&phrases, &said(t)).map(|h| (h.phrase, h.seconds));
+        assert_eq!(got("clip that"), Some((0, None)));
+        assert_eq!(got("okay clip the round"), Some((1, Some(120))));
+        assert_eq!(got("save that"), Some((2, Some(15))));
+        // A spoken length goes before the phrase's own.
+        assert_eq!(got("save that thirty seconds"), Some((2, Some(30))));
+        assert_eq!(got("nice round"), None);
+    }
+
+    #[test]
+    fn phrases_come_from_the_settings() {
+        let s = kairo::config::Settings {
+            voice_phrase: "Clip That!".into(),
+            voice_seconds: 45,
+            voice_phrases: vec![
+                kairo::config::VoicePhrase {
+                    phrase: "clip the round".into(),
+                    seconds: 120,
+                },
+                // The same as the main one, or empty: left out.
+                kairo::config::VoicePhrase {
+                    phrase: "clip that".into(),
+                    seconds: 10,
+                },
+                kairo::config::VoicePhrase {
+                    phrase: " ".into(),
+                    seconds: 10,
+                },
+            ],
+            voice_sensitivity: "strict".into(),
+            ..Default::default()
+        };
+        let w = Wanted::from_settings(&s);
+        assert_eq!(
+            w.phrases,
+            [
+                ("clip that".to_string(), Some(45)),
+                ("clip the round".to_string(), Some(120))
+            ]
+        );
+        assert_eq!(w.confidence, 0.85);
+        assert_eq!(w.describe(), "\"clip that\" and 1 more");
     }
 
     #[test]

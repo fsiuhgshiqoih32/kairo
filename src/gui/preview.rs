@@ -615,3 +615,46 @@ fn friends_previews(size: (f32, f32)) {
     });
     shoot(t.view(), "iced-toast-friend-request", (toast::W, toast::H));
 }
+
+/// Each settings tab, a search, and the look's options (glow, compact, a custom accent).
+#[test]
+#[ignore = "renders the settings to PNGs; needs KAIRO_HOME with clips and KAIRO_SNAPSHOTS"]
+fn settings_tabs() {
+    use super::settings::Tab;
+    let size = (1280.0, 860.0);
+    let now = SystemTime::now();
+    let (mut app, _) = App::new(kairo::config::Settings::default());
+    app.now = Some(now);
+    app.clips = sample(now);
+    app.index_clips();
+    app.loaded = true;
+    app.report = Some(report());
+    app.page = Page::Settings;
+    app.settings.voice_clip = true;
+    app.settings.voice_phrases = vec![kairo::config::VoicePhrase {
+        phrase: "clip the round".into(),
+        seconds: 120,
+    }];
+    let (setup, _) = super::settings::State::new(&app.settings);
+    app.setup = setup;
+    for tab in Tab::ALL {
+        app.setup.tab = tab;
+        shoot(
+            app.view(),
+            &format!("settings-tab-{tab:?}").to_lowercase(),
+            (1280.0, 1500.0),
+        );
+    }
+    app.setup.search = "mic".into();
+    shoot(app.view(), "settings-search-mic", (1280.0, 1300.0));
+    app.setup.search = "zzz".into();
+    shoot(app.view(), "settings-search-none", size);
+    app.setup.search.clear();
+    app.setup.tab = Tab::Look;
+    app.settings.background = "glow".into();
+    app.settings.compact = true;
+    app.settings.accent = "#22c4a5".into();
+    theme::apply_settings(&app.settings);
+    shoot(app.view(), "settings-look-glow-compact", size);
+    theme::apply_settings(&kairo::config::Settings::default());
+}

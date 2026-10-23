@@ -52,13 +52,7 @@ impl App {
         let set = |m: settings::Msg| Message::Settings(m);
         let body: Element<'_, Message> = match step {
             0 => column![
-                image(image::Handle::from_rgba(
-                    128,
-                    128,
-                    kairo::art::app_icon(128)
-                ))
-                .width(72)
-                .height(72),
+                image(super::widgets::app_logo(128)).width(72).height(72),
                 title("Welcome to Kairo".into()),
                 line(
                     "Kairo quietly keeps the last moments of your game. When something happens, \

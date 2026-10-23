@@ -106,13 +106,103 @@ pub const ACCENT_COLORS: [u32; 8] = [
     0xff4f46, 0xff7a1a, 0xf5b301, 0x2fcf7f, 0x1fc2e0, 0x3d8bff, 0x8b5cf6, 0xf0469c,
 ];
 
-/// Uses the accent named `name` (one of `kairo::config::ACCENTS`) from now on.
+/// Uses the accent named `name` (one of `kairo::config::ACCENTS`, or "#rrggbb") from now on.
 pub fn set_accent(name: &str) {
-    let i = kairo::config::ACCENTS
-        .iter()
-        .position(|a| *a == name)
-        .unwrap_or(0);
-    ACCENT_RGB.store(ACCENT_COLORS[i], Ordering::Relaxed);
+    let rgb = kairo::config::hex_colour(name).unwrap_or_else(|| {
+        let i = kairo::config::ACCENTS
+            .iter()
+            .position(|a| *a == name)
+            .unwrap_or(0);
+        ACCENT_COLORS[i]
+    });
+    ACCENT_RGB.store(rgb, Ordering::Relaxed);
+}
+
+/// 0xRRGGBB as "#rrggbb".
+pub fn hex(rgb: u32) -> String {
+    format!("#{:06x}", rgb & 0xff_ffff)
+}
+
+/// A vivid colour of hue `h` (0 to 360), bright enough for buttons in either look.
+pub fn hue_colour(h: f32) -> u32 {
+    let (s, l) = (0.82f32, 0.56f32);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = (h.rem_euclid(360.0)) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to = |v: f32| (((v + m) * 255.0).round().clamp(0.0, 255.0)) as u32;
+    (to(r) << 16) | (to(g) << 8) | to(b)
+}
+
+/// The hue (0 to 360) of 0xRRGGBB, for the colour slider.
+pub fn hue_of(rgb: u32) -> f32 {
+    let (r, g, b) = (
+        ((rgb >> 16) & 0xff) as f32 / 255.0,
+        ((rgb >> 8) & 0xff) as f32 / 255.0,
+        (rgb & 0xff) as f32 / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let d = max - r.min(g).min(b);
+    if d <= 0.0 {
+        return 0.0;
+    }
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    h * 60.0
+}
+
+/// The accent now, as 0xRRGGBB.
+pub fn accent_value() -> u32 {
+    ACCENT_RGB.load(Ordering::Relaxed)
+}
+
+/// Tighter spacing (Settings' Compact).
+static COMPACT: AtomicBool = AtomicBool::new(false);
+/// What's behind the pages: 0 plain, 1 the accent's glow, 2 a picture.
+static BACKDROP: AtomicU32 = AtomicU32::new(0);
+
+/// Uses the layout and background from the settings from now on.
+pub fn set_layout(compact: bool, background: &str) {
+    COMPACT.store(compact, Ordering::Relaxed);
+    BACKDROP.store(
+        match background {
+            "glow" => 1,
+            "picture" => 2,
+            _ => 0,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+pub fn compact() -> bool {
+    COMPACT.load(Ordering::Relaxed)
+}
+
+/// `normal`, or less of it in the compact layout: padding and gaps.
+pub fn space(normal: f32) -> f32 {
+    if compact() {
+        (normal * 0.6).round()
+    } else {
+        normal
+    }
+}
+
+/// Whether something is drawn behind the pages, so the sidebar lets it through a little.
+pub fn has_backdrop() -> bool {
+    BACKDROP.load(Ordering::Relaxed) != 0
 }
 
 pub fn rgb(v: u32) -> Color {
@@ -177,8 +267,13 @@ pub fn alpha(c: Color, a: f32) -> Color {
 // --- Containers --------------------------------------------------------------------------
 
 pub fn sidebar(_: &Theme) -> container::Style {
+    let bg = if has_backdrop() {
+        alpha(sidebar_bg(), 0.78)
+    } else {
+        sidebar_bg()
+    };
     container::Style {
-        background: Some(sidebar_bg().into()),
+        background: Some(bg.into()),
         border: Border {
             color: edge(),
             width: 0.0,
@@ -585,4 +680,91 @@ pub fn chip_box(c: Color) -> impl Fn(&Theme) -> container::Style {
         },
         ..Default::default()
     }
+}
+
+/// A settings tab: filled with the accent when it's the one showing.
+pub fn tab(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        if on {
+            return base_button(Some(accent()), on_accent(), Color::TRANSPARENT, 999.0);
+        }
+        let bg = match status {
+            button::Status::Hovered | button::Status::Pressed => Some(surface_hi()),
+            _ => Some(surface()),
+        };
+        base_button(bg, ink_2(), edge(), 999.0)
+    }
+}
+
+/// The settings' search field: a panel the input sits in.
+pub fn search_box(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(surface().into()),
+        border: Border {
+            color: edge(),
+            width: 1.0,
+            radius: radius(12.0),
+        },
+        ..Default::default()
+    }
+}
+
+/// A text input with no box of its own (it sits in one).
+pub fn bare_input(_: &Theme, _: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Color::TRANSPARENT.into(),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: radius(0.0),
+        },
+        icon: muted(),
+        placeholder: muted(),
+        value: ink(),
+        selection: alpha(accent(), 0.35),
+    }
+}
+
+/// The accent's colour slider: the rail shows every hue.
+pub fn hue_slider(theme: &Theme, status: slider::Status) -> slider::Style {
+    let mut rainbow = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2));
+    for i in 0..=6 {
+        rainbow = rainbow.add_stop(i as f32 / 6.0, rgb(hue_colour(i as f32 * 60.0)));
+    }
+    let mut s = slider::default(theme, status);
+    let bg = Background::Gradient(iced::Gradient::Linear(rainbow));
+    s.rail.backgrounds = (bg, bg);
+    s.rail.width = 8.0;
+    s.handle.shape = slider::HandleShape::Circle { radius: 8.0 };
+    s.handle.background = accent().into();
+    s.handle.border_width = 2.0;
+    s.handle.border_color = Color::WHITE;
+    s
+}
+
+/// What's behind the pages, for the "glow" background: the accent fading out from the top.
+pub fn glow_backdrop(_: &Theme) -> container::Style {
+    let glow = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+        .add_stop(0.0, alpha(accent(), if is_light() { 0.16 } else { 0.22 }))
+        .add_stop(0.55, alpha(accent(), 0.04))
+        .add_stop(1.0, Color::TRANSPARENT);
+    container::Style {
+        background: Some(Background::Gradient(iced::Gradient::Linear(glow))),
+        ..Default::default()
+    }
+}
+
+/// The veil over a background picture: `dim` (0 to 1) of the window's ground colour.
+pub fn veil(dim: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(alpha(bg(), dim.clamp(0.0, 1.0)).into()),
+        ..Default::default()
+    }
+}
+
+/// Applies the look, accent, layout and background in `s` from now on.
+pub fn apply_settings(s: &kairo::config::Settings) {
+    set_accent(&s.accent);
+    apply_look(&s.look);
+    set_layout(s.compact, &s.background);
 }

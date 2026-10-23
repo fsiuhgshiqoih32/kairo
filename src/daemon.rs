@@ -221,10 +221,10 @@ pub fn run(wait: bool) -> Result<(), String> {
                 .spawn(move || {
                     crate::voice::run(
                         s,
-                        move || {
+                        move |seconds| {
                             let before = s2.status.lock().unwrap().last_clip.clone();
                             *spoken.lock().unwrap() = Spoken { before, clip: None };
-                            start_save(&s2, None, false)
+                            start_save(&s2, seconds, false)
                         },
                         move |f| do_spoken(&s3, &spoken2, f),
                     )

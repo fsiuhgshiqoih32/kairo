@@ -1,10 +1,34 @@
 //! Small pieces the pages share: buttons with icons, segmented choices, panels, dialogs.
 
-use iced::widget::{Button, Space, button, column, container, row, text};
+use std::sync::{LazyLock, Mutex};
+
+use iced::widget::{Button, Space, button, column, container, image, row, text};
 use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use super::icons::{Icon, icon};
 use super::theme::{self, BOLD, MEDIUM, SEMIBOLD};
+
+/// Kairo's icon at `size` pixels, made once. A picture handle made anew in `view` is a new
+/// image to iced every time, decoded and uploaded again, and blinks: the sidebar's logo did,
+/// every time the window redrew.
+pub fn app_logo(size: u32) -> image::Handle {
+    static MADE: Mutex<Vec<(u32, image::Handle)>> = Mutex::new(Vec::new());
+    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, h)) = made.iter().find(|(s, _)| *s == size) {
+        return h.clone();
+    }
+    let h = image::Handle::from_rgba(size, size, kairo::art::app_icon(size as usize));
+    made.push((size, h.clone()));
+    h
+}
+
+/// The sidebar's logo (from `assets/icon.png`), made once; see [`app_logo`].
+pub fn sidebar_logo() -> image::Handle {
+    static LOGO: LazyLock<image::Handle> = LazyLock::new(|| {
+        image::Handle::from_bytes(include_bytes!("../../assets/icon.png").as_slice())
+    });
+    LOGO.clone()
+}
 
 /// A button with an icon and a label.
 pub fn icon_button<'a, M: Clone + 'a>(i: Icon, label: &str, color: Color) -> Button<'a, M> {

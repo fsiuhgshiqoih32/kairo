@@ -1,5 +1,6 @@
 //! The settings page.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,8 +13,9 @@ use iced::{Alignment, Element, Fill, FillPortion, Length, Padding, Task};
 
 use kairo::args::{self, Encoder};
 use kairo::config::{
-    ACCENTS, GameRule, MAX_CLIP_SECONDS, MAX_GAME_RULES, MAX_QUICK_SAVES, MIN_CLIP_SECONDS,
-    Quality, QuickSave, Resolution, SAVE_SOUNDS, Settings, Storage, VideoCodec, normalize_phrase,
+    ACCENTS, GameRule, MAX_CLIP_SECONDS, MAX_GAME_RULES, MAX_QUICK_SAVES, MAX_VOICE_PHRASES,
+    MIN_CLIP_SECONDS, Quality, QuickSave, Resolution, SAVE_SOUNDS, Settings, Storage, UI_SCALES,
+    VideoCodec, VoicePhrase, hex_colour, normalize_phrase,
 };
 
 use super::icons::{Icon, icon};
@@ -42,7 +44,88 @@ impl std::fmt::Display for Choice {
     }
 }
 
+/// The settings' tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Recording,
+    Video,
+    Sound,
+    Voice,
+    Sharing,
+    Look,
+    Kairo,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 7] = [
+        Tab::Recording,
+        Tab::Video,
+        Tab::Sound,
+        Tab::Voice,
+        Tab::Sharing,
+        Tab::Look,
+        Tab::Kairo,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Recording => "Recording",
+            Tab::Video => "Video",
+            Tab::Sound => "Sound",
+            Tab::Voice => "Voice",
+            Tab::Sharing => "Sharing",
+            Tab::Look => "Look",
+            Tab::Kairo => "Kairo",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Tab::Recording => Icon::Record,
+            Tab::Video => Icon::Film,
+            Tab::Sound => Icon::Volume,
+            Tab::Voice => Icon::Mic,
+            Tab::Sharing => Icon::Share,
+            Tab::Look => Icon::Sparkles,
+            Tab::Kairo => Icon::Settings,
+        }
+    }
+}
+
+/// The sections in the order they're shown, each on its tab.
+const SECTIONS: [(&str, Tab); 13] = [
+    ("Replay", Tab::Recording),
+    ("Sessions", Tab::Recording),
+    ("Games", Tab::Recording),
+    ("Video", Tab::Video),
+    ("Webcam", Tab::Video),
+    ("Overlay", Tab::Video),
+    ("Sound", Tab::Sound),
+    ("Voice clipping", Tab::Voice),
+    ("Saving", Tab::Sharing),
+    ("Sharing", Tab::Sharing),
+    ("Appearance", Tab::Look),
+    ("Notifications", Tab::Look),
+    ("Kairo", Tab::Kairo),
+];
+
+thread_local! {
+    /// While the settings are drawn: what the search box asks for (lowercase)...
+    static QUERY: RefCell<String> = const { RefCell::new(String::new()) };
+    /// ...and how many settings drawn since the last section matched it.
+    static MATCHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct State {
+    /// The tab showing (unless something is searched for).
+    pub tab: Tab,
+    pub(super) search: String,
+    /// The voice phrase's own length as typed, and the extra phrases' words and lengths.
+    voice_seconds_text: String,
+    voice_texts: Vec<(String, String)>,
+    /// The accent as typed ("#ff7a1a").
+    accent_text: String,
     monitors: Vec<Monitor>,
     /// The microphones, once listed, and whether they're being listed again.
     mics: Option<Vec<String>>,
@@ -190,6 +273,27 @@ pub enum Msg {
     Installed(Result<(), String>),
     OpenLog,
     Quit,
+    Tab(Tab),
+    Search(String),
+    ClearSearch,
+    /// The voice phrase's own clip length; 0 for the usual one.
+    VoiceSeconds(u32),
+    VoiceSecondsText(String),
+    AddVoicePhrase,
+    RemoveVoicePhrase(usize),
+    VoicePhraseText(usize, String),
+    VoicePhraseSeconds(usize, String),
+    VoiceFollowUps(bool),
+    VoiceSensitivity(&'static str),
+    /// An accent of any colour: its hue, or typed as "#rrggbb".
+    AccentHue(f32),
+    AccentHex(String),
+    UiScale(u32),
+    Compact(bool),
+    Background(&'static str),
+    PickBackground,
+    BackgroundPicked(Option<PathBuf>),
+    BackgroundDim(u32),
 }
 
 /// What the settings ask of the window.
@@ -254,6 +358,18 @@ impl State {
                     .collect(),
                 gb_text: settings.max_storage_gb.max(1).to_string(),
                 phrase_text: settings.voice_phrase.clone(),
+                tab: Tab::default(),
+                search: String::new(),
+                voice_seconds_text: match settings.voice_seconds {
+                    0 => String::new(),
+                    n => n.to_string(),
+                },
+                voice_texts: settings
+                    .voice_phrases
+                    .iter()
+                    .map(|v| (v.phrase.clone(), v.seconds.to_string()))
+                    .collect(),
+                accent_text: theme::hex(theme::accent_value()),
                 voice_install: None,
                 voice_problem: None,
                 webhook_text: String::new(),
@@ -392,8 +508,30 @@ impl State {
             .chain(std::iter::once("custom"))
             .find(|k| *k == s.save_sound)
             .unwrap_or("chime");
+        let choices: Vec<Choice> = options
+            .iter()
+            .map(|(k, name)| Choice {
+                value: k.to_string(),
+                label: name.clone(),
+            })
+            .collect();
+        let chosen = choices.iter().find(|c| c.value == picked).cloned();
         let mut controls = row![
-            segmented(options, picked, Msg::SaveSound),
+            pick_list(choices, chosen, |c: Choice| {
+                Msg::SaveSound(
+                    SAVE_SOUNDS
+                        .iter()
+                        .map(|(k, _)| *k)
+                        .chain(std::iter::once("custom"))
+                        .find(|k| *k == c.value)
+                        .unwrap_or("chime"),
+                )
+            })
+            .text_size(13)
+            .padding(Padding::from([7, 12]))
+            .width(170)
+            .style(theme::pick)
+            .menu_style(theme::menu),
             icon_button(Icon::Volume, "Play", theme::ink_2())
                 .style(theme::secondary)
                 .on_press(Msg::PlaySound),
@@ -1091,6 +1229,148 @@ impl State {
             Msg::Accent(name) => {
                 s.accent = name.into();
                 theme::set_accent(name);
+                self.accent_text = theme::hex(theme::accent_value());
+                return changed;
+            }
+            Msg::AccentHue(h) => {
+                let hex = theme::hex(theme::hue_colour(h));
+                theme::set_accent(&hex);
+                self.accent_text = hex.clone();
+                s.accent = hex;
+                return changed;
+            }
+            Msg::AccentHex(t) => {
+                let typed = t.trim().trim_start_matches('#').to_lowercase();
+                self.accent_text = t;
+                let hex = format!("#{typed}");
+                if hex_colour(&hex).is_some() {
+                    theme::set_accent(&hex);
+                    s.accent = hex;
+                    return changed;
+                }
+            }
+            Msg::Tab(t) => {
+                self.tab = t;
+                self.search.clear();
+            }
+            Msg::Search(q) => self.search = q,
+            Msg::ClearSearch => self.search.clear(),
+            Msg::VoiceSeconds(v) => {
+                s.voice_seconds = v;
+                self.voice_seconds_text = if v == 0 { String::new() } else { v.to_string() };
+                return changed;
+            }
+            Msg::VoiceSecondsText(t) => {
+                let t: String = t.chars().filter(char::is_ascii_digit).take(4).collect();
+                self.voice_seconds_text = t.clone();
+                if t.is_empty() {
+                    s.voice_seconds = 0;
+                    return changed;
+                }
+                if let Ok(v) = t.parse::<u32>()
+                    && (MIN_CLIP_SECONDS..=MAX_CLIP_SECONDS).contains(&v)
+                {
+                    s.voice_seconds = v;
+                    return changed;
+                }
+            }
+            Msg::AddVoicePhrase => {
+                if s.voice_phrases.len() < MAX_VOICE_PHRASES {
+                    let (phrase, seconds) = [
+                        ("clip the round", 120),
+                        ("clip that quick", 15),
+                        ("save the match", 300),
+                    ][s.voice_phrases.len()];
+                    s.voice_phrases.push(VoicePhrase {
+                        phrase: phrase.into(),
+                        seconds,
+                    });
+                    self.voice_texts
+                        .push((phrase.to_string(), seconds.to_string()));
+                    return changed;
+                }
+            }
+            Msg::RemoveVoicePhrase(i) => {
+                if i < s.voice_phrases.len() {
+                    s.voice_phrases.remove(i);
+                    if i < self.voice_texts.len() {
+                        self.voice_texts.remove(i);
+                    }
+                    return changed;
+                }
+            }
+            Msg::VoicePhraseText(i, t) => {
+                let n = normalize_phrase(&t);
+                if let Some(slot) = self.voice_texts.get_mut(i) {
+                    slot.0 = t;
+                }
+                if let Some(v) = s.voice_phrases.get_mut(i)
+                    && !n.is_empty()
+                    && v.phrase != n
+                {
+                    v.phrase = n;
+                    return changed;
+                }
+            }
+            Msg::VoicePhraseSeconds(i, t) => {
+                let t: String = t.chars().filter(char::is_ascii_digit).take(4).collect();
+                if let Some(slot) = self.voice_texts.get_mut(i) {
+                    slot.1 = t.clone();
+                }
+                if let (Ok(v), Some(p)) = (t.parse::<u32>(), s.voice_phrases.get_mut(i))
+                    && (MIN_CLIP_SECONDS..=MAX_CLIP_SECONDS).contains(&v)
+                {
+                    p.seconds = v;
+                    return changed;
+                }
+            }
+            Msg::VoiceFollowUps(on) => {
+                s.voice_follow_ups = on;
+                return changed;
+            }
+            Msg::VoiceSensitivity(k) => {
+                s.voice_sensitivity = k.into();
+                return changed;
+            }
+            Msg::UiScale(v) => {
+                s.ui_scale = v;
+                return changed;
+            }
+            Msg::Compact(on) => {
+                s.compact = on;
+                theme::set_layout(on, &s.background);
+                return changed;
+            }
+            Msg::Background(k) => {
+                if k == "picture" && !std::path::Path::new(&s.background_file).is_file() {
+                    return self.update(s, Msg::PickBackground);
+                }
+                s.background = k.into();
+                theme::set_layout(s.compact, k);
+                return changed;
+            }
+            Msg::PickBackground => {
+                return (
+                    Task::perform(
+                        background(|| {
+                            rfd::FileDialog::new()
+                                .add_filter("Picture", &["png", "jpg", "jpeg", "bmp", "gif"])
+                                .pick_file()
+                        }),
+                        Msg::BackgroundPicked,
+                    ),
+                    Effect::None,
+                );
+            }
+            Msg::BackgroundPicked(Some(p)) => {
+                s.background_file = p.display().to_string();
+                s.background = "picture".into();
+                theme::set_layout(s.compact, "picture");
+                return changed;
+            }
+            Msg::BackgroundPicked(None) => {}
+            Msg::BackgroundDim(v) => {
+                s.background_dim = v;
                 return changed;
             }
             Msg::Look(look) => {
@@ -1301,6 +1581,45 @@ impl State {
         col.into()
     }
 
+    fn voice_phrases_view<'a>(&'a self, s: &'a Settings) -> Element<'a, Msg> {
+        let mut col = column![].spacing(8).align_x(Alignment::End);
+        for (i, (phrase, seconds)) in self.voice_texts.iter().enumerate() {
+            col = col.push(
+                row![
+                    text_input("clip the round", phrase)
+                        .on_input(move |t| Msg::VoicePhraseText(i, t))
+                        .width(170)
+                        .padding(Padding::from([7, 9]))
+                        .size(13)
+                        .style(theme::input),
+                    text("saves").size(13).color(theme::muted()),
+                    text_input("120", seconds)
+                        .on_input(move |t| Msg::VoicePhraseSeconds(i, t))
+                        .width(60)
+                        .padding(Padding::from([7, 9]))
+                        .size(13)
+                        .style(theme::input),
+                    text("s").size(13).color(theme::muted()),
+                    button(icon(Icon::Close, 14.0, theme::ink_2()))
+                        .padding(7)
+                        .style(theme::ghost)
+                        .on_press(Msg::RemoveVoicePhrase(i)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        if s.voice_phrases.len() < MAX_VOICE_PHRASES {
+            col = col.push(
+                button(text("Add a phrase").size(13).font(MEDIUM))
+                    .padding(Padding::from([8, 12]))
+                    .style(theme::secondary)
+                    .on_press(Msg::AddVoicePhrase),
+            );
+        }
+        col.into()
+    }
+
     /// The button that shows a shortcut and, when clicked, waits for a new one.
     pub(super) fn key_capture<'a>(
         &'a self,
@@ -1365,7 +1684,13 @@ impl State {
         used: u64,
         known_games: &'a [(String, usize)],
     ) -> Element<'a, Msg> {
-        let mut sections = column![].spacing(26).max_width(780);
+        let query = self.search.trim().to_lowercase();
+        QUERY.with(|q| *q.borrow_mut() = query.clone());
+        MATCHED.with(|m| m.set(0));
+        // The tab whose sections show; while searching, every section's matches do.
+        let view_tab = query.is_empty().then_some(self.tab);
+        let mut parts: Vec<(usize, Element<'a, Msg>)> = Vec::new();
+        let mut sections = column![].spacing(theme::space(26.0)).max_width(780);
         if let Some(u) = &self.update.available {
             let mut points = column![].spacing(6);
             for p in updater::highlights(&u.notes, 5) {
@@ -1485,7 +1810,7 @@ impl State {
             bps * 3600.0 / 8.0 / 1e9
         };
         if cfg!(windows) {
-            sections = sections.push(section(
+            parts.extend(section(
                 "Overlay",
                 vec![setting(
                     "Keys and clicks",
@@ -1499,7 +1824,7 @@ impl State {
                 )],
             ));
         }
-        sections = sections.push(section(
+        parts.extend(section(
             "Sessions",
             vec![
                 setting(
@@ -1518,7 +1843,7 @@ impl State {
                 ),
             ],
         ));
-        sections = sections.push(section(
+        parts.extend(section(
             "Replay",
             vec![
                 setting(
@@ -1662,15 +1987,15 @@ impl State {
             }
             _ => None,
         };
-        sections = sections.push(section("Games", self.games_rows(s, report, known_games)));
+        parts.extend(section("Games", self.games_rows(s, report, known_games)));
 
         let mut voice_rows = vec![setting(
             "Voice clipping",
             Some(
-                "Say a phrase and Kairo saves a clip, hands-free. Then say \"rename it to ...\" or \
-                 \"trim it to thirty seconds\" to change that clip. The speech is recognised on this \
-                 computer: nothing is sent anywhere. The first time, it downloads the speech files \
-                 (about 55 MB)."
+                "Say a phrase and Kairo saves a clip, hands-free. Add a length to it (\"clip that \
+                 twenty seconds\"), then say \"rename it to ...\" or \"trim it to thirty seconds\" to \
+                 change that clip. The speech is recognised on this computer: nothing is sent \
+                 anywhere. The first time, it downloads the speech files (about 55 MB)."
                     .into(),
             ),
             voice_control,
@@ -1698,10 +2023,93 @@ impl State {
                 ),
                 phrase_col,
             ));
+            let usual = format!(
+                "Same as {}",
+                if s.hotkey.is_empty() {
+                    "the replay"
+                } else {
+                    &s.hotkey
+                }
+            );
+            voice_rows.push(setting(
+                "Clip length",
+                Some(format!(
+                    "How much the phrase saves. Say a length after it to choose there and then: \
+                     \"clip that twenty seconds\", \"clip that last two minutes\" (up to {}, the \
+                     longest Kairo keeps).",
+                    seconds_label(s.buffer_seconds().saturating_sub(3 + s.post_roll))
+                )),
+                column![
+                    segmented(
+                        vec![
+                            (0u32, usual),
+                            (15, "15 s".into()),
+                            (30, "30 s".into()),
+                            (60, "1 min".into()),
+                            (120, "2 min".into()),
+                        ],
+                        s.voice_seconds,
+                        Msg::VoiceSeconds,
+                    ),
+                    row![
+                        text("or").size(12).color(theme::muted()),
+                        text_input("seconds", &self.voice_seconds_text)
+                            .on_input(Msg::VoiceSecondsText)
+                            .width(80)
+                            .padding(Padding::from([6, 8]))
+                            .size(13)
+                            .style(theme::input),
+                        text("s").size(12).color(theme::muted()),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(8)
+                .align_x(Alignment::End),
+            ));
+            voice_rows.push(setting(
+                "More phrases",
+                Some(
+                    "Each saves its own length: \"clip the round\" for two minutes and \"clip that \
+                     quick\" for fifteen seconds, say."
+                        .into(),
+                ),
+                self.voice_phrases_view(s),
+            ));
+            voice_rows.push(setting(
+                "Then listen for changes",
+                Some(
+                    "For 15 seconds after a voice clip, \"rename it to ...\" and \"trim it to ...\" \
+                     change it, and \"rename it to Ace and trim it to thirty seconds\" does both."
+                        .into(),
+                ),
+                switch(s.voice_follow_ups, Msg::VoiceFollowUps),
+            ));
+            voice_rows.push(setting(
+                "How sure before saving",
+                Some(
+                    "Relaxed hears a quiet or unusual phrase more often, and saves by accident more \
+                     often too. Strict saves only when the phrase is clear."
+                        .into(),
+                ),
+                segmented(
+                    vec![
+                        ("strict", "Strict".to_string()),
+                        ("normal", "Normal".to_string()),
+                        ("relaxed", "Relaxed".to_string()),
+                    ],
+                    match s.voice_sensitivity.as_str() {
+                        "strict" => "strict",
+                        "relaxed" => "relaxed",
+                        _ => "normal",
+                    },
+                    Msg::VoiceSensitivity,
+                ),
+            ));
         } else if let Some((color, line)) = status {
             voice_rows.push(setting("", None, text(line).size(12).color(color)));
         }
-        sections = sections.push(section("Voice clipping", voice_rows));
+        parts.extend(section("Voice clipping", voice_rows));
 
         // Video.
         let mut screens = vec![Choice {
@@ -1741,7 +2149,7 @@ impl State {
             encoder_row = encoder_row.push(text("checking...").size(12).color(theme::muted()));
         }
         let (quality_note, storage_note) = self.memory_estimate(s);
-        sections = sections.push(section(
+        parts.extend(section(
             "Video",
             vec![
                 setting("Screen", None, pick(screens, screen, Msg::Monitor)),
@@ -1925,7 +2333,7 @@ impl State {
                 chat_col,
             ));
         }
-        sections = sections.push(section(
+        parts.extend(section(
             "Sound",
             vec![
                 setting(
@@ -2081,7 +2489,7 @@ impl State {
                 ),
             ));
         }
-        sections = sections.push(section("Webcam", cam_rows));
+        parts.extend(section("Webcam", cam_rows));
 
         // Saving.
         let mut folder = row![
@@ -2115,7 +2523,7 @@ impl State {
                 .push(text("GB").size(13).color(theme::muted()));
         }
         cleanup = cleanup.push(switch(cleanup_on, Msg::Cleanup));
-        sections = sections.push(section(
+        parts.extend(section(
             "Saving",
             vec![
                 setting("Clips folder", Some(s.save_dir().display().to_string()), folder),
@@ -2168,7 +2576,7 @@ impl State {
                 self.channel_row(s),
             ],
         ));
-        sections = sections.push(section(
+        parts.extend(section(
             "Notifications",
             vec![
                 setting(
@@ -2246,12 +2654,12 @@ impl State {
                     .on_press(Msg::ShareOff),
             );
         }
-        sections = sections.push(section(
+        parts.extend(section(
             "Sharing",
             vec![setting(
                 "Save and share",
                 Some(
-                    "One key saves a clip, uploads it and copies the link, ready to paste in a chat.                      Links work for 2 days; anyone with one can watch, and Discord plays it in the chat."
+                    "One key saves a clip, uploads it and copies the link, ready to paste in a chat. Links work for 2 days; anyone with one can watch, and Discord plays it in the chat."
                         .into(),
                 ),
                 share_row,
@@ -2291,11 +2699,11 @@ impl State {
                             .on_press(Msg::Accent(name)),
                     )
                 });
-        sections = sections.push(section(
-            "Kairo",
+        parts.extend(section(
+            "Appearance",
             vec![
                 setting(
-                    "Look",
+                    "Theme",
                     Some("Dark, light, or the same as your computer.".into()),
                     segmented(
                         vec![
@@ -2313,13 +2721,76 @@ impl State {
                 ),
                 setting(
                     "Accent colour",
-                    Some("Buttons, highlights and the glow around clips.".into()),
-                    swatches,
+                    Some(
+                        "Buttons, highlights and the glow around clips. Pick one, slide to any \
+                         colour, or type one in."
+                            .into(),
+                    ),
+                    column![
+                        swatches,
+                        row![
+                            slider(
+                                0.0..=360.0,
+                                theme::hue_of(theme::accent_value()),
+                                Msg::AccentHue
+                            )
+                            .step(1.0f32)
+                            .width(170)
+                            .style(theme::hue_slider),
+                            text_input("#ff7a1a", &self.accent_text)
+                                .on_input(Msg::AccentHex)
+                                .width(92)
+                                .padding(Padding::from([6, 8]))
+                                .size(13)
+                                .style(theme::input),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(10)
+                    .align_x(Alignment::End),
+                ),
+                setting(
+                    "Background",
+                    Some(
+                        "Behind the library and settings: plain, a soft glow of your accent \
+                         colour, or a picture of your own."
+                            .into(),
+                    ),
+                    self.background_view(s),
+                ),
+                setting(
+                    "Text size",
+                    Some("Everything in the window, bigger or smaller.".into()),
+                    segmented(
+                        UI_SCALES
+                            .iter()
+                            .map(|v| {
+                                (
+                                    *v,
+                                    match v {
+                                        90 => "Small",
+                                        100 => "Normal",
+                                        110 => "Large",
+                                        _ => "Larger",
+                                    }
+                                    .to_string(),
+                                )
+                            })
+                            .collect(),
+                        s.ui_scale,
+                        Msg::UiScale,
+                    ),
+                ),
+                setting(
+                    "Compact",
+                    Some("Tighter spacing, so more fits on screen.".into()),
+                    switch(s.compact, Msg::Compact),
                 ),
                 setting(
                     "Animations",
                     Some(if crate::platform::reduce_motion() {
-                        "Pages, dialogs and notices ease in. Your computer asks for less motion,                          so Match system leaves them still."
+                        "Pages, dialogs and notices ease in. Your computer asks for less motion, so Match system leaves them still."
                             .into()
                     } else {
                         "Pages, dialogs and notices ease in.".into()
@@ -2338,6 +2809,11 @@ impl State {
                         Msg::Motion,
                     ),
                 ),
+            ],
+        ));
+        parts.extend(section(
+            "Kairo",
+            vec![
                 setting(
                     "Start with the computer",
                     None,
@@ -2372,15 +2848,155 @@ impl State {
             ],
         ));
 
-        scrollable(container(sections).padding(Padding {
-            top: 0.0,
-            right: 28.0,
-            bottom: 36.0,
-            left: 28.0,
-        }))
-        .height(Fill)
-        .style(theme::scroll)
+        parts.sort_by_key(|(i, _)| *i);
+        let mut shown = 0;
+        for (i, part) in parts {
+            let tab = SECTIONS.get(i).map_or(Tab::Kairo, |(_, t)| *t);
+            if view_tab.is_none_or(|t| t == tab) {
+                sections = sections.push(part);
+                shown += 1;
+            }
+        }
+        if shown == 0 && !query.is_empty() {
+            sections = sections.push(
+                container(
+                    column![
+                        text(format!("Nothing matches \"{}\"", self.search.trim()))
+                            .size(15)
+                            .font(SEMIBOLD),
+                        text("Try another word: \"mic\", \"quality\", \"Discord\", \"sound\"...")
+                            .size(13)
+                            .color(theme::ink_2()),
+                    ]
+                    .spacing(6),
+                )
+                .padding(24)
+                .width(Fill)
+                .style(theme::well),
+            );
+        }
+        let header = self.header_view(view_tab);
+        column![
+            container(header).padding(Padding {
+                top: 0.0,
+                right: 28.0,
+                bottom: theme::space(16.0),
+                left: 28.0,
+            }),
+            scrollable(container(sections).padding(Padding {
+                top: 0.0,
+                right: 28.0,
+                bottom: 36.0,
+                left: 28.0,
+            }))
+            .height(Fill)
+            .style(theme::scroll),
+        ]
         .into()
+    }
+
+    /// Search, then the tabs.
+    fn header_view(&self, view_tab: Option<Tab>) -> Element<'_, Msg> {
+        let mut search = row![
+            icon(Icon::Search, 15.0, theme::muted()),
+            text_input("Search settings", &self.search)
+                .on_input(Msg::Search)
+                .padding(Padding::from([8, 4]))
+                .size(14)
+                .style(theme::bare_input),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        if !self.search.is_empty() {
+            search = search.push(
+                button(icon(Icon::Close, 13.0, theme::ink_2()))
+                    .padding(6)
+                    .style(theme::ghost)
+                    .on_press(Msg::ClearSearch),
+            );
+        }
+        let tabs = Tab::ALL.iter().fold(row![].spacing(6), |r, t| {
+            let on = view_tab == Some(*t);
+            r.push(
+                button(
+                    row![
+                        icon(
+                            t.icon(),
+                            14.0,
+                            if on {
+                                theme::on_accent()
+                            } else {
+                                theme::ink_2()
+                            }
+                        ),
+                        text(t.label()).size(13).font(MEDIUM),
+                    ]
+                    .spacing(7)
+                    .align_y(Alignment::Center),
+                )
+                .padding(Padding::from([7, 12]))
+                .style(theme::tab(on))
+                .on_press(Msg::Tab(*t)),
+            )
+        });
+        column![
+            container(search)
+                .padding(Padding::from([2, 12]))
+                .max_width(780)
+                .width(Fill)
+                .style(theme::search_box),
+            tabs.wrap().vertical_spacing(6),
+        ]
+        .spacing(12)
+        .max_width(780)
+        .into()
+    }
+
+    /// Plain, glow or picture, and the picture's controls.
+    fn background_view<'a>(&'a self, s: &'a Settings) -> Element<'a, Msg> {
+        let mut col = column![segmented(
+            vec![
+                ("plain", "Plain".to_string()),
+                ("glow", "Glow".to_string()),
+                ("picture", "Picture".to_string()),
+            ],
+            match s.background.as_str() {
+                "glow" => "glow",
+                "picture" => "picture",
+                _ => "plain",
+            },
+            Msg::Background,
+        )]
+        .spacing(8)
+        .align_x(Alignment::End);
+        if s.background == "picture" {
+            let name = std::path::Path::new(&s.background_file)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            col = col.push(
+                row![
+                    text(name).size(12).color(theme::ink_2()),
+                    button(text("Choose...").size(13).font(MEDIUM))
+                        .padding(Padding::from([7, 11]))
+                        .style(theme::ghost)
+                        .on_press(Msg::PickBackground),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+            col = col.push(
+                row![
+                    text("Tone down").size(12).color(theme::muted()),
+                    slider(0..=90u32, s.background_dim, Msg::BackgroundDim)
+                        .width(150)
+                        .style(theme::volume_slider),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        col.into()
     }
 }
 
@@ -2478,6 +3094,19 @@ fn setting<'a>(
     note: Option<String>,
     control: impl Into<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
+    let hit = QUERY.with(|q| {
+        let q = q.borrow();
+        q.is_empty()
+            || title.to_lowercase().contains(q.as_str())
+            || note
+                .as_ref()
+                .is_some_and(|n| n.to_lowercase().contains(q.as_str()))
+    });
+    if !hit {
+        // Searching, and not this one.
+        return Space::new().width(0).height(0).into();
+    }
+    MATCHED.with(|m| m.set(m.get() + 1));
     row![
         container(label(title, note)).width(Length::FillPortion(5)),
         container(control.into())
@@ -2486,26 +3115,41 @@ fn setting<'a>(
     ]
     .spacing(20)
     .align_y(Alignment::Center)
-    .padding(Padding::from([14, 18]))
+    .padding(Padding::from([theme::space(14.0), theme::space(18.0)]))
     .into()
 }
 
-fn section<'a>(title: &str, rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+/// A section, with its place in `SECTIONS`. While searching, its settings that don't match
+/// are already empty (see `setting`), and a section with none that do isn't shown.
+fn section<'a>(title: &str, rows: Vec<Element<'a, Msg>>) -> Option<(usize, Element<'a, Msg>)> {
+    let matched = MATCHED.with(|m| m.replace(0));
+    let searching = QUERY.with(|q| !q.borrow().is_empty());
+    if searching && matched == 0 {
+        return None;
+    }
+    let at = SECTIONS
+        .iter()
+        .position(|(t, _)| *t == title)
+        .unwrap_or(usize::MAX);
     let mut body = column![];
     let n = rows.len();
     for (i, r) in rows.into_iter().enumerate() {
         body = body.push(r);
-        if i + 1 < n {
+        // Search results leave out the lines: some rows in between are empty.
+        if i + 1 < n && !searching {
             body = body.push(container(divider()).padding(Padding::from([0, 18])));
         }
     }
-    column![
-        text(title.to_string())
-            .font(BOLD)
-            .size(16)
-            .color(theme::ink()),
-        container(body).width(Fill).style(theme::panel),
-    ]
-    .spacing(10)
-    .into()
+    Some((
+        at,
+        column![
+            text(title.to_string())
+                .font(BOLD)
+                .size(16)
+                .color(theme::ink()),
+            container(body).width(Fill).style(theme::panel),
+        ]
+        .spacing(theme::space(10.0))
+        .into(),
+    ))
 }
